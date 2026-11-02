@@ -80,7 +80,7 @@ Not a vanilla mob: the boss of track F (`docs/round10/track-f.md`, `docs/ELDEN-R
 | 38 | Zombie nautilus | oceans (26.3) | | drowned rider, shares `nautiluses` | L | `nautiluses` | 71 | left | |
 | 49 | Sulfur cube | sulfur caves (26.3) | `AbstractCubeMob` like the slime; `Bucketable`, `Shearable` | bucket, shearing, archetypes, fuse | M-L | `sulfur_cubes` | 72 | left | |
 
-Key 79 is M2-1's `#[cfg(test)]` probe `minecraft:swim_probe` (`world/families/water/swimming/swim_probe.rs`); 73-78 stay free. M2-1's shared hooks, which make no mob live on their own: `Family::breath` with vanilla's lungs, the water animals' gills (squids, the four fish, tadpoles) and a family's own air (axolotls, nautiluses), the dolphin's 4800 air as lungs ("Registered Minecraft mobs breathe like vanilla water animals", after 4c42b0ae).
+Key 79 is M2-1's `#[cfg(test)]` probe `minecraft:swim_probe` (`world/families/water/swimming/swim_probe.rs`); 73-78 stay free. M2-1's shared hooks, which make no mob live on their own: `Family::breath` with vanilla's lungs, the water animals' gills (squids, the four fish, tadpoles) and a family's own air (axolotls, nautiluses), the dolphin's 4800 air as lungs ("Registered Minecraft mobs breathe like vanilla water animals", after 4c42b0ae). `Family::swim_sounds` and `Family::quiet_steps`: a family's own swim and splash, and no steps for the fish, tadpoles and nautiluses, which still swim aloud ("Registered Minecraft mobs make their own swim and step sounds", after 0fa9ec48).
 
 ## M3: night, built mobs and the horse family (group `night`, bytes 80-95)
 

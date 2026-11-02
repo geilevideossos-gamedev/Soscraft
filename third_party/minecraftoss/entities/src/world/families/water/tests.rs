@@ -1,13 +1,16 @@
-use super::swimming::swim_probe::{self, KIND, SwimProbe};
-use crate::world::EntityWorld;
+use super::swimming::swim_probe::{self, KIND, SILENT, SILENT_SPLASH, SWIM, SwimProbe};
 use crate::world::families::pests::probe::{self, Probe};
 use crate::world::families::{Breath, Family, FamilyMob};
+use crate::world::{EntityWorld, MobSound};
 use glam::DVec3;
 use minecraftoss_player::{Block, Pos, World};
+use std::collections::HashSet;
+
+const STEP: &str = "block.stone.step";
 
 #[derive(Default)]
 struct Pool {
-    water: Vec<Pos>,
+    water: HashSet<Pos>,
 }
 
 impl Pool {
@@ -15,6 +18,16 @@ impl Pool {
         Self {
             water: (64..=top).map(|y| (x, y, z)).collect(),
         }
+    }
+
+    fn lanes(xs: &[i32], top: i32) -> Self {
+        let mut water = HashSet::new();
+        for &x in xs {
+            for z in 0..40 {
+                water.extend((64..=top).map(|y| (x, y, z)));
+            }
+        }
+        Self { water }
     }
 }
 
@@ -27,6 +40,28 @@ impl World for Pool {
     }
 
     fn set_block(&mut self, _: Pos, _: Option<Block>) {}
+
+    fn step_sound(&self, pos: Pos) -> Option<(String, f32, f32)> {
+        let stone = self
+            .block(pos)
+            .is_some_and(|block| block.id == "minecraft:stone");
+        stone.then(|| (STEP.to_owned(), 1.0, 1.0))
+    }
+}
+
+fn swimmer(world: &mut EntityWorld, kind: &str, at: DVec3) -> u64 {
+    let id = world.spawn_family_kind(kind, at).unwrap();
+    let mob = probe_mut(world, id);
+    mob.state.input = DVec3::Z;
+    mob.state.speed = 0.1;
+    id
+}
+
+fn heard_near(heard: &[MobSound], event: &str, x: f64) -> usize {
+    heard
+        .iter()
+        .filter(|sound| sound.event == event && (sound.position.x - x).abs() < 1.0)
+        .count()
 }
 
 fn probe_at(world: &mut EntityWorld, at: DVec3, breath: Breath) -> u64 {
@@ -163,4 +198,59 @@ fn a_lung_breather_with_4800_air_refills_at_once_and_still_drowns() {
     probe_mut(&mut world, id).core.body.air = -19;
     world.tick(&mut pool);
     assert_eq!(air_and_health(&world, id), (0, 1.0), "it drowns");
+}
+
+#[test]
+fn a_quiet_stepper_flops_without_a_step_sound_but_swims_with_its_own() {
+    let mut world = EntityWorld::default();
+    let mut pool = Pool::lanes(&[0], 79);
+    let quiet = swimmer(&mut world, KIND, DVec3::new(10.5, 64.0, 0.5));
+    swimmer(&mut world, SILENT, DVec3::new(14.5, 64.0, 0.5));
+    let mut heard = Vec::new();
+    for _ in 0..60 {
+        world.tick(&mut pool);
+        heard.extend(world.take_sounds());
+    }
+    assert!(probe(&world, quiet).core.body.position.z > 3.0, "it walked");
+    assert!(heard_near(&heard, STEP, 14.5) >= 2, "a plain stepper steps");
+    assert_eq!(heard_near(&heard, STEP, 10.5), 0, "the quiet one does not");
+
+    probe_mut(&mut world, quiet).core.body.position = DVec3::new(0.5, 75.0, 0.5);
+    heard.clear();
+    for _ in 0..60 {
+        world.tick(&mut pool);
+        heard.extend(world.take_sounds());
+    }
+    assert!(
+        heard_near(&heard, SWIM, 0.5) >= 2,
+        "it swims with its own sound"
+    );
+    assert_eq!(heard_near(&heard, "entity.generic.swim", 0.5), 0);
+    assert!(heard.iter().all(|sound| !sound.event.is_empty()));
+}
+
+#[test]
+fn an_empty_swim_sound_is_silent_but_the_splash_plays() {
+    let mut world = EntityWorld::default();
+    let mut pool = Pool::lanes(&[0, 4], 79);
+    swimmer(&mut world, KIND, DVec3::new(0.5, 81.0, 0.5));
+    let silent = swimmer(&mut world, SILENT, DVec3::new(4.5, 81.0, 0.5));
+    let (mut heard, mut swims) = (Vec::new(), 0);
+    for _ in 0..80 {
+        world.tick(&mut pool);
+        heard.extend(world.take_sounds());
+        let events = world.take_game_events();
+        swims += events
+            .iter()
+            .filter(|event| event.event == "minecraft:swim" && event.mob == Some(silent))
+            .count();
+    }
+    assert_eq!(heard_near(&heard, SILENT_SPLASH, 4.5), 1, "its own splash");
+    assert_eq!(heard_near(&heard, "entity.generic.splash", 0.5), 1);
+    assert!(heard_near(&heard, SWIM, 0.5) >= 2, "the other swims aloud");
+    assert!(swims >= 2, "it swam too");
+    for sound in heard.iter().filter(|sound| sound.position.x > 4.0) {
+        let swim = sound.event.is_empty() || sound.event.ends_with(".swim");
+        assert!(!swim, "{sound:?}");
+    }
 }

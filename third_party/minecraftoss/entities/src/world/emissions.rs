@@ -84,7 +84,7 @@ pub(crate) fn play_movement(body: &mut Body, tick_count: i32, random: &mut Legac
                     }
                     _ => {}
                 },
-                (Some(own), _) => voices.push((Voice::Event(own, sounds.step_volume, 1.0), at)),
+                (Some(own), _) => if sounds.step_volume > 0.0 { voices.push((Voice::Event(own, sounds.step_volume, 1.0), at)) },
                 (None, Some((event, volume, pitch))) => voices.push((Voice::Step(event, volume, pitch), at)),
                 (None, None) => {}
             }
@@ -100,7 +100,9 @@ pub(crate) fn play_movement(body: &mut Body, tick_count: i32, random: &mut Legac
         }
         Some(Emission::Swim(volume)) => {
             let (a, b) = (random.next_float(), random.next_float());
-            voices.push((Voice::Event(sounds.swim, volume, 1.0 + (a - b) * 0.4), at));
+            if !sounds.swim.is_empty() {
+                voices.push((Voice::Event(sounds.swim, volume, 1.0 + (a - b) * 0.4), at));
+            }
         }
         None => {}
     }

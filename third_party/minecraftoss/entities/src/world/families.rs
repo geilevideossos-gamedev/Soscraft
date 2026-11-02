@@ -692,6 +692,14 @@ pub trait Family: Clone + Send + Sized + 'static {
         true
     }
 
+    fn swim_sounds(_kind: &str) -> Option<(&'static str, &'static str)> {
+        None
+    }
+
+    fn quiet_steps(_kind: &str) -> bool {
+        false
+    }
+
     fn loot(_mob: &FamilyMob<Self>, _context: &mut EntityLootContext) {}
 
     fn panicking(_mob: &FamilyMob<Self>) -> bool {
@@ -748,6 +756,23 @@ fn movement_sounds<S: Family>(kind: &str) -> MovementSounds {
         MovementSounds::monster(step)
     } else {
         MovementSounds::creature(step)
+    };
+    let sounds = match S::swim_sounds(kind) {
+        Some((swim, splash)) => MovementSounds {
+            swim,
+            splash,
+            ..sounds
+        },
+        None => sounds,
+    };
+    let sounds = if S::quiet_steps(kind) {
+        MovementSounds {
+            step: Some(""),
+            ..sounds
+        }
+        .with_step_volume(0.0)
+    } else {
+        sounds
     };
     if S::emits_sounds(kind) {
         sounds
