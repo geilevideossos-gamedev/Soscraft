@@ -37,6 +37,7 @@ Root hooks this track added (M20, "Owners of shared pieces"). The shared path pi
   - `Own` leaves the air alone: axolotls and nautiluses dry out in their own ticks.
 - **"Registered Minecraft mobs make their own swim and step sounds"** (water-hooks 2): `Family::swim_sounds(kind) -> Option<(&'static str, &'static str)>` (swim, splash; `None` keeps the category's, an empty swim sound means none) and `Family::quiet_steps(kind) -> bool` (false by default), after `emits_sounds` in `entities/src/world/families.rs`. D0's `movement_sounds::<S>` puts the pair into its `MovementSounds` and turns quiet steps into `step: Some("")` at `with_step_volume(0.0)`. In `world/emissions.rs` the own-step arm plays only above zero volume, and the swim arm plays only a sound that is not empty; the step itself (its next-step distance, the amethyst chime and W's `step` game event) and the swim's `swim` game event still happen.
 - **"Registered Minecraft mobs can move by their own rules while dying"** (squids-live 1): `const OWN_DYING_TRAVEL: bool = false` after `MOUNT` in `Family` (`entities/src/world/families.rs`). `family_base_tick` runs the shared `living::dying_travel` (no input, falling or sinking with the plain drag, the swim and step sounds) only for a dead mob with AI whose family leaves it false. A family that sets it moves its dead mobs in its own tick, as vanilla's `LivingEntity.aiStep` calls the class's own `travel` while it dies. Squids set it (`Squid.travel` is a bare `move`), and dolphins and axolotls will.
+- **"Registered Minecraft mobs can have a tracking range per kind"** (squids-drawn 1): `fn tracking_range(kind: &'static str) -> i32 { Self::TRACKING_RANGE }` after `CAGE_MARGIN` in `TerrainFamily` (`crates/minecraft_terrain/src/families.rs`). `terrain_group!`'s `tracking_range` finds the family's own `KINDS` entry for the asked kind (with or without `minecraft:`, the new private `named` beside `names`) and asks the hook with it, so `mob_tracking::tracking_range` answers per kind. Squids answer 10 for the glow squid (squids-drawn 2), and guardians will (the elder guardian).
 
 ## Protocol
 
@@ -550,4 +551,30 @@ After ddb173f4.
 
 ```
 IW4L_MINECRAFT_KIT=minecraft:glass*64
+```
+
+### Group squids-drawn
+
+#### 1. Registered Minecraft mobs can have a tracking range per kind
+
+After efd113a9.
+
+- **javap (26.3 `client.jar`):** `EntityType.SQUID` is built with `clientTrackingRange(8)` and `GLOW_SQUID` with `clientTrackingRange(10)`, so one family needs two ranges; `ELDER_GUARDIAN` (10) beside `GUARDIAN` (8) is the next family that does.
+- **Changed (terrain crate):**
+  - `families.rs`: `TerrainFamily::tracking_range(kind) -> i32`, by default the family's `TRACKING_RANGE`, after `CAGE_MARGIN`; `terrain_group!`'s `tracking_range` asks it with the family's own `KINDS` entry (a new private `named` beside `names` finds it with or without `minecraft:`). Every family answers as before.
+  - `families/water.rs`: `#[cfg(test)] mod tests;`.
+- **Added (terrain crate):** `families/water/tests.rs` (test only).
+- **Tests added** (`families::water::tests`):
+  - `a_family_s_tracking_range_by_kind_defaults_to_its_constant`: silverfish and endermites at 8 and breezes at 10 through the hook, with or without `minecraft:`; every registered kind has a range and `mob_tracking::tracking_range` gives it; an unregistered kind has none from the families and keeps its own (a zombie 8).
+- **Decisions:**
+  - **The hook takes the `KINDS` entry**, a `&'static str` with `minecraft:`, so a family compares it with its own constants; the macro, not the family, accepts the short name.
+  - **The hook test lives in M2's terrain `families/water/tests.rs`**, not in D0's `families/tests.rs` where the brief put it (the same choice as water-hooks 1 for the entity hooks), so D0's file stays as merged. It covers every registered family of this branch (silverfish, endermites, breezes, rabbits, polar bears and Margit), not only D0's two.
+- **Protocol:** none.
+- **Test steps** (regression; nothing new to see). Two windows (`scripts\mp-local.ps1`), survival, Normal, by day. Name each screenshot by its label.
+  1. The host uses a rabbit egg and a silverfish egg beside the friend: the friend sees both, as before. **m2-squids-4**
+  2. The host walks 100 blocks away and back: the friend still sees both, as before.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:rabbit_spawn_egg*2,minecraft:silverfish_spawn_egg*2
 ```

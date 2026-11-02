@@ -47,8 +47,8 @@ macro_rules! terrain_group {
 
         #[allow(unused_variables)]
         pub fn tracking_range(kind: &str) -> Option<i32> {
-            $($(#[$attr])* if $crate::families::names(<$ty as minecraftoss_entities::world::families::Family>::KINDS, kind) {
-                return Some(<$ty as $crate::families::TerrainFamily>::TRACKING_RANGE);
+            $($(#[$attr])* if let Some(kind) = $crate::families::named(<$ty as minecraftoss_entities::world::families::Family>::KINDS, kind) {
+                return Some(<$ty as $crate::families::TerrainFamily>::tracking_range(kind));
             })*
             None
         }
@@ -215,6 +215,10 @@ pub trait TerrainFamily: Registered {
     const SHADOW_RADIUS: f32;
     const MAX_HEAD_Y_ROT: f32 = 75.0;
     const CAGE_MARGIN: f32 = 0.05;
+
+    fn tracking_range(_kind: &'static str) -> i32 {
+        Self::TRACKING_RANGE
+    }
 
     fn read(_mob: &mut FamilyMob<Self>, _tag: &Tag) {}
 
@@ -448,6 +452,13 @@ fn names(kinds: &[&str], kind: &str) -> bool {
     kinds
         .iter()
         .any(|known| *known == kind || known.strip_prefix("minecraft:") == Some(kind))
+}
+
+fn named(kinds: &[&'static str], kind: &str) -> Option<&'static str> {
+    kinds
+        .iter()
+        .copied()
+        .find(|known| *known == kind || known.strip_prefix("minecraft:") == Some(kind))
 }
 
 fn spawn_one<S: TerrainFamily>(
