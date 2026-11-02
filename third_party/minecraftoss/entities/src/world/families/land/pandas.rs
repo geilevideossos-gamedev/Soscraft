@@ -14,6 +14,7 @@ use crate::world::families::{Family, FamilyMob, Hurt, MobCore, MonsterSpec, Regi
 use crate::world::{EntityWorld, PlayerHitKind, Voice};
 use glam::DVec3;
 use minecraftoss_player::inventory::{Inventory, ItemStack};
+use minecraftoss_player::mth;
 use minecraftoss_player::rng::LegacyRandom;
 use minecraftoss_player::{World, WorldItem};
 
@@ -61,6 +62,18 @@ pub const AGGRESSIVE_AMBIENT: &str = "entity.panda.aggressive_ambient";
 pub const WORRIED_AMBIENT: &str = "entity.panda.worried_ambient";
 pub const AMOUNT_UP: f32 = 0.15;
 pub const AMOUNT_DOWN: f32 = 0.19;
+pub const SNEEZE_TICKS: i32 = 20;
+pub const SNEEZE_REACH: f64 = 10.0;
+pub const SNEEZE_GIFT: &str = "minecraft:gameplay/panda_sneeze";
+pub const PRE_SNEEZE_SOUND: &str = "entity.panda.pre_sneeze";
+pub const SNEEZE_SOUND: &str = "entity.panda.sneeze";
+pub const JUMP_STRENGTH: f64 = 0.42;
+pub const ROLL_TICKS: i32 = 32;
+pub const ROLL_HOPS: [i32; 3] = [7, 15, 23];
+pub const ROLL_LIFT: f64 = 0.27;
+pub const ROLL_PUSH: f32 = 0.2;
+pub const CUB_ROLL_PUSH: f32 = 0.1;
+const DEGREES: f32 = 0.017453292;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum Gene {
@@ -181,6 +194,7 @@ pub struct Panda {
     pub sit_amount: Amount,
     pub back_amount: Amount,
     pub roll_amount: Amount,
+    pub roll_delta: DVec3,
     pub ai: Box<MonsterAi>,
 }
 
@@ -515,6 +529,95 @@ fn tail(mob: &mut FamilyMob<Panda>) {
     }
 }
 
+fn sneeze(mob: &mut FamilyMob<Panda>) -> bool {
+    let FamilyMob { core, state } = mob;
+    let goals = state.goals_mut();
+    if !goals.sneezing {
+        return false;
+    }
+    goals.sneeze_counter += 1;
+    if goals.sneeze_counter > SNEEZE_TICKS {
+        goals.sneezing = false;
+        goals.sneeze_counter = 0;
+        return true;
+    }
+    if goals.sneeze_counter == 1 {
+        let voice = Voice::Event(PRE_SNEEZE_SOUND, 1.0, 1.0);
+        core.voices.push((voice, core.body.position));
+    }
+    false
+}
+
+fn after_sneeze<W: World>(world: &mut EntityWorld, level: &W, id: u64) {
+    let mob_drops = world.mob_drops;
+    let store = Panda::store_mut(world);
+    let Some(source) = store.get_mut(id) else {
+        return;
+    };
+    let core = &mut source.core;
+    let p = core.body.position;
+    core.voices.push((Voice::Event(SNEEZE_SOUND, 1.0, 1.0), p));
+    let half = f64::from(core.body.width / 2.0) + SNEEZE_REACH;
+    let min = p - DVec3::new(half, SNEEZE_REACH, half);
+    let max = p + DVec3::new(half, f64::from(core.body.height) + SNEEZE_REACH, half);
+    for other in &mut store.mobs {
+        let able = other
+            .state
+            .goals()
+            .is_some_and(PandaGoals::can_perform_action);
+        let wet = other.state.ai.state.fluid.in_water();
+        let body = &mut other.core.body;
+        let (q, half) = (body.position, f64::from(body.width / 2.0));
+        let touches = q.x - half < max.x
+            && q.x + half > min.x
+            && q.y < max.y
+            && q.y + f64::from(body.height) > min.y
+            && q.z - half < max.z
+            && q.z + half > min.z;
+        if other.core.removed || other.core.baby || !body.on_ground || wet || !able || !touches {
+            continue;
+        }
+        let power = body.jump_power(level, JUMP_STRENGTH, 1.0);
+        if power > 1.0e-5 {
+            body.velocity.y = f64::from(power).max(body.velocity.y);
+            body.needs_sync = true;
+        }
+    }
+    if mob_drops {
+        world.family_gift(SNEEZE_GIFT, KIND, p);
+    }
+}
+
+fn handle_roll(mob: &mut FamilyMob<Panda>) {
+    let FamilyMob { core, state } = mob;
+    let goals = state.goals_mut();
+    if !goals.rolling {
+        goals.roll_counter = 0;
+        return;
+    }
+    goals.roll_counter += 1;
+    let counter = goals.roll_counter;
+    if counter > ROLL_TICKS {
+        goals.rolling = false;
+        return;
+    }
+    let body = &mut core.body;
+    let v = body.velocity;
+    if counter == 1 {
+        let yaw = f64::from(core.yaw * DEGREES);
+        let push = if core.baby { CUB_ROLL_PUSH } else { ROLL_PUSH };
+        let x = v.x + f64::from(-mth::sin(yaw) * push);
+        let z = v.z + f64::from(mth::cos(yaw) * push);
+        state.roll_delta = DVec3::new(x, 0.0, z);
+        body.velocity = state.roll_delta + DVec3::new(0.0, ROLL_LIFT, 0.0);
+    } else if ROLL_HOPS.contains(&counter) {
+        let y = if body.on_ground { ROLL_LIFT } else { v.y };
+        body.velocity = DVec3::new(0.0, y, 0.0);
+    } else {
+        body.velocity = DVec3::new(state.roll_delta.x, v.y, state.roll_delta.z);
+    }
+}
+
 fn worry(mob: &mut FamilyMob<Panda>) {
     let worried = mob.state.variant() == Gene::Worried;
     let goals = mob.state.goals_mut();
@@ -800,6 +903,7 @@ impl Family for Panda {
                 sit_amount: Amount::default(),
                 back_amount: Amount::default(),
                 roll_amount: Amount::default(),
+                roll_delta: DVec3::ZERO,
                 ai: Box::new(ai),
             },
         })
@@ -882,11 +986,19 @@ impl Family for Panda {
         let ground_food = this
             .and_then(|mob| mob.state.held.as_ref())
             .is_some_and(|stack| eats_from_ground(world, &stack.id));
-        let mut ate = None;
+        let mut sneezed = false;
         if let Some(mob) = world.family_mob_mut::<Self>(id) {
             grow(mob);
             worry(mob);
             tail(mob);
+            sneezed = sneeze(mob);
+        }
+        if sneezed {
+            after_sneeze(world, &*level, id);
+        }
+        let mut ate = None;
+        if let Some(mob) = world.family_mob_mut::<Self>(id) {
+            handle_roll(mob);
             face_ahead(mob);
             if handle_eating(mob, ground_food) {
                 ate = Some(mob.core.body.position);

@@ -1,3 +1,4 @@
+use crate::ambient_particles::Kind;
 use crate::client_mobs::ClientMobs;
 use crate::families::{ClientFx, FamilyDraw, FamilyShow, TerrainFamily};
 use crate::item_nbt::stack_tag;
@@ -37,6 +38,9 @@ pub const HELD_CAKE: i32 = 2;
 pub const HELD_OTHER: i32 = 3;
 pub const CRUMBS: usize = 6;
 pub const CRUMB_TICKS: i32 = 5;
+pub const EATING_SEEN: i32 = 0xFFFF;
+pub const SNEEZE_SEEN: i32 = 16;
+pub const SNEEZE_DROP: f64 = 0.10000000149011612;
 const DEGREES: f32 = 0.017453292;
 const BAMBOO: &str = "minecraft:bamboo";
 const CAKE: &str = "minecraft:cake";
@@ -128,6 +132,24 @@ pub fn eating_crumbs(
             (item.to_owned(), at, vec![velocity])
         })
         .collect()
+}
+
+pub fn sneeze_cloud(
+    position: DVec3,
+    old_position: DVec3,
+    body_yaw: f32,
+    width: f32,
+    eye_height: f32,
+) -> (DVec3, DVec3) {
+    let reach = f64::from(width + 1.0) * 0.5;
+    let yaw = f64::from(body_yaw * DEGREES);
+    let at = DVec3::new(
+        position.x - reach * f64::from(mth::sin(yaw)),
+        position.y + f64::from(eye_height) - SNEEZE_DROP,
+        position.z + reach * f64::from(mth::cos(yaw)),
+    );
+    let moved = position - old_position;
+    (at, DVec3::new(moved.x, 0.0, moved.z))
 }
 
 impl TerrainFamily for Panda {
@@ -296,12 +318,23 @@ impl TerrainFamily for Panda {
             let Some(shown) = poses.get(mob.core.id) else {
                 continue;
             };
-            let eating = mob.state.goals().map_or(0, |goals| goals.eat_counter);
-            let last = fx.seen.insert(mob.core.id, eating);
+            let (eating, sneeze) = mob.state.goals().map_or((0, 0), |goals| {
+                (goals.eat_counter & EATING_SEEN, goals.sneeze_counter)
+            });
+            let seen = eating | (sneeze.clamp(0, i32::from(i16::MAX)) << SNEEZE_SEEN);
+            let last = fx.seen.insert(mob.core.id, seen);
+            if last.is_some_and(|last| sneeze < last >> SNEEZE_SEEN) {
+                let (body_yaw, width) = (shown.y_body_rot, mob.core.body.width);
+                let old = shown.old_position;
+                let eye_height = mob.core.eye_height;
+                let (at, motion) = sneeze_cloud(shown.position, old, body_yaw, width, eye_height);
+                fx.ambient.add(Kind::Sneeze, at, motion);
+            }
             let Some(held) = mob.state.held.as_ref() else {
                 continue;
             };
-            if eating <= 0 || eating % CRUMB_TICKS != 0 || last == Some(eating) {
+            let last_eating = last.map(|last| last & EATING_SEEN);
+            if eating <= 0 || eating % CRUMB_TICKS != 0 || last_eating == Some(eating) {
                 continue;
             }
             let turns = (shown.x_rot, shown.y_rot, shown.y_body_rot);
@@ -769,5 +802,134 @@ mod tests {
         let goals = host.family_mob_mut::<Panda>(id).unwrap().state.goals_mut();
         goals.eat_counter = 10;
         assert!(viewers[0].crumbs(&host, &poses).is_empty(), "an empty paw");
+    }
+
+    fn clouds(viewer: &Viewer) -> Vec<DVec3> {
+        let kinds = viewer.ambient.kinds_at();
+        let sneezes = kinds.filter(|(kind, _)| *kind == Kind::Sneeze);
+        sneezes.map(|(_, at)| at).collect()
+    }
+
+    #[test]
+    fn a_sneeze_ends_in_one_green_cloud_for_every_viewer() {
+        let mut host = EntityWorld::default();
+        let tag = parse(
+            "{id:\"minecraft:panda\",Pos:[1.5d,64.0d,2.5d],Rotation:[30.0f,0.0f],Age:-24000,NoAI:1b}",
+        );
+        let id = spawn_saved(&mut host, &tag).unwrap();
+        let saved = saved_tag(&host, id, Some(tag));
+        let mut friend = EntityWorld::default();
+        assert!(spawn_tracked(&mut friend, id, &saved));
+        let mut poses = ClientMobs::default();
+        poses.spawn_missing(&crate::client_mobs::server_mobs(&host));
+        let mut viewers = [Viewer::new(5), Viewer::new(6)];
+        let mut fired = [Vec::new(), Vec::new()];
+        let sneeze = (1..=20).map(|counter| (true, counter));
+        let steps: Vec<(bool, i32)> = sneeze
+            .clone()
+            .chain([(false, 0), (false, 0)])
+            .chain(sneeze.clone())
+            .chain([(true, 1)])
+            .chain(sneeze.skip(1))
+            .chain([(false, 0)])
+            .collect();
+        for (step, &(sneezing, counter)) in steps.iter().enumerate() {
+            let goals = host.family_mob_mut::<Panda>(id).unwrap().state.goals_mut();
+            goals.sneezing = sneezing;
+            goals.sneeze_counter = counter;
+            let show = shows(&host)[&id].family.unwrap();
+            Panda::show_on(friend.family_mob_mut::<Panda>(id).unwrap(), &show);
+            for (index, world) in [&host, &friend].into_iter().enumerate() {
+                let before = clouds(&viewers[index]).len();
+                assert!(viewers[index].crumbs(world, &poses).is_empty());
+                let after = clouds(&viewers[index]);
+                if after.len() > before {
+                    assert_eq!(after.len(), before + 1, "one cloud");
+                    fired[index].push((step, after[before]));
+                }
+            }
+        }
+        let steps: Vec<usize> = fired[0].iter().map(|&(step, _)| step).collect();
+        assert_eq!(steps, [20, 42, 62], "as each sneeze ends");
+        assert_eq!(fired[1], fired[0], "the friend sees the same clouds");
+        let eyes = 64.0 + f64::from(pandas::BABY_EYE_HEIGHT) - SNEEZE_DROP;
+        for &(_, at) in &fired[0] {
+            let reach = (at.x - 1.5).hypot(at.z - 2.5);
+            assert!((reach - 0.825).abs() < 1e-6, "{at}");
+            assert!((at.y - eyes).abs() < 1e-9, "{at}");
+        }
+        let (at, motion) = sneeze_cloud(
+            DVec3::new(1.5, 64.0, 2.5),
+            DVec3::new(1.4, 63.5, 2.5),
+            90.0,
+            0.65,
+            pandas::BABY_EYE_HEIGHT,
+        );
+        let pushed = motion - DVec3::new(0.1, 0.0, 0.0);
+        assert!((at.x - 0.675).abs() < 1e-6 && (at.z - 2.5).abs() < 1e-6);
+        assert!(pushed.length() < 1e-9, "{motion}");
+    }
+
+    struct Floor;
+
+    impl minecraftoss_player::World for Floor {
+        fn block(&self, pos: minecraftoss_player::Pos) -> Option<minecraftoss_player::Block> {
+            (pos.1 < 64).then(|| minecraftoss_player::Block::new("minecraft:grass_block"))
+        }
+
+        fn set_block(
+            &mut self,
+            _pos: minecraftoss_player::Pos,
+            _block: Option<minecraftoss_player::Block>,
+        ) {
+        }
+    }
+
+    #[test]
+    fn a_sneeze_drops_a_slime_ball_about_once_in_seven_hundred() {
+        let Some(root) = std::env::var_os("MINECRAFTOSS_ROOT") else {
+            return;
+        };
+        let jar = std::path::Path::new(&root).join("client.jar");
+        let Ok(mut loot) = minecraftoss_entities::loot::EntityLootBook::from_jar(&jar, 7) else {
+            return;
+        };
+        for mob_drops in [true, false] {
+            let mut host = EntityWorld::default();
+            host.set_mob_drops(mob_drops);
+            let tag = parse(
+                "{id:\"minecraft:panda\",Pos:[1.5d,64.0d,2.5d],Age:-24000,NoAI:1b,MainGene:\"weak\",HiddenGene:\"weak\"}",
+            );
+            let id = spawn_saved(&mut host, &tag).unwrap();
+            let mut floor = Floor;
+            let mut gifts = Vec::new();
+            for _ in 0..7000 {
+                let goals = host.family_mob_mut::<Panda>(id).unwrap().state.goals_mut();
+                goals.sneezing = true;
+                goals.sneeze_counter = pandas::SNEEZE_TICKS;
+                host.tick(&mut floor);
+                gifts.extend(host.take_family_gifts());
+            }
+            if !mob_drops {
+                assert!(gifts.is_empty(), "no gifts without mob_drops");
+                continue;
+            }
+            assert_eq!(gifts.len(), 7000, "one gift a sneeze");
+            let feet = panda(&host, id).core.body.position;
+            const SLIME: &str = "minecraft:slime_ball";
+            let mut slime = 0;
+            for gift in gifts {
+                assert_eq!(
+                    (gift.table, gift.this_type, gift.at),
+                    (pandas::SNEEZE_GIFT, pandas::KIND, feet)
+                );
+                let rolled = loot.roll_table(gift.table, crate::families::GIFT, gift.this_type);
+                for stack in rolled.unwrap() {
+                    assert_eq!((stack.id.as_str(), stack.count), (SLIME, 1));
+                    slime += 1;
+                }
+            }
+            assert!((3..=20).contains(&slime), "about one in 700: {slime}");
+        }
     }
 }

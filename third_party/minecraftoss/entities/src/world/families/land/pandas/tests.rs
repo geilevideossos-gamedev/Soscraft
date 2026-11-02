@@ -11,6 +11,7 @@ use minecraftoss_player::{Block, Pos};
 struct Grove {
     bamboo: Vec<Pos>,
     pen: bool,
+    ledge: bool,
     items: Vec<WorldItem>,
     next_item: i32,
     dropped: Vec<(i32, DVec3)>,
@@ -50,7 +51,8 @@ impl World for Grove {
         if self.pen && wall && (64..=65).contains(&pos.1) {
             return Some(Block::new("minecraft:stone"));
         }
-        (pos.1 < 64).then(|| Block::new("minecraft:grass_block"))
+        let floor = if self.ledge && pos.2 >= 1 { 60 } else { 64 };
+        (pos.1 < floor).then(|| Block::new("minecraft:grass_block"))
     }
 
     fn set_block(&mut self, _: Pos, _: Option<Block>) {}
@@ -1436,4 +1438,347 @@ fn a_worried_panda_does_not_settle_on_picked_up_bamboo() {
             assert_eq!(lying + kept, 3, "and eats none of it");
         }
     }
+}
+
+fn goal_only(name: &str, gene: Gene, baby: bool, seed: u64) -> MonsterAi {
+    let mob = Panda::spawn(KIND, at(0.5, 0.5)).unwrap();
+    let mut ai = (*mob.state.ai).clone();
+    ai.retain_goals(&[name]);
+    ai.state.body.on_ground = true;
+    ai.state.random = LegacyRandom::new(seed);
+    let goals = sit_goals(&mut ai);
+    goals.variant = gene;
+    goals.baby = baby;
+    ai
+}
+
+fn goal_starts(
+    ai: &mut MonsterAi,
+    grove: &Grove,
+    updates: i32,
+    flag: fn(&mut PandaGoals) -> &mut bool,
+) -> Vec<i32> {
+    let mut starts = Vec::new();
+    for update in 1..=updates {
+        ai.state.tick_count = update * 2;
+        ai.tick_goals(grove, true);
+        if std::mem::take(flag(sit_goals(ai))) {
+            starts.push(update);
+        }
+    }
+    starts
+}
+
+fn sneezing(goals: &mut PandaGoals) -> &mut bool {
+    &mut goals.sneezing
+}
+
+fn on_back(goals: &mut PandaGoals) -> &mut bool {
+    &mut goals.on_back
+}
+
+fn rolling(goals: &mut PandaGoals) -> &mut bool {
+    &mut goals.rolling
+}
+
+#[test]
+fn a_weak_cub_sneezes_and_adults_within_ten_jump() {
+    let grove = Grove::default();
+    let sneezes = |gene: Gene, baby: bool, able: bool| {
+        let mut ai = goal_only("PandaSneezeGoal", gene, baby, 77);
+        sit_goals(&mut ai).sitting = !able;
+        goal_starts(&mut ai, &grove, 20000, sneezing).len()
+    };
+    let weak = sneezes(Gene::Weak, true, true);
+    assert!(
+        (55..=125).contains(&weak),
+        "one in 250, then one in 3000: {weak}"
+    );
+    let plain = sneezes(Gene::Normal, true, true);
+    assert!((1..=18).contains(&plain), "one in 3000: {plain}");
+    assert_eq!(sneezes(Gene::Weak, false, true), 0, "adults never sneeze");
+    assert_eq!(sneezes(Gene::Weak, true, false), 0, "nor a cub that sits");
+
+    for mob_drops in [true, false] {
+        let mut world = EntityWorld::default();
+        world.set_mob_drops(mob_drops);
+        let mut grove = Grove::default();
+        let near = panda_at(&mut world, at(5.5, 0.5));
+        let edge = panda_at(&mut world, at(10.0, 0.5));
+        let far = panda_at(&mut world, at(12.5, 0.5));
+        let high = panda_at(&mut world, DVec3::new(0.5, 75.0, 6.5));
+        let sitting = panda_at(&mut world, at(0.5, 4.5));
+        let wet = panda_at(&mut world, at(-4.5, 0.5));
+        let small = cub_at(&mut world, at(0.5, -4.5));
+        let cub = cub_at(&mut world, at(0.5, 0.5));
+        for id in [near, edge, far, high, sitting, wet, small, cub] {
+            let mob = panda_mut(&mut world, id);
+            mob.core.no_ai = true;
+            mob.core.body.on_ground = true;
+        }
+        panda_mut(&mut world, sitting).state.goals_mut().sitting = true;
+        panda_mut(&mut world, wet).state.ai.state.fluid = FluidFrame {
+            water_height: 0.4,
+            lava_height: 0.0,
+        };
+        let mob = panda_mut(&mut world, cub);
+        mob.state.set_genes(Gene::Weak, Gene::Weak);
+        mob.state.goals_mut().sneezing = true;
+        let mut counters = Vec::new();
+        let mut heard = Vec::new();
+        for tick in 1..=21 {
+            world.tick(&mut grove);
+            let goals = goals(&world, cub);
+            counters.push((goals.sneezing, goals.sneeze_counter));
+            for sound in world.take_sounds() {
+                if sound.event.contains("sneeze") {
+                    assert_eq!(sound.category, "neutral_volume");
+                    assert_eq!((sound.volume, sound.pitch), (1.0, 1.0));
+                    heard.push((tick, sound.event));
+                }
+            }
+            if tick < 21 {
+                let still = panda(&world, near).core.body.velocity.y == 0.0;
+                assert!(still && world.take_family_gifts().is_empty(), "{tick}");
+            }
+        }
+        let mut expected: Vec<_> = (1..=20).map(|counter| (true, counter)).collect();
+        expected.push((false, 0));
+        assert_eq!(counters, expected);
+        assert_eq!(
+            heard,
+            [
+                (1, PRE_SNEEZE_SOUND.to_owned()),
+                (21, SNEEZE_SOUND.to_owned())
+            ]
+        );
+        for id in [near, edge] {
+            let body = &panda(&world, id).core.body;
+            assert_eq!(
+                body.velocity.y,
+                f64::from(0.42_f32),
+                "an adult within ten jumps"
+            );
+            assert!(body.needs_sync);
+        }
+        for id in [far, high, sitting, wet, small, cub] {
+            let body = &panda(&world, id).core.body;
+            assert_eq!(body.velocity.y, 0.0, "{id}");
+        }
+        let gifts = world.take_family_gifts();
+        if mob_drops {
+            let at = panda(&world, cub).core.body.position;
+            assert_eq!(
+                gifts,
+                [crate::world::families::FamilyGift {
+                    table: SNEEZE_GIFT,
+                    this_type: KIND,
+                    at,
+                }]
+            );
+        } else {
+            assert!(gifts.is_empty(), "no gift without mob_drops");
+        }
+    }
+}
+
+#[test]
+fn a_lazy_panda_lies_on_its_back_until_clicked() {
+    let grove = Grove::default();
+    let lies = |gene: Gene, able: bool| {
+        let mut ai = goal_only("PandaLieOnBackGoal", gene, false, 31);
+        sit_goals(&mut ai).sitting = !able;
+        goal_starts(&mut ai, &grove, 4000, on_back).len()
+    };
+    assert!(
+        lies(Gene::Lazy, true) > 0,
+        "a lazy panda lies down now and then"
+    );
+    for gene in [Gene::Normal, Gene::Worried, Gene::Playful, Gene::Weak] {
+        assert_eq!(lies(gene, true), 0, "{gene:?}");
+    }
+    assert_eq!(lies(Gene::Lazy, false), 0, "not while it sits");
+
+    let wet = FluidFrame {
+        water_height: 0.4,
+        lava_height: 0.0,
+    };
+    let mut ai = goal_only("PandaLieOnBackGoal", Gene::Lazy, false, 32);
+    let mut update = 0;
+    while !sit_goals(&mut ai).on_back {
+        update += 1;
+        ai.state.tick_count = update * 2;
+        ai.tick_goals(&grove, true);
+        assert!(update < 4000);
+    }
+    ai.state.fluid = wet;
+    update += 1;
+    let got_up = update * 2;
+    ai.state.tick_count = got_up;
+    ai.tick_goals(&grove, true);
+    assert!(!sit_goals(&mut ai).on_back, "in water it gets up");
+    ai.state.fluid = FluidFrame::default();
+    while !sit_goals(&mut ai).on_back {
+        update += 1;
+        ai.state.tick_count = update * 2;
+        ai.tick_goals(&grove, true);
+    }
+    assert!(update * 2 > got_up + 200, "it waits ten seconds first");
+
+    let mut world = EntityWorld::default();
+    let mut grove = Grove::default();
+    let id = panda_with(&mut world, at(0.5, 0.5), Gene::Lazy);
+    let mut ticks = 0;
+    while !goals(&world, id).on_back {
+        world.tick(&mut grove);
+        ticks += 1;
+        assert!(ticks < 20000, "a lazy panda lies down");
+    }
+    let yaw = panda(&world, id).core.yaw;
+    for _ in 0..40 {
+        world.tick(&mut grove);
+        let mob = panda(&world, id);
+        assert!(mob.state.goals().unwrap().on_back);
+        assert_eq!(mob.core.yaw, yaw, "it stays put on its back");
+    }
+    let state = &panda(&world, id).state;
+    assert_eq!(state.back_amount.now, 1.0);
+    assert!(!state.goals().unwrap().can_perform_action());
+    let mut empty = Inventory::default();
+    let (result, events, _, dropped) = interact(&mut world, id, &mut empty, 0, false).unwrap();
+    assert_eq!(result, InteractionResult::SuccessServer);
+    assert!(events.is_empty() && dropped.is_none());
+    let goals = goals(&world, id);
+    assert!(
+        !goals.on_back && goals.can_perform_action(),
+        "a click gets it up"
+    );
+    world.tick(&mut grove);
+    assert!(panda(&world, id).state.back_amount.now < 1.0);
+}
+
+#[test]
+fn a_playful_panda_rolls_with_three_hops_in_thirty_two_ticks() {
+    let grove = Grove::default();
+    let rolls = |gene: Gene, baby: bool, on_ground: bool| {
+        let mut ai = goal_only("PandaRollGoal", gene, baby, 5);
+        ai.state.body.on_ground = on_ground;
+        goal_starts(&mut ai, &grove, 6000, rolling).len()
+    };
+    let playful = rolls(Gene::Playful, false, true);
+    assert!(
+        (170..=280).contains(&playful),
+        "one in 30, then one in 250: {playful}"
+    );
+    let cub = rolls(Gene::Normal, true, true);
+    assert!((10..=40).contains(&cub), "one in 250: {cub}");
+    assert!(
+        rolls(Gene::Playful, true, true) > 150,
+        "a playful cub rolls as often"
+    );
+    assert_eq!(
+        rolls(Gene::Normal, false, true),
+        0,
+        "only playful pandas and cubs"
+    );
+    assert_eq!(rolls(Gene::Playful, false, false), 0, "not in the air");
+    assert_eq!(ai::roll_ahead(0.0), (0, 1));
+    assert_eq!(ai::roll_ahead(90.0), (-1, 0));
+    assert_eq!(ai::roll_ahead(45.0), (-1, 1));
+    assert_eq!(ai::roll_ahead(20.0), (0, 1));
+
+    let mut world = EntityWorld::default();
+    let mut grove = Grove::default();
+    let id = panda_with(&mut world, at(0.5, 0.5), Gene::Playful);
+    panda_mut(&mut world, id).state.ai.retain_goals(&[]);
+    for _ in 0..3 {
+        world.tick(&mut grove);
+    }
+    let start = panda(&world, id).core.body.position;
+    let yaw = panda(&world, id).core.yaw;
+    panda_mut(&mut world, id).state.goals_mut().rolling = true;
+    let mut rolled = Vec::new();
+    for _ in 0..34 {
+        world.tick(&mut grove);
+        let mob = panda(&world, id);
+        let goals = mob.state.goals().unwrap();
+        assert_eq!(mob.core.yaw, yaw, "it rolls straight on");
+        let body = &mob.core.body;
+        rolled.push((
+            goals.rolling,
+            goals.roll_counter,
+            body.velocity,
+            body.on_ground,
+        ));
+    }
+    let counters: Vec<_> = rolled
+        .iter()
+        .map(|&(on, counter, ..)| (on, counter))
+        .collect();
+    let mut expected: Vec<_> = (1..=32).map(|counter| (true, counter)).collect();
+    expected.extend([(false, 33), (false, 0)]);
+    assert_eq!(counters, expected);
+    let delta = panda(&world, id).state.roll_delta;
+    let radians = f64::from(yaw * 0.017453292);
+    let ahead = DVec3::new(-radians.sin(), 0.0, radians.cos());
+    assert!((delta.length() - 0.2).abs() < 0.03, "{delta}");
+    assert!(delta.dot(ahead) > 0.17, "{delta}");
+    let mut hops = Vec::new();
+    for &(_, counter, velocity, on_ground) in &rolled[..32] {
+        if velocity.y == ROLL_LIFT {
+            hops.push(counter);
+        }
+        if counter == 1 {
+            assert_eq!(velocity, delta + DVec3::new(0.0, ROLL_LIFT, 0.0));
+        } else if ROLL_HOPS.contains(&counter) {
+            assert_eq!((velocity.x, velocity.z), (0.0, 0.0), "{counter}");
+            assert!(!on_ground || velocity.y == ROLL_LIFT, "{counter}");
+        } else {
+            assert_eq!((velocity.x, velocity.z), (delta.x, delta.z), "{counter}");
+        }
+    }
+    assert_eq!(hops, [1, 15, 23], "a hop at the start and on landing");
+    let moved = panda(&world, id).core.body.position - start;
+    assert!(moved.dot(ahead) > 3.0, "{moved}");
+    let roll = panda(&world, id).state.roll_amount;
+    assert!(
+        roll.now < 1.0 && roll.now < roll.old,
+        "it eases out of the roll"
+    );
+}
+
+#[test]
+fn a_playful_panda_rolls_off_a_ledge() {
+    let ledge = Grove {
+        ledge: true,
+        ..Grove::default()
+    };
+    let rolls = |gene: Gene, baby: bool| {
+        let mut ai = goal_only("PandaRollGoal", gene, baby, 9);
+        goal_starts(&mut ai, &ledge, 50, rolling)
+    };
+    let every: Vec<i32> = (1..=50).collect();
+    assert_eq!(rolls(Gene::Playful, false), every, "over the edge at once");
+    assert_eq!(rolls(Gene::Normal, true), every, "a cub too");
+    assert!(
+        rolls(Gene::Normal, false).is_empty(),
+        "a plain adult never rolls"
+    );
+
+    let mut world = EntityWorld::default();
+    let mut grove = Grove {
+        ledge: true,
+        ..Grove::default()
+    };
+    let id = panda_with(&mut world, at(0.5, 0.5), Gene::Playful);
+    let mut fell = None;
+    for tick in 1..=60 {
+        world.tick(&mut grove);
+        if panda(&world, id).core.body.position.y < 61.0 {
+            fell = Some(tick);
+            break;
+        }
+    }
+    assert!(fell.is_some(), "it tumbles off the edge");
+    assert!(panda(&world, id).core.body.position.z > 1.0);
 }

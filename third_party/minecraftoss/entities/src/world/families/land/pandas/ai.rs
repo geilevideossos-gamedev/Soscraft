@@ -14,6 +14,7 @@ use crate::world::families::land::animal_goals::{
     panic_environmental_cause,
 };
 use glam::DVec3;
+use minecraftoss_player::mth;
 use minecraftoss_player::path_type::PathType;
 use minecraftoss_player::{World, WorldItem};
 
@@ -46,8 +47,15 @@ pub const SIT_COOLDOWN: i32 = 10;
 pub const SIT_COOLDOWN_SPREAD: u32 = 150;
 pub const LAZY_SIT_COOLDOWN_SPREAD: u32 = 50;
 pub const ITEM_SIZE: f64 = 0.25;
+pub const LIE_CHANCE: u32 = 400;
+pub const LIE_COOLDOWN: i32 = 200;
+pub const SNEEZE_CHANCE: u32 = 6000;
+pub const WEAK_SNEEZE_CHANCE: u32 = 500;
+pub const ROLL_CHANCE: u32 = 500;
+pub const PLAYFUL_ROLL_CHANCE: u32 = 60;
+const DEGREES: f32 = 0.017453292;
 
-pub const GOAL_NAMES: [&str; 12] = [
+pub const GOAL_NAMES: [&str; 15] = [
     "FloatGoal",
     "PandaPanicGoal",
     "PandaBreedGoal",
@@ -56,8 +64,11 @@ pub const GOAL_NAMES: [&str; 12] = [
     "PandaAvoidGoal",
     "PandaAvoidGoal",
     "PandaSitGoal",
+    "PandaLieOnBackGoal",
+    "PandaSneezeGoal",
     "PandaLookAtPlayerGoal",
     "RandomLookAroundGoal",
+    "PandaRollGoal",
     "FollowParentGoal",
     "WaterAvoidingRandomStrollGoal",
 ];
@@ -162,8 +173,11 @@ fn goals() -> GoalSelector<MonsterGoalContext> {
         },
     );
     selector.add(7, PandaSitGoal::default());
+    selector.add(8, PandaLieOnBackGoal::default());
+    selector.add(8, PandaSneezeGoal);
     selector.add(9, PandaLookAtPlayerGoal);
     selector.add(10, RandomLookGoal);
+    selector.add(12, PandaRollGoal);
     selector.add(13, FollowParentGoal::<PandaGoals>::new(FOLLOW_PARENT_SPEED));
     selector.add(14, StrollGoal::new(STROLL_SPEED, STROLL_PROBABILITY));
     selector
@@ -221,6 +235,17 @@ fn try_to_sit(ctx: &mut MonsterGoalContext) {
         goals.sat_down = true;
         goals.sitting = true;
     }
+}
+
+fn stays_down(ctx: &mut MonsterGoalContext) -> bool {
+    if ctx.fluid.in_water() {
+        return false;
+    }
+    let lazy = panda(ctx).is_some_and(|goals| goals.variant == Gene::Lazy);
+    if !lazy && ctx.random.next_int(reduced_tick_delay(SIT_LASTS)) == 1 {
+        return false;
+    }
+    ctx.random.next_int(reduced_tick_delay(SIT_ENDS)) != 1
 }
 
 fn worried_and_able(ctx: &MonsterGoalContext) -> bool {
@@ -423,14 +448,7 @@ impl Goal<MonsterGoalContext> for PandaSitGoal {
     }
 
     fn can_continue(&mut self, ctx: &mut MonsterGoalContext, _world: &dyn World) -> bool {
-        if ctx.fluid.in_water() {
-            return false;
-        }
-        let lazy = panda(ctx).is_some_and(|goals| goals.variant == Gene::Lazy);
-        if !lazy && ctx.random.next_int(reduced_tick_delay(SIT_LASTS)) == 1 {
-            return false;
-        }
-        ctx.random.next_int(reduced_tick_delay(SIT_ENDS)) != 1
+        stays_down(ctx)
     }
 
     fn start_world(&mut self, ctx: &mut MonsterGoalContext, world: &dyn World) {
@@ -487,6 +505,138 @@ impl Goal<MonsterGoalContext> for PandaSitGoal {
     fn tick(&mut self, ctx: &mut MonsterGoalContext) {
         if panda(ctx).is_some_and(|goals| goals.holding && !goals.sitting) {
             try_to_sit(ctx);
+        }
+    }
+}
+
+#[derive(Clone, Default)]
+struct PandaLieOnBackGoal {
+    cooldown: i32,
+}
+
+impl Goal<MonsterGoalContext> for PandaLieOnBackGoal {
+    fn controls(&self) -> Controls {
+        Controls::new(&[])
+    }
+
+    fn can_start(&mut self, ctx: &mut MonsterGoalContext, _world: &dyn World) -> bool {
+        let lazy = panda(ctx).is_some_and(|goals| goals.variant == Gene::Lazy);
+        self.cooldown < ctx.tick_count
+            && lazy
+            && can_perform_action(ctx)
+            && ctx.random.next_int(reduced_tick_delay(LIE_CHANCE)) == 1
+    }
+
+    fn can_continue(&mut self, ctx: &mut MonsterGoalContext, _world: &dyn World) -> bool {
+        stays_down(ctx)
+    }
+
+    fn start(&mut self, ctx: &mut MonsterGoalContext) {
+        if let Some(goals) = ctx.extra.get_mut::<PandaGoals>() {
+            goals.on_back = true;
+        }
+        self.cooldown = 0;
+    }
+
+    fn stop(&mut self, ctx: &mut MonsterGoalContext) {
+        if let Some(goals) = ctx.extra.get_mut::<PandaGoals>() {
+            goals.on_back = false;
+        }
+        self.cooldown = ctx.tick_count + LIE_COOLDOWN;
+    }
+}
+
+#[derive(Clone)]
+struct PandaSneezeGoal;
+
+impl Goal<MonsterGoalContext> for PandaSneezeGoal {
+    fn controls(&self) -> Controls {
+        Controls::new(&[])
+    }
+
+    fn can_start(&mut self, ctx: &mut MonsterGoalContext, _world: &dyn World) -> bool {
+        let Some((baby, weak)) = panda(ctx).map(|goals| (goals.baby, goals.variant == Gene::Weak))
+        else {
+            return false;
+        };
+        if !baby || !can_perform_action(ctx) {
+            return false;
+        }
+        if weak && ctx.random.next_int(reduced_tick_delay(WEAK_SNEEZE_CHANCE)) == 1 {
+            return true;
+        }
+        ctx.random.next_int(reduced_tick_delay(SNEEZE_CHANCE)) == 1
+    }
+
+    fn can_continue(&mut self, _ctx: &mut MonsterGoalContext, _world: &dyn World) -> bool {
+        false
+    }
+
+    fn start(&mut self, ctx: &mut MonsterGoalContext) {
+        if let Some(goals) = ctx.extra.get_mut::<PandaGoals>() {
+            goals.sneezing = true;
+        }
+    }
+}
+
+pub fn roll_ahead(yaw: f32) -> (i32, i32) {
+    let yaw = f64::from(yaw * DEGREES);
+    let step = |d: f32| {
+        if d.abs() <= 0.5 {
+            0
+        } else if d > 0.0 {
+            1
+        } else {
+            -1
+        }
+    };
+    (step(-mth::sin(yaw)), step(mth::cos(yaw)))
+}
+
+#[derive(Clone)]
+struct PandaRollGoal;
+
+impl Goal<MonsterGoalContext> for PandaRollGoal {
+    fn controls(&self) -> Controls {
+        Controls::new(&[Control::Move, Control::Look, Control::Jump])
+    }
+
+    fn can_start(&mut self, ctx: &mut MonsterGoalContext, world: &dyn World) -> bool {
+        let Some((baby, playful)) =
+            panda(ctx).map(|goals| (goals.baby, goals.variant == Gene::Playful))
+        else {
+            return false;
+        };
+        if !(baby || playful) || !ctx.body.on_ground || !can_perform_action(ctx) {
+            return false;
+        }
+        let (dx, dz) = roll_ahead(ctx.yaw);
+        let p = ctx.body.position;
+        let below = (
+            p.x.floor() as i32 + dx,
+            p.y.floor() as i32 - 1,
+            p.z.floor() as i32 + dz,
+        );
+        if crate::shulker::is_air(world, below) {
+            return true;
+        }
+        if playful && ctx.random.next_int(reduced_tick_delay(PLAYFUL_ROLL_CHANCE)) == 1 {
+            return true;
+        }
+        ctx.random.next_int(reduced_tick_delay(ROLL_CHANCE)) == 1
+    }
+
+    fn can_continue(&mut self, _ctx: &mut MonsterGoalContext, _world: &dyn World) -> bool {
+        false
+    }
+
+    fn interruptible(&self) -> bool {
+        false
+    }
+
+    fn start(&mut self, ctx: &mut MonsterGoalContext) {
+        if let Some(goals) = ctx.extra.get_mut::<PandaGoals>() {
+            goals.rolling = true;
         }
     }
 }
