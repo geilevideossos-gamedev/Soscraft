@@ -166,7 +166,7 @@ impl EntityView {
             self.spit_puffs();
             self.ravager_effects();
             self.wither_effects();
-            minecraft_terrain::families::client_effects(&self.world, &self.client, &mut minecraft_terrain::families::ClientFx { ambient: &mut self.ambient, spell: &mut self.spell, portal: &mut self.portal, poof: &mut self.poof, sounds: &mut self.sounds, random: &mut self.random, seen: &mut self.family_seen });
+            minecraft_terrain::families::client_effects(&self.world, &self.client, &mut minecraft_terrain::families::ClientFx { ambient: &mut self.ambient, spell: &mut self.spell, portal: &mut self.portal, poof: &mut self.poof, item_crumbs: &mut self.item_crumbs, sounds: &mut self.sounds, random: &mut self.random, seen: &mut self.family_seen });
             minecraft_terrain::families::block_dust(&self.world, &self.client, &mut self.block_dust);
             let flaps = self.drawn_dragons.tick();
             self.dragon_voices(&flaps);

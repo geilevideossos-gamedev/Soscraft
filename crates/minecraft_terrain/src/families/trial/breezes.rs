@@ -246,6 +246,7 @@ mod tests {
         let mut spell = SpellParticles::new(1);
         let mut portal = PortalParticles::default();
         let mut poof = PoofParticles::default();
+        let mut item_crumbs = Vec::new();
         let mut sounds = Vec::new();
         let mut random = LegacyRandom::new(1);
         let mut seen = HashMap::new();
@@ -256,6 +257,7 @@ mod tests {
                 spell: &mut spell,
                 portal: &mut portal,
                 poof: &mut poof,
+                item_crumbs: &mut item_crumbs,
                 sounds: &mut sounds,
                 random: &mut random,
                 seen: &mut seen,

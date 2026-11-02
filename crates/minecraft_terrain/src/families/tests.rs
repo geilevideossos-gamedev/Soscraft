@@ -198,6 +198,7 @@ fn client_effects_forget_registered_mobs_that_are_gone() {
     let mut spell = SpellParticles::new(1);
     let mut portal = PortalParticles::default();
     let mut poof = PoofParticles::default();
+    let mut item_crumbs = Vec::new();
     let mut sounds = Vec::new();
     let mut random = LegacyRandom::new(1);
     let mut seen: HashMap<u64, i32> = [(fish, 3), (mite, 4), (999, 5)].into_iter().collect();
@@ -206,6 +207,7 @@ fn client_effects_forget_registered_mobs_that_are_gone() {
         spell: &mut spell,
         portal: &mut portal,
         poof: &mut poof,
+        item_crumbs: &mut item_crumbs,
         sounds: &mut sounds,
         random: &mut random,
         seen: &mut seen,
@@ -216,4 +218,43 @@ fn client_effects_forget_registered_mobs_that_are_gone() {
     client_effects(&world, &mobs, &mut fx);
     assert!(fx.seen.is_empty(), "both left with their chunk");
     assert!(world.family::<Endermite>().is_empty());
+}
+
+#[test]
+fn client_effects_lend_the_viewers_item_crumbs_to_every_family() {
+    let mut world = EntityWorld::default();
+    spawn(&mut world, FISH, 0.5);
+    spawn(&mut world, MITE, 2.5);
+    let mobs = seen_by_client(&world);
+    let egg = (
+        "minecraft:egg".to_owned(),
+        DVec3::new(0.5, 65.0, 0.5),
+        vec![Vec3::ZERO; 8],
+    );
+    let mut ambient = AmbientParticles::new(1);
+    let mut spell = SpellParticles::new(1);
+    let mut portal = PortalParticles::default();
+    let mut poof = PoofParticles::default();
+    let mut item_crumbs = vec![egg.clone()];
+    let mut sounds = Vec::new();
+    let mut random = LegacyRandom::new(1);
+    let mut seen = HashMap::new();
+    let mut fx = ClientFx {
+        ambient: &mut ambient,
+        spell: &mut spell,
+        portal: &mut portal,
+        poof: &mut poof,
+        item_crumbs: &mut item_crumbs,
+        sounds: &mut sounds,
+        random: &mut random,
+        seen: &mut seen,
+    };
+    for _ in 0..20 {
+        client_effects(&world, &mobs, &mut fx);
+    }
+    assert_eq!(
+        item_crumbs,
+        [egg],
+        "the viewer keeps its crumbs to draw, and the pests scatter none"
+    );
 }

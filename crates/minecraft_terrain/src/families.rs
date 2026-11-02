@@ -8,7 +8,7 @@ use crate::mob_tracking::MobShow;
 use crate::poof_particles::PoofParticles;
 use crate::portal_particles::PortalParticles;
 use crate::spell_particles::SpellParticles;
-use glam::DVec3;
+use glam::{DVec3, Vec3};
 use minecraftoss_core::nbt::Tag;
 use minecraftoss_entities::look::LookControl;
 use minecraftoss_entities::movement::Body;
@@ -203,6 +203,7 @@ pub struct ClientFx<'a> {
     pub spell: &'a mut SpellParticles,
     pub portal: &'a mut PortalParticles,
     pub poof: &'a mut PoofParticles,
+    pub item_crumbs: &'a mut Vec<(String, DVec3, Vec<Vec3>)>,
     pub sounds: &'a mut Vec<(String, DVec3, f32, f32)>,
     pub random: &'a mut LegacyRandom,
     pub seen: &'a mut HashMap<u64, i32>,
