@@ -990,5 +990,30 @@ After 269b277f.
 - **Changed (game code):** `crates/minecraft_terrain/src/families/land/pandas.rs`: `gene` falls back with `unwrap_or("")`. The behaviour is the same: an empty name matches no gene, so `Gene::from_name` still gives `normal`, as vanilla's `Gene.CODEC` does for a missing or unknown name. The file still passes `rustfmt --check --edition 2021`.
 - **Tests:** none added; `families::land::pandas::tests::a_panda_saves_and_loads_with_its_genes_held_item_love_and_attributes` already loads a panda without genes (both `normal`) and one with the unknown `sleepy` (main `normal`, hidden `brown`).
 - **Runs:** `test -p minecraft_terrain --locked` (1716 passed, 3 ignored), `check -p launcher --locked` (green; only the old `must_use` warning).
-- **Test steps:** none new; the save and load steps of pandas-live 2 (spawn pandas, save and quit, load: every panda keeps its genes) still hold.
-- **Kit:** none.
+- **Test steps** (written down after the commit, in the final verification's commit; release build, survival, Normal, by day on flat grass; name each screenshot by its label):
+  1. `/summon minecraft:panda ~ ~ ~4 {MainGene:"lazy",HiddenGene:"normal"}`, `/summon minecraft:panda ~2 ~ ~4 {MainGene:"brown",HiddenGene:"brown"}` and `/summon minecraft:panda ~4 ~ ~4 {MainGene:"sleepy"}`: a lazy-faced panda, a brown panda and a plain black-and-white one (an unknown gene reads as normal). **m1-fix-panda-genes-1**
+  2. Save, quit and load: the three pandas look exactly as before. **m1-fix-panda-genes-2**
+- **Kit:** none (the steps use `/summon`).
+
+### Final verification (m1b)
+
+After d152d507, on the whole of segment m1b (`r10-m1b-base..HEAD`).
+
+- **Crates touched:** `minecraft_survival` (the H2 line in `entity_view.rs`), `minecraft_terrain`, `minecraftoss-entities`, `minecraftoss-player`, `minecraftoss-world`.
+- **Clippy** (`clippy -p minecraft_survival -p minecraft_terrain -p minecraftoss-entities -p minecraftoss-player -p minecraftoss-world --locked --all-targets -- -A clippy::approx_constant`, with `full-suite.ps1`'s two empty stand-in scenario files, removed again afterwards): green. The first run warned once on a line this segment added (review fix 2, `d152d507`); the re-run has none. `minecraft_terrain` keeps 33 old warnings and `minecraft_survival` one (`menus.rs`), all on lines from before `r10-m1b-base` (the four in `server_mobs.rs` among them); the three vendored crates have none.
+- **Tests:**
+  - `test -p minecraft_terrain --locked`: 1716 passed, 3 ignored.
+  - `test -p minecraftoss-entities --locked`: 587 passed.
+  - `test -p minecraftoss-player --locked`: 200 passed.
+  - `test -p minecraftoss-world --locked`: 136 passed.
+  - `test -p minecraft_survival --locked`: 817 and 1 passed.
+- **rustfmt:** the five new `.rs` files of the segment (the terrain's `families/land/pandas.rs` and `pandas/render.rs`, the entities crate's `land/pandas.rs`, `pandas/ai.rs` and `pandas/tests.rs`) have no `rustfmt --check --edition 2021` diff.
+- **Fixes:** review fix 2 (`d152d507`, the clippy warning). No test failed.
+
+### The segment's kit
+
+One line for every step of segment m1b (pandas-live, pandas-drawn, pandas-eating, pandas-moods, pandas-thunder, M1-3 as a whole and the review fixes), 22 stacks. The friend's `.env` needs the same line.
+
+```
+IW4L_MINECRAFT_KIT=minecraft:panda_spawn_egg*16,minecraft:bamboo*64,minecraft:bamboo*64,minecraft:bone_meal*32,minecraft:cake,minecraft:cake,minecraft:cake,minecraft:iron_sword,minecraft:bow,minecraft:arrow*64,minecraft:shield,minecraft:flint_and_steel,minecraft:cactus*4,minecraft:sand*8,minecraft:cobblestone*64,minecraft:zombie_spawn_egg*2,minecraft:spawner,minecraft:golden_dandelion*2,minecraft:water_bucket,minecraft:water_bucket,minecraft:iron_shovel,minecraft:cooked_beef*32
+```
