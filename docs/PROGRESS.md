@@ -22,7 +22,7 @@ Started 2026-10-28 on `minecraft-survival` at 532474d6. The owner's brief is the
 
 ## Where it stands
 
-**Resumed 2026-11-02 at about 08:45.** `minecraft-survival` was merged into `track-w` (no conflicts, for D's block dust hook) and into `track-e1` (c51af5b6, one test-module conflict, both kept); E1's target moved to `D:\iw4l-wt	rack-e1` (decisions). Running: w2, f3, e2b and the e1b review, each with its `docs/round10/runs/<segment>-resume.json` (only the groups not yet committed, the WIP commit named in the group prompt). d0b starts in the first free place, then m1b and m3a.
+**Resumed 2026-11-02 at about 08:45.** `minecraft-survival` was merged into `track-w` (no conflicts, for D's block dust hook) and into `track-e1` (c51af5b6, one test-module conflict, both kept); E1's target moved to `D:\iw4l-wt\track-e1` (decisions). Running: w2, f3, e2b and the e1b review, each with its `docs/round10/runs/<segment>-resume.json` (only the groups not yet committed, the WIP commit named in the group prompt); workflow runs w2 `wf_13a87e08-1ad`, f3 `wf_f38a4356-1d0`, e2b `wf_e463c7a4-983`, e1b review `wf_3667b159-410`. d0b starts in the first free place (its spec now carries the flyers' needs), then m1b and m3a.
 
 **Stopped for the week on 2026-10-29 at about 17:30** (the owner's weekly usage ran out). No track run is going. Every track branch and every `r10-*-base` tag is on `origin` (checked with `git ls-remote` on 2026-10-30). The installed game is still release 5 (e7c9a1c8, protocol 10); its test steps are `docs/round10/release-5-tests.md`. Since then `minecraft-survival` has only docs, scripts and licence commits, no game code.
 
