@@ -557,7 +557,8 @@ mod tests {
         let mut friend = EntityWorld::default();
         assert!(spawn_tracked(&mut friend, id, &saved));
         friend.warden_mut(id).unwrap().core.tick_count = 7;
-        let steps: [(i32, fn(&mut FamilyMob<Warden>, i32)); 6] = [
+        type Step = fn(&mut FamilyMob<Warden>, i32);
+        let steps: [(i32, Step); 6] = [
             (100, |mob, _| wardens::set_pose(mob, Pose::Sniffing)),
             (110, |mob, _| wardens::set_pose(mob, Pose::Roaring)),
             (130, |mob, now| mob.state.animations.tendril = Some(now)),

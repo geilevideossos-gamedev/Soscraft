@@ -766,6 +766,17 @@ After fe743cdc ("Minecraft wardens' hearts beat and their digging throws up the 
 IW4L_MINECRAFT_KIT=minecraft:shield,minecraft:diamond_chestplate+protection=4,minecraft:ender_pearl*16,minecraft:golden_apple*8,minecraft:cooked_beef*16
 ```
 
+## Final verification of segment w2
+
+### 1. Track W's warden code passes clippy
+
+After f1897b11 ("A Minecraft warden climbing out or digging in still feels what bumps into it").
+
+- **Cause:** clippy on the crates the segment touched (`git diff --stat minecraft-survival...HEAD`: `minecraft_survival`, `minecraft_terrain`, `minecraftoss-entities`, `minecraftoss-world`; `--all-targets`) warned on one line the segment added: `type_complexity` for the list of steps in `families::deep_dark::wardens::tests::a_friend_sees_a_warden_roar_and_boom_at_the_same_ticks` (7f221998).
+- **Changed:** the steps' function type gets an alias (`Step`). No behaviour changed. The warnings left on these crates are older than the segment (for example the `unwrap_or_default` of the villager offers and the banner patterns in `server.rs`); the two vendored crates have none.
+- **Tests:** none added. minecraftoss-entities 585, minecraftoss-world 136, minecraft_terrain 1720 (3 ignored) and minecraft_survival 819 + 1 pass; `check -p launcher` is green. The segment's six new files pass `rustfmt --check` and its added lines hold no comments.
+- **Test steps:** none (no behaviour changed).
+
 ## Combined kit
 
 One kit for the track's main steps (27 stacks): darkness (w01, w03; step 2 needs a cave or torches), sensors (w04 to w06), block, player and gun vibrations (w07 to w10), amethyst (w08), shriekers (w23, w26; the summoning shrieker comes from `/setblock`), catalysts (w25) and the friend leaving with a chest open (w27). The steps that need other items (lava and powder snow in darkness step 5, the trident, trapdoors, gates, plates, the bell, candles, pistons, sheep, shears, horses, the totem) use their commit's own kit line above. The warden steps (w11 to w22) use W6's kit line (group warden-render, commit 2).
@@ -815,6 +826,8 @@ Group warden-render, commit 1: no message or codec change. The warden's `FamilyS
 Group warden-render, commit 2: no message or codec change (the heartbeat and the bits of ground are each viewer's own, from commit 1's `FamilyShow`).
 
 Review of segment w2: no message or codec change.
+
+Final verification of segment w2: no message or codec change.
 
 ## State doc changes
 
