@@ -440,6 +440,7 @@ fn uv(corner: usize, [u0, v0, u1, v1]: [f32; 4]) -> [f32; 2] {
     }
 }
 
+#[allow(clippy::too_many_arguments, clippy::needless_range_loop)]
 fn raster_triangle(
     output: &mut RgbaImage,
     depth: &mut [Vec<f32>],

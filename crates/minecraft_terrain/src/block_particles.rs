@@ -455,6 +455,10 @@ impl BlockParticles {
     pub fn len(&self) -> usize {
         self.fragments.len()
     }
+
+    pub fn is_empty(&self) -> bool {
+        self.fragments.is_empty()
+    }
 }
 
 fn hit_point(

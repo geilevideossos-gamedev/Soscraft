@@ -64,7 +64,7 @@ impl WalkAnimations {
     pub fn tick(&mut self, mobs: impl IntoIterator<Item = (u64, DVec3, DVec3, bool)>) {
         let mut next = HashMap::with_capacity(self.0.len());
         for (id, previous, current, baby) in mobs {
-            let mut walk = self.0.get(&id).copied().unwrap_or_default();
+            let mut walk = self.0.get(&id).map_or_else(WalkAnimation::default, |walk| *walk);
             let (dx, dz) = (current.x - previous.x, current.z - previous.z);
             walk.update((dx * dx + dz * dz).sqrt() as f32, baby);
             next.insert(id, walk);
@@ -73,7 +73,7 @@ impl WalkAnimations {
     }
 
     pub fn get(&self, id: u64) -> WalkAnimation {
-        self.0.get(&id).copied().unwrap_or_default()
+        self.0.get(&id).map_or_else(WalkAnimation::default, |walk| *walk)
     }
 }
 

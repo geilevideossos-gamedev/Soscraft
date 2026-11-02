@@ -683,8 +683,7 @@ fn resolve_choices(pack: &PackStack, block: &Block, choices: &[&Value]) -> Resul
         let textures = model
             .get("textures")
             .and_then(Value::as_object)
-            .cloned()
-            .unwrap_or_default();
+            .map_or_else(serde_json::Map::new, Clone::clone);
         let Some(raw_elements) = model.get("elements").and_then(Value::as_array) else {
             // Fluid block models deliberately contain only a particle texture in vanilla.
             if matches!(block.id.path.as_str(), "water" | "lava") {
@@ -1001,7 +1000,7 @@ fn choose_models<'a>(
         for part in parts {
             if part
                 .get("when")
-                .map_or(true, |w| when_matches(w, properties))
+                .is_none_or(|w| when_matches(w, properties))
             {
                 choices.push(choice(
                     part.get("apply")

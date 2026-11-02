@@ -109,8 +109,8 @@ impl Filter {
     fn matches(&self, id: &ResourceId, path: &str) -> bool {
         self.namespace
             .as_ref()
-            .map_or(true, |r| r.is_match(&id.namespace))
-            && self.path.as_ref().map_or(true, |r| r.is_match(path))
+            .is_none_or(|r| r.is_match(&id.namespace))
+            && self.path.as_ref().is_none_or(|r| r.is_match(path))
     }
 }
 
@@ -196,12 +196,11 @@ impl Pack {
         }
         let description = p
             .get("description")
-            .map(|v| {
+            .map_or_else(String::new, |v| {
                 v.as_str()
                     .map(str::to_owned)
                     .unwrap_or_else(|| v.to_string())
-            })
-            .unwrap_or_default();
+            });
         let mut filters = Vec::new();
         if let Some(filter) = meta.get("filter") {
             let block = filter

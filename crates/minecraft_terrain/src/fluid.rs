@@ -827,7 +827,7 @@ mod tests {
             for &(when, expected_count, edge_level) in observations {
                 sim.tick(&mut scene, when);
                 let count = (-3..=3)
-                    .flat_map(|x| (-3..=3).filter_map(move |z| Some((x, z))))
+                    .flat_map(|x| (-3..=3).map(move |z| (x, z)))
                     .filter(|&(x, z)| {
                         FluidCell::at(&scene, (x, 1, z)).is_some_and(|f| f.kind == kind)
                     })

@@ -145,6 +145,7 @@ pub struct HandcraftedScene {
     revision: u64,
     changed: BTreeSet<BlockPos>,
 }
+type ChunkEdits<'a> = (Option<&'a Arc<BTreeMap<BlockPos, Block>>>, Option<&'a Arc<BTreeSet<BlockPos>>>);
 impl HandcraftedScene {
     pub fn new() -> Self {
         let mut s = Self::default();
@@ -318,10 +319,7 @@ impl HandcraftedScene {
     pub fn chunk_edits(
         &self,
         pos: ChunkPos,
-    ) -> (
-        Option<&Arc<BTreeMap<BlockPos, Block>>>,
-        Option<&Arc<BTreeSet<BlockPos>>>,
-    ) {
+    ) -> ChunkEdits<'_> {
         (self.blocks.get(&pos), self.cleared.get(&pos))
     }
     pub fn set(&mut self, pos: BlockPos, block: Option<Block>) {

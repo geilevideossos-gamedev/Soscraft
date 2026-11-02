@@ -692,7 +692,7 @@ impl ServerSim {
     /// The player's trading screen as the client shows it.
     pub fn merchant_view(&mut self, player: u64) -> Option<MerchantView> {
         let menu = self.mobs.merchant_menu(player)?.clone();
-        let offers = self.mobs.villager_offers(menu.villager).map(<[_]>::to_vec).unwrap_or_default();
+        let offers = self.mobs.villager_offers(menu.villager).map_or_else(Vec::new, <[_]>::to_vec);
         let trader = self.mobs.is_wandering_trader(menu.villager);
         let (profession, level, xp) = match self.mobs.villagers().iter().find(|e| e.id == menu.villager) {
             Some(villager) => (villager.villager.profession.id(), villager.villager.level, villager.villager.xp),
@@ -4069,7 +4069,7 @@ impl ServerSim {
     /// offers each touching stack (item, count, components) and returns how
     /// many the inventory took. Returns (entity ID, position, item, count,
     /// components) per pickup.
-    pub fn pickup(&mut self, feet: [f64; 3], mut take: impl FnMut(&str, i32, Option<&str>) -> i32) -> Vec<(i32, [f64; 3], String, i32, Option<String>)> {
+    pub fn pickup(&mut self, feet: [f64; 3], mut take: impl FnMut(&str, i32, Option<&str>) -> i32) -> Vec<PickedStack> {
         self.level
             .player_touch_items(feet, |stack| {
                 let components = components_of(stack);

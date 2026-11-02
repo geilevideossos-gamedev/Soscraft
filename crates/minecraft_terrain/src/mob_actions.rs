@@ -65,7 +65,7 @@ type DeathRemains = (Vec<(ItemStack, DVec3)>, Vec<(DVec3, i32, i32)>);
 pub fn death_remains(world: &mut EntityWorld, loot: Option<&mut EntityLootBook>) -> DeathRemains {
     let deaths = world.take_deaths();
     let experience = deaths.iter().map(|d| (d.position, d.experience, d.reward)).collect();
-    (loot.map(|book| book.death_drops(deaths)).unwrap_or_default(), experience)
+    (loot.map_or_else(Vec::new, |book| book.death_drops(deaths)), experience)
 }
 
 /// Whether a hit can land on the mob `id` (a creeper that blew up is gone).

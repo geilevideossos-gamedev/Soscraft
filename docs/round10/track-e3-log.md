@@ -61,3 +61,43 @@ After 17a138f2. Gap code-2, part 1.
   - No other file named the flag outside the round logs and briefs (`git grep approx_constant`), which stay as written.
 - **Tests:** no new tests (nothing changes in behaviour). `clippy -p minecraft_terrain --locked --all-targets` with no extra flag: exit 0, lib 33 warnings, lib test 34 (33 duplicates), 34 distinct locations, none `approx_constant`, `excessive_precision` or `assertions_on_constants`. These are the older warnings the next commit fixes. `check -p launcher --locked`: green.
 - **Owner's steps:** none in game (lints and docs only). No kit line.
+
+### 3. minecraft_terrain's older clippy warnings are fixed with no change in behaviour
+
+After c1b6ecd6. Gap code-2, parts 2 and 3.
+
+- **Why:** with the workspace lints in place, `clippy -p minecraft_terrain --locked --all-targets` still reported the crate's older warnings: lib 33, lib test 34 (33 duplicates), 34 distinct locations (the run with c1b6ecd6's lints in place, before this commit). They were exactly the brief's table (taken at 9c6efebd), with lines moved by the merges since: `pickup` is now `server.rs:4072` and its alias `PickedStack` `:4519`, `pack.rs:110` and `:113` are the two `map_or(true, ..)` at `:112` and `:113`, `model.rs:1002`, `mesh.rs:2625` for the late-initialised corners. No new warning had appeared.
+- **Changed** (14 files, one line per site where the fix allows it, no comments, no other line touched):
+  - `block_particles.rs:455`: `is_empty` after `len` (`len_without_is_empty`).
+  - `server.rs:695` `merchant_view` offers: `.map_or_else(Vec::new, <[_]>::to_vec)`. `server.rs:4072` `pickup` returns `Vec<PickedStack>`, the alias with the same tuple (`type_complexity`).
+  - `mob_actions.rs:68` `death_remains`: `loot.map_or_else(Vec::new, |book| book.death_drops(deaths))`.
+  - `item_icons.rs:36` tints: `.transpose()?.into_iter().flatten().collect::<Vec<_>>()`. `item_icons.rs:94` language: the `map` becomes `map_or_else(HashMap::new, ..)` and the `unwrap_or_default` line goes.
+  - `mesh.rs`: `:417` item tints as `item_icons.rs:36`; `:974` `.transpose()?.into_iter().flatten().map(..)`; `:677` block models through `std::collections::hash_map::Entry::Vacant` and `slot.insert(variants)` (`map_entry`); `:1643` `length <= 0.0 || !length.is_finite()` (a NaN length still returns `"up"` through `!is_finite()`); `:1975` `!sheet.width().is_multiple_of(width)` and the same for the height, after the zero test that keeps the zero case; `:2236` `full_cube.then_some(match dir { .. })` (the match only picks constant arrays); `:2528` `#[allow(clippy::too_many_arguments)]` on `fluid_quad`, as on `append_elements`; `:2621` `let (nw, ne, sw, se) = if h >= 1.0 { (1.0, 1.0, 1.0, 1.0) } else { ..; (fluid_corner_height(..), ..) };` with the same four calls in the same order.
+  - `model.rs:687` textures: `.map_or_else(serde_json::Map::new, Clone::clone)` in place of `.cloned().unwrap_or_default()`. `model.rs:1002`, `pack.rs:112`, `:113`: `is_none_or(..)` in place of `map_or(true, ..)`.
+  - `pack.rs:204` description: the `map` becomes `map_or_else(String::new, ..)` (the value is a `String`, not a `Vec` as the brief's table said).
+  - `item_icon.rs:443` `raster_triangle`: `#[allow(clippy::too_many_arguments, clippy::needless_range_loop)]` (`x` and `y` are pixel coordinates as well as indices).
+  - Type aliases next to each `type_complexity` site: `scene.rs` `ChunkEdits<'a>` between `HandcraftedScene` and its `impl`, so `chunk_edits` returns `ChunkEdits<'_>`; `cow_render.rs` `CowBox` and `HornBox` inside `append_cows`, each on the line above its `let`; `skeleton_render.rs` `Mushroom` above `MUSHROOMS`'s doc lines.
+  - `server_mobs.rs`: `:437` `seed`; `:1313` a held trade item's components `.map(tag_json).as_ref().and_then(serde_json::Value::as_object).map_or_else(serde_json::Map::new, Clone::clone)`; `:2158` `.map_or_else(Vec::new, <[Tag]>::to_vec)`; `:2220` the `map` becomes `map_or_else(Vec::new, ..)` and the `unwrap_or_default` line goes.
+  - `walk_animation.rs:67`, `:76`: `self.0.get(&id).map_or_else(WalkAnimation::default, |walk| *walk)`. M3's walk target (`:21`-`:22`) and the `mob_actions.rs` horse arm are untouched.
+  - `fluid.rs:830` (test only): `.map(move |z| (x, z))` in place of `.filter_map(move |z| Some((x, z)))`.
+- **Decisions:**
+  - `server_mobs.rs:437`: `Tag::as_ints` returns an owned `Option<Vec<i32>>`, not a slice, so the brief's `unwrap_or(&[])` does not apply. `seed` folds `tag.get("UUID").and_then(Tag::as_ints).into_iter().flatten()` instead, over the same ints in the same order (two lines: the `let` and the fold's `iter()` and `&w`). A missing UUID still folds nothing and gives the start value.
+  - `item_icons.rs:36` and `mesh.rs:417` keep a `Vec` for the slice callers, so they collect the flattened option; the turbofish is needed because the callers only borrow it as `&[[u8; 3]]`.
+  - The aliases are private, like W's `DeathRemains` in `mob_actions.rs`; `cow_render.rs` keeps its two aliases inside the function next to their `let`s, as the boxes are local to it.
+  - No `unwrap_or_else(Vec::new)` or `unwrap_or(Vec::new())` anywhere (both trip `clippy::unwrap_or_default`).
+- **Tests:** no new tests (nothing changes in behaviour).
+  - `clippy -p minecraft_terrain --locked --all-targets`, no extra flag: exit 0, no warnings at all (the output has no `warning` line).
+  - `test -p minecraft_terrain --locked`: 1818 passed, 0 failed, 3 ignored (lib; doc-tests 0), in 793 s: the same counts as before the group (17a138f2: 1818, 0 and 3, in 406 s).
+  - `check -p launcher --locked`: green; its only warnings are the old `render_frame` and skate ones that tool-lints-fork removes.
+  - `git diff -U0 c1b6ecd6` on the crate: no comment added and no line changed beyond the warning sites.
+- **Owner's steps.** Release build, survival, Normal, a new world in a plains with water nearby, by day. Nothing should look or behave differently from the release before; these steps cover every place the commit edits. Name the screenshots `e3-9-1.png` and so on.
+  1. Look round: grass and leaves are green, water and lava animate, fences connect, and block corners are shaded. Place the water bucket on a slope and the lava bucket in a stone pit: the flowing water runs down its slopes and both surfaces animate as before. **e3-9-1**
+  2. Open the inventory: the cobblestone, grass block, fence and leaves icons are 3D, and the grass and leaves icons are green. Hover over them: the names show. **e3-9-2**
+  3. Use both cow eggs, then `/summon minecraft:cow ~ ~ ~4 {variant:"minecraft:warm"}`: the warm cow has its horns and its orange coat. Hold wheat: the cows follow you and their legs swing as they walk. Then `/summon minecraft:bogged ~ ~ ~6 {NoAI:1b}`: it has red and brown mushrooms on its head. **e3-9-3**
+  4. Kill a cow with the sword: it drops beef, maybe leather, and experience orbs. Walk over them: they go into your inventory.
+  5. Place the composter, use the villager egg beside it and wait until the villager becomes a farmer (green sparkles, a straw hat). Right-click it: the trading screen lists its offers. **e3-9-4**
+  6. Save and Quit, then load the world: the cows, the bogged and the farmer are where they were, and the farmer offers the same trades.
+
+```
+IW4L_MINECRAFT_KIT=minecraft:water_bucket,minecraft:lava_bucket,minecraft:cow_spawn_egg*2,minecraft:wheat*16,minecraft:villager_spawn_egg,minecraft:composter,minecraft:iron_sword,minecraft:grass_block*16,minecraft:oak_leaves*16,minecraft:oak_fence*16,minecraft:cobblestone*64,minecraft:cooked_beef*16
+```
