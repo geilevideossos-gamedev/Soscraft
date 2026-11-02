@@ -4,14 +4,16 @@ use minecraftoss_core::BlockPos;
 use minecraftoss_core::entity_data::wrap_degrees;
 use minecraftoss_core::nbt::Tag;
 use minecraftoss_core::random::RandomSource;
+use std::collections::BTreeMap;
 
 pub const BUCKET_ENTITY_DATA: &str = "minecraft:bucket_entity_data";
 pub const CUSTOM_NAME: &str = "minecraft:custom_name";
 pub const FROM_BUCKET: &str = "FromBucket";
 pub const HEALTH: &str = "Health";
+pub const NO_AI: &str = "NoAI";
 pub const PERSISTENCE_REQUIRED: &str = "PersistenceRequired";
 pub const FLAGS: [&str; 6] = [
-    "NoAI",
+    NO_AI,
     "Silent",
     "NoGravity",
     "Glowing",
@@ -105,6 +107,33 @@ pub const MOB_BUCKETS: &[MobBucket] = &[
 
 pub fn mob_bucket(item: &str) -> Option<&'static MobBucket> {
     MOB_BUCKETS.iter().find(|bucket| bucket.item == item)
+}
+
+pub fn bucket_of(kind: &str) -> Option<&'static MobBucket> {
+    MOB_BUCKETS.iter().find(|bucket| bucket.kind == kind)
+}
+
+pub fn bucket_entity_data(
+    bucket: &MobBucket,
+    no_ai: bool,
+    persistent: bool,
+    health: f32,
+    fields: &[(&str, Tag)],
+) -> Tag {
+    let mut data = BTreeMap::new();
+    if no_ai {
+        data.insert(NO_AI.to_owned(), Tag::Byte(1));
+    }
+    if persistent {
+        data.insert(PERSISTENCE_REQUIRED.to_owned(), Tag::Byte(1));
+    }
+    data.insert(HEALTH.to_owned(), Tag::Float(health));
+    for (key, value) in fields {
+        if bucket.keys.iter().any(|kept| kept == key) {
+            data.insert((*key).to_owned(), value.clone());
+        }
+    }
+    Tag::Compound(data)
 }
 
 pub fn entity_data(bucket: &MobBucket, components: Option<&Tag>) -> Vec<(String, Tag)> {

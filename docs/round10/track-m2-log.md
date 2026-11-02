@@ -19,6 +19,7 @@ Files under `third_party/minecraftoss` this track patched or added.
 - Added (water-paths 2): `entities/src/navigation/tests.rs`, `entities/src/stroll/tests.rs` (both test only).
 - Patched (water-buckets 1): `world/src/level/mod.rs` (`pub mod mob_bucket;` after `pub mod dispenser;`).
 - Added (water-buckets 1): `world/src/level/mob_bucket.rs` (the seven bucket rows, `entity_data`, `Level::empty_mob_bucket`), `world/src/level/mob_bucket/tests.rs` (test only).
+- Changed again (water-buckets 2): `world/src/level/mob_bucket.rs` (`bucket_of`, `bucket_entity_data`).
 
 ## Hooks
 
@@ -49,6 +50,7 @@ None yet. The mob bucket posts `entity_place` at the block the mob comes out in 
   - `MobBucketItem.spawn` plays the new mob's ambient sound; a dormant kind has none, so each family plays it when it goes live (`fish-buckets`, `axolotls-buckets`, the tadpoles, the sulfur cube's items group).
   - The landing height uses the kind's spawn-row width; until a family adds its row (`squids-live`, `fish-spawning`, ..) it is the spawn eggs' 0.6.
   - The family components (salmon size, tropical pattern, axolotl variant, sulfur cube content) start empty in the rows (`MobBucket.components`); each family group fills its own.
+- **Mob bucket pickup (water-buckets 2):** vanilla copies the mob's custom name onto the bucket (`saveDefaultDataToBucketTag`), but `MobCore` holds no name (only the server's tag for the mob keeps it), so a picked-up mob loses its name. A name on the bucket item itself still names the poured mob.
 
 ## Combined kit
 
@@ -307,4 +309,64 @@ After 166f11a8.
 
 ```
 IW4L_MINECRAFT_KIT=minecraft:cod_bucket,minecraft:salmon_bucket,minecraft:tropical_fish_bucket,minecraft:axolotl_bucket,minecraft:tadpole_bucket,minecraft:sulfur_cube_bucket,minecraft:water_bucket,minecraft:lava_bucket,minecraft:bucket*16,minecraft:cauldron,minecraft:campfire,minecraft:obsidian*10,minecraft:flint_and_steel,minecraft:stone*64
+```
+
+#### 2. Minecraft fish buckets carry the mob they caught like vanilla
+
+After 1322d5fb.
+
+- **javap (26.3 `client.jar`):**
+  - `Bucketable.bucketMobPickup(player, hand, mob)`:
+    - it acts only when `canBePickedUpWithBucket(held)` (by default the held item is `WATER_BUCKET`; `SulfurCube` answers `BUCKET`) and the mob `isAlive`;
+    - then `playSound(getPickupSound(), 1, 1)` at the mob in its own sound source, `getBucketItemStack()`, `saveToBucketTag(stack)`, `ItemUtils.createFilledResult(held, player, stack, false)`, `setItemInHand`, the `FILLED_BUCKET` trigger, `Leashable.dropLeash()` and `discard()`.
+  - `Bucketable.saveDefaultDataToBucketTag`: `CUSTOM_NAME` is copied onto the stack. In `bucket_entity_data`, `NoAI`, `Silent`, `NoGravity`, `Glowing`, `Invulnerable` and `PersistenceRequired` are put only when true, and `Health` always, as a float.
+  - What each family's `saveToBucketTag` adds:
+    - `AbstractFish` saves only the default data, and its pickup sound is `item.bucket.fill_fish`;
+    - the axolotl adds its variant component, `Age`, `AgeLocked` and `HuntingCooldown`;
+    - the tadpole adds `Age` and `AgeLocked`;
+    - the sulfur cube adds its `SULFUR_CUBE_CONTENT` component, `age` and `age_locked`.
+  - `ItemUtils.createFilledResult(held, player, filled, false)`:
+    - one held item is consumed (`consume` does nothing for a player with infinite materials);
+    - an emptied hand takes the filled stack; otherwise the filled stack goes into the inventory, or is dropped when there is no room.
+    - So creative keeps the water bucket and gains a bucket on every pickup.
+- **Changed:**
+  - Terrain `families/water/buckets.rs`:
+    - `pub trait Bucketable: TerrainFamily`: `PICKUP_ITEM` (default `minecraft:water_bucket`), `bucket(kind)` (by default the world row of that kind) and `bucket_components(mob)` (the family's item components, none by default).
+    - `pub fn pickup::<S>(world, id, actor, outcome) -> bool`, which runs as vanilla's `bucketMobPickup`:
+      - only with `S::PICKUP_ITEM` in hand, on a mob that is not removed and has health;
+      - the row's fill sound at the mob, at volume 1 and pitch 1, in the family's sound category;
+      - the filled bucket with `bucket_entity_data` and the family's components;
+      - `filled_result` in survival, or one more bucket in creative (the overflow drops where the mob was);
+      - `drop_leash` with its lead drops, then `core.removed`, with no death, loot or experience.
+  - World `level/mob_bucket.rs`: `bucket_of(kind)`, `NO_AI`, and `bucket_entity_data(row, no_ai, persistent, health, fields)`. It saves `NoAI` and `PersistenceRequired` only when true, `Health` as a float, and the row's keys from the family's saved fields.
+- **How a family uses it** (the fish, axolotls, tadpoles and sulfur cubes):
+  - `impl Bucketable for <Family> {}`. The sulfur cube sets `const PICKUP_ITEM: &'static str = "minecraft:bucket"`, and families with item components override `bucket_components`.
+  - The family's `TerrainFamily::interact` calls `buckets::pickup::<Self>(world, id, actor, outcome)` first and returns true when it picked the mob up.
+  - The row's keys come from the family's `TerrainFamily::fields`. When the bucket is poured, the row's `components` converter (world crate) reads the family's components back.
+- **Tests added** (`families::water::buckets::tests`):
+  - `a_picked_up_mob_keeps_its_health_and_vanishes_without_dying`:
+    - the bucket holds `Health` 5, `NoAI` and `PersistenceRequired` plus the family's component, and the fill sound plays at the mob in its category;
+    - the mob is removed with no death, and a second pickup of it fails;
+    - pouring the bucket gives back the same health and flags with `FromBucket`;
+    - a plain mob saves only its health.
+  - `only_the_family_s_pickup_item_picks_a_mob_up`: empty, lava and cod buckets and a bare hand do nothing to the silverfish; the endermite's test impl takes only an empty bucket and fills with its own sound; a dead mob cannot be scooped.
+  - `creative_keeps_the_water_bucket_and_adds_one_fish_bucket`: two pickups keep the water bucket and add two buckets, and with a full inventory the bucket drops where the mob was.
+- **Decisions:**
+  - **Test impls.** No water family is registered in terrain yet, so the tests give D0's silverfish (water bucket) and endermite (`PICKUP_ITEM` = empty bucket) `#[cfg(test)]` `Bucketable` impls in M2's test file. Their test-only rows (`minecraft:silverfish_bucket`, `minecraft:endermite_bucket`) are statics there, returned by the impls' `bucket`.
+  - **A family's item components come from `Bucketable::bucket_components`**, not a row converter: the family's state knows them, and the pickup only runs in terrain. Pouring keeps the row's `components` converter in the world crate, where dispensers reach it.
+  - **What the bucket saves.** Registered mobs keep no `Silent`, `NoGravity`, `Glowing` or `Invulnerable`, so the bucket saves `NoAI` and `PersistenceRequired` (each only when true) and always `Health`, as vanilla does for those three.
+  - **The custom name is not copied onto the bucket:** `MobCore` holds no name (only the server's tag for the mob keeps it). See Left for later.
+  - **With no room** the filled bucket drops where the mob was. Vanilla drops it at the player, but a mob action knows no player position.
+- **Protocol:** none.
+- **Runs:**
+  - `test -p minecraft_terrain --locked --lib families::water::buckets`: 6 passed.
+  - `check -p launcher --locked`: green, with only the old render_frame and skate warnings.
+  - The new files pass `rustfmt --check` with empty output.
+- **Test steps** (nothing new to see; the first family to use the pickup is `fish-buckets`, segment m2c). Release build, survival, Normal, by day.
+  1. Place stone and use the silverfish and cow eggs on it. Use the empty bucket on the cow: you get milk, as before.
+  2. Use the water bucket on the silverfish: it is not picked up. **m2-buckets-4**
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:water_bucket,minecraft:bucket,minecraft:cow_spawn_egg*2,minecraft:silverfish_spawn_egg*2,minecraft:stone*64
 ```
