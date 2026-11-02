@@ -891,6 +891,7 @@ mod tests {
                 "%1$s walked into the danger zone due to %2$s",
             ),
             ("death.attack.magic", "%1$s was killed by magic"),
+            ("death.attack.indirectMagic", "%1$s was killed by %2$s using magic"),
             ("death.attack.wither", "%1$s withered away"),
             ("death.attack.freeze", "%1$s froze to death"),
             ("death.attack.freeze.player", "%1$s was frozen to death by %2$s"),
@@ -999,6 +1000,94 @@ mod tests {
         assert_eq!(entity_text("iw4l:margit"), Text::literal(name));
         assert_eq!(entity_text("minecraft:zombie"), Text::entity("minecraft:zombie"));
         assert_eq!(entity_name(&language, "minecraft:zombie"), "Zombie");
+    }
+
+    fn margit_hits(feet: [f64; 3], key: &str) -> Vec<(crate::entities::Hit, Option<&'static str>)> {
+        use minecraftoss_entities::world::EntityWorld;
+        struct Ground;
+        impl minecraftoss_player::World for Ground {
+            fn block(&self, pos: (i32, i32, i32)) -> Option<minecraftoss_player::Block> {
+                (pos.1 < 64).then(|| minecraftoss_player::Block::new("minecraft:stone"))
+            }
+            fn set_block(&mut self, _pos: (i32, i32, i32), _block: Option<minecraftoss_player::Block>) {}
+        }
+        let player = minecraftoss_entities::tempt::PlayerCandidate {
+            id: 1,
+            position: glam::DVec3::from_array(feet),
+            eye_height: 1.62,
+            main_hand_cow_food: false,
+            offhand_cow_food: false,
+            main_hand_pig_food: false,
+            offhand_pig_food: false,
+            main_hand_chicken_food: false,
+            offhand_chicken_food: false,
+            main_hand_carrot_on_a_stick: false,
+            offhand_carrot_on_a_stick: false,
+            main_hand_wolf_interest: false,
+            offhand_wolf_interest: false,
+            main_hand_horse_tempt: false,
+            offhand_horse_tempt: false,
+            alive: true,
+            spectator: false,
+            attackable: true,
+        };
+        let mut world = EntityWorld::default();
+        let id = world.spawn_family_kind("iw4l:margit", glam::DVec3::new(0.5, 64.0, 0.5)).unwrap();
+        let idle = |world: &EntityWorld| format!("{:?}", world.elden_bosses()[0].state.brain.state()) == "Idle";
+        for _ in 0..100 {
+            if idle(&world) {
+                break;
+            }
+            world.tick_with_players(&mut Ground, &[player]);
+        }
+        assert!(idle(&world), "he wakes");
+        let _ = world.take_player_hits();
+        assert!(world.elden_boss_mut(id).unwrap().state.brain.begin(key));
+        let mut hits = Vec::new();
+        for _ in 0..80 {
+            world.tick_with_players(&mut Ground, &[player]);
+            for hit in world.take_player_hits() {
+                let type_id = hit.source.and_then(|source| world.entity_type(source));
+                hits.extend(crate::entities::mob_hit(&hit, feet, 2, type_id).map(|hit| (hit, type_id)));
+            }
+            if !hits.is_empty() {
+                break;
+            }
+        }
+        hits
+    }
+
+    #[test]
+    fn a_holy_hit_is_magic_and_ignores_a_raised_shield() {
+        let hits = margit_hits([0.5, 64.0, 3.0], "sword_sweep");
+        assert_eq!(hits.len(), 1, "{hits:?}");
+        let ((damage, from, toward, cause, push, effect), type_id) = hits[0];
+        assert_eq!((damage, type_id, effect), (7.0, Some("iw4l:margit"), None));
+        assert_eq!((cause.damage_type(), cause.message_id()), ("minecraft:indirect_magic", "indirectMagic"));
+        assert!(cause.bypasses_armor(), "holy hits ignore armour");
+        assert_eq!(toward, None, "and shields");
+        assert_eq!(crate::offhand::blocked_damage(180.0, toward, damage), 0.0);
+        assert!(from.is_some(), "it knocks back from where it came");
+        assert!((push.throw.z - 0.8).abs() < 0.05 && push.disable_shield_ticks == 0, "a stagger: {push:?}");
+        let slam = margit_hits([0.5, 64.0, 3.0], "cane_slam");
+        let ((damage, _, toward, cause, _, _), _) = slam[0];
+        assert_eq!((damage, cause.damage_type()), (7.0, "minecraft:mob_attack"));
+        assert!(crate::offhand::blocked_damage(180.0, toward, damage) > 0.0, "a raised shield blocks his cane");
+    }
+
+    #[test]
+    fn a_player_killed_by_a_dagger_is_told_killed_using_magic() {
+        let hits = margit_hits([0.5, 64.0, 12.5], "dagger_throw");
+        assert_eq!(hits.len(), 1, "{hits:?}");
+        let ((damage, _, toward, cause, _, _), _) = hits[0];
+        assert_eq!((damage, toward), (4.0, None));
+        let mut tracker = CombatTracker::default();
+        tracker.record(1, cause, 20.0, None, 0.0);
+        let name = "Margit, the Fell Omen";
+        assert_eq!(line(&tracker), says(&format!("%1$s was killed by {name} using magic"), name));
+        let language = language();
+        let text = tracker.death_text("Sos", |_| true, |_| None).resolve(&|key: &str| language.get(key).cloned()).text;
+        assert_eq!(text, format!("Sos was killed by {name} using magic"));
     }
 
     #[test]

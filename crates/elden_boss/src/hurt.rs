@@ -130,6 +130,7 @@ impl Brain {
             if self.riposte(&hurt.source) {
                 health *= def.critical.factor;
                 taken.critical = true;
+                self.criticals = self.criticals.wrapping_add(1);
                 self.wounds.down = false;
                 let rise = def.clips.kneel.length.saturating_sub(def.critical.recovery);
                 self.clock = self.clock.max(rise);
@@ -418,7 +419,7 @@ mod tests {
             .brain
             .take(&hurt(&field, Source::Projectile { damage: 80.0 }, 1));
         assert!(broke.kneel && !broke.critical, "{broke:?}");
-        field.step(&players);
+        assert_eq!(field.step(&players).clip.criticals, 0);
         for (x, z) in [(0.0, -2.0), (0.0, 5.0), (3.0, 0.5)] {
             let taken = field.brain.take(&sword(&field, x, z, 1));
             assert!(
@@ -441,6 +442,7 @@ mod tests {
         assert!(sounds(&act, "entity.player.attack.crit"));
         assert!(act.cues.contains(&Cue::Burst(Burst::Crit)));
         assert_eq!((act.clip.state, act.clip.clock), (State::Kneel, 60));
+        assert_eq!(act.clip.criticals, 1, "his shown clip counts the critical");
         assert!((0..19).all(|_| field.step(&players).clip.state == State::Kneel));
         assert_eq!(field.step(&players).clip.state, State::Idle);
         assert_eq!(field.brain.stance(), 80.0);

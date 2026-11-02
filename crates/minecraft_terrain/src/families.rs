@@ -158,6 +158,15 @@ macro_rules! terrain_group {
         ) {
             $($(#[$attr])* <$ty as $crate::families::TerrainFamily>::block_dust(world.family::<$ty>(), poses, out);)*
         }
+
+        #[allow(unused_variables)]
+        pub fn viewer_effects(
+            world: &minecraftoss_entities::world::EntityWorld,
+            poses: &$crate::client_mobs::ClientMobs,
+            fx: &mut $crate::families::ViewerFx<'_>,
+        ) {
+            $($(#[$attr])* <$ty as $crate::families::TerrainFamily>::viewer_effects(world.family::<$ty>(), poses, fx);)*
+        }
     };
 }
 
@@ -208,6 +217,15 @@ pub struct ClientFx<'a> {
     pub seen: &'a mut HashMap<u64, i32>,
 }
 
+pub struct ViewerFx<'a> {
+    pub feet: DVec3,
+    pub tick: u64,
+    pub boxes: &'a dyn Fn((i32, i32, i32)) -> Vec<[f64; 6]>,
+    pub ambient: &'a mut AmbientParticles,
+    pub spell: &'a mut SpellParticles,
+    pub random: &'a mut LegacyRandom,
+}
+
 pub trait TerrainFamily: Registered {
     const TRACKING_RANGE: i32;
     const VOLATILE: &'static [&'static str] = &[];
@@ -227,6 +245,10 @@ pub trait TerrainFamily: Registered {
     }
 
     fn show_on(_mob: &mut FamilyMob<Self>, _show: &FamilyShow) {}
+
+    fn show_more(_mob: &FamilyMob<Self>, _show: &mut MobShow) {}
+
+    fn show_more_on(_mob: &mut FamilyMob<Self>, _show: &MobShow) {}
 
     fn draw(
         out: &mut FamilyDraw<'_>,
@@ -249,6 +271,8 @@ pub trait TerrainFamily: Registered {
     fn client_effects(_mobs: &[FamilyMob<Self>], _poses: &ClientMobs, _fx: &mut ClientFx<'_>) {}
 
     fn block_dust(_mobs: &[FamilyMob<Self>], _poses: &ClientMobs, _out: &mut Vec<BlockDust>) {}
+
+    fn viewer_effects(_mobs: &[FamilyMob<Self>], _poses: &ClientMobs, _fx: &mut ViewerFx<'_>) {}
 }
 
 pub fn kinds() -> Vec<&'static str> {
@@ -444,6 +468,16 @@ pub fn block_dust(world: &EntityWorld, poses: &ClientMobs, out: &mut Vec<BlockDu
     bosses::block_dust(world, poses, out);
 }
 
+pub fn viewer_effects(world: &EntityWorld, poses: &ClientMobs, fx: &mut ViewerFx<'_>) {
+    pests::viewer_effects(world, poses, fx);
+    trial::viewer_effects(world, poses, fx);
+    deep_dark::viewer_effects(world, poses, fx);
+    land::viewer_effects(world, poses, fx);
+    water::viewer_effects(world, poses, fx);
+    night::viewer_effects(world, poses, fx);
+    bosses::viewer_effects(world, poses, fx);
+}
+
 fn names(kinds: &[&str], kind: &str) -> bool {
     kinds
         .iter()
@@ -489,10 +523,11 @@ fn save_one<S: TerrainFamily>(world: &EntityWorld, add: &mut Add<'_>) {
 
 fn shows_of<S: TerrainFamily>(world: &EntityWorld, put: &mut dyn FnMut(u64, MobShow)) {
     for mob in world.family::<S>() {
-        let show = MobShow {
+        let mut show = MobShow {
             family: Some(S::show(mob)),
             ..MobShow::default()
         };
+        S::show_more(mob, &mut show);
         put(mob.core.id, show);
     }
 }
@@ -506,6 +541,7 @@ fn show_on_one<S: TerrainFamily>(world: &mut EntityWorld, mob: &ServerMob) -> bo
     if let Some(show) = &mob.show.family {
         S::show_on(shown, show);
     }
+    S::show_more_on(shown, &mob.show);
     true
 }
 

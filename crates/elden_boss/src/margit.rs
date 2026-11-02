@@ -3,8 +3,8 @@ use glam::DVec3;
 use crate::data::{
     Arena, BossDef, Branch, BranchTo, Burst, ClipDef, Clips, Conjure, Critical, Cue, CueKey, Cues,
     Daggers, DataSource, Experience, Factor, Gap, Harm, Hold, Loot, Motion, MoveDef, PhaseDef,
-    Pick, Pose, PoseKey, Reaction, Resist, Scaling, Shape, Sound, Stalk, Stance, Strike, Throw,
-    Voices, Weapon, When, Window,
+    Pick, Pose, PoseKey, Push, Reaction, Reactions, Resist, Scaling, Shape, Sound, Stalk, Stance,
+    Strike, Throw, Voices, Weapon, When, Window,
 };
 
 pub const ID: &str = "iw4l:margit";
@@ -770,6 +770,20 @@ pub static MARGIT: BossDef = BossDef {
         reaction: Reaction::Flinch,
         hand: DVec3::new(0.5, 2.2, 0.4),
     },
+    reactions: Reactions {
+        flinch: Push {
+            throw: 0.0,
+            lift: 0.0,
+        },
+        stagger: Push {
+            throw: 0.8,
+            lift: 0.0,
+        },
+        knockdown: Push {
+            throw: 1.2,
+            lift: 0.5,
+        },
+    },
     experience: Experience {
         base: 100,
         per_fighter: 50,
@@ -1012,5 +1026,28 @@ mod tests {
         assert_eq!(factors[..4], [1.0, 1.6, 2.2, 2.8]);
         assert!((factors[4] - 3.4).abs() < 1e-6);
         assert_eq!(MARGIT.scaling.factor(0), 1.0);
+    }
+
+    #[test]
+    fn his_reward_grows_with_the_fighters() {
+        let experience: Vec<u32> = (0..=4).map(|n| MARGIT.experience.for_fighters(n)).collect();
+        assert_eq!(experience, [100, 100, 150, 200, 250]);
+        let drops = |n: usize| -> Vec<(&str, u32)> {
+            MARGIT
+                .drops
+                .iter()
+                .map(|loot| (loot.item, loot.count_for(n)))
+                .collect()
+        };
+        assert_eq!(
+            drops(1),
+            [
+                ("minecraft:enchanted_golden_apple", 1),
+                ("minecraft:gold_block", 2),
+                ("minecraft:gold_ingot", 3),
+            ]
+        );
+        assert_eq!(drops(4)[2], ("minecraft:gold_ingot", 12));
+        assert_eq!(drops(4)[..2], drops(1)[..2]);
     }
 }

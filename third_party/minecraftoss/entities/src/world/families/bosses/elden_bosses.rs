@@ -4,14 +4,17 @@ use crate::look::LookControl;
 use crate::monster_ai::Target;
 use crate::navigation::GroundNavigation;
 use crate::tempt::PlayerCandidate;
-use crate::world::families::{Despawn, Family, FamilyMob, Hurt, MobCore};
+use crate::world::emissions::{MovementSounds, play_movement};
+use crate::world::families::{Despawn, Family, FamilyMob, Hurt, MobCore, Registered};
 use crate::world::{DamageSourceKind, EntityWorld, Voice, voice_pitch};
 use elden_boss::data::{Cue, Sound};
-use elden_boss::{Act, BossDef, Brain, Dagger, Hit, Sense, Source};
+use elden_boss::{Act, BossDef, Brain, Clip, Dagger, Flight, Hit, Sense, Source};
 use glam::DVec3;
 use minecraftoss_player::World;
+use minecraftoss_player::inventory::ItemStack;
 
 pub mod arena;
+pub mod blows;
 
 pub const KEY: u8 = 96;
 pub const EYE_SHARE: f64 = 0.85;
@@ -19,6 +22,8 @@ pub const LOOK_TURN: f32 = 30.0;
 pub const LOOK_PITCH: f32 = 40.0;
 pub const HURT_VOICE_GAP: i32 = 10;
 pub const FALL: &str = "minecraft:fall";
+pub const PLAYER: &str = "minecraft:player";
+pub const STACK: u32 = 64;
 
 const UNSEEN: DVec3 = DVec3::splat(f64::INFINITY);
 
@@ -33,6 +38,7 @@ const REFUSED: DamageResult = DamageResult {
 pub struct EldenBoss {
     pub def: &'static BossDef,
     pub brain: Brain,
+    pub shown: Clip,
     pub anchor: DVec3,
     pub rest_yaw: f32,
     pub walk: Option<DVec3>,
@@ -47,6 +53,8 @@ pub struct EldenBoss {
     pub dropped: bool,
     pub hits: Vec<Hit>,
     pub throws: Vec<Dagger>,
+    pub daggers: Vec<Flight>,
+    pub felled: Vec<u64>,
 }
 
 impl EldenBoss {
@@ -66,11 +74,13 @@ pub fn boss(def: &'static BossDef, position: DVec3) -> FamilyMob<EldenBoss> {
     let seed = position.x.to_bits()
         ^ position.y.to_bits().rotate_left(21)
         ^ position.z.to_bits().rotate_left(42);
+    let brain = Brain::new(def, seed);
     FamilyMob {
         core,
         state: EldenBoss {
             def,
-            brain: Brain::new(def, seed),
+            shown: brain.clip(),
+            brain,
             anchor: position,
             rest_yaw: 0.0,
             walk: None,
@@ -85,6 +95,8 @@ pub fn boss(def: &'static BossDef, position: DVec3) -> FamilyMob<EldenBoss> {
             dropped: false,
             hits: Vec::new(),
             throws: Vec::new(),
+            daggers: Vec::new(),
+            felled: Vec::new(),
         },
     }
 }
@@ -106,8 +118,9 @@ fn think<W: World>(mob: &mut FamilyMob<EldenBoss>, level: &W, players: &[PlayerC
     arena::survey(mob, level, players);
     let FamilyMob { core, state } = mob;
     state.seen = players.iter().map(|p| (p.id, p.position)).collect();
-    let seen = arena::seen(level, players, &state.ways);
     let position = core.body.position;
+    let eyes = position + DVec3::Y * f64::from(core.eye_height);
+    let seen = arena::seen(level, players, &state.ways, eyes);
     let sense = Sense {
         tick: tick_of(core),
         position,
@@ -117,6 +130,7 @@ fn think<W: World>(mob: &mut FamilyMob<EldenBoss>, level: &W, players: &[PlayerC
         players: &seen,
     };
     let act = state.brain.step(&sense);
+    state.shown = act.clip;
     state.hits.clone_from(&act.hits);
     state.throws.clone_from(&act.throws);
     core.yaw = act.yaw as f32;
@@ -133,6 +147,27 @@ fn think<W: World>(mob: &mut FamilyMob<EldenBoss>, level: &W, players: &[PlayerC
         }
     }
     act
+}
+
+fn step(mob: &mut FamilyMob<EldenBoss>) {
+    let FamilyMob { core, state } = mob;
+    let step = state.def.voices.step;
+    let sounds = MovementSounds::monster(Some(step.event)).with_step_volume(step.volume);
+    let from = core.voices.len();
+    play_movement(
+        &mut core.body,
+        core.tick_count,
+        &mut core.random,
+        &mut core.voices,
+        sounds,
+    );
+    for (voice, _) in &mut core.voices[from..] {
+        if let Voice::Event(event, _, pitch) = voice {
+            if *event == step.event {
+                *pitch = step.pitch;
+            }
+        }
+    }
 }
 
 fn spoken(sound: Sound, pitch: f32) -> Voice {
@@ -240,6 +275,9 @@ pub fn take(mob: &mut FamilyMob<EldenBoss>, source: Source, player: Option<u64>)
     };
     let result = record(core, loss, full);
     core.health = state.brain.health();
+    if taken.died {
+        state.felled = state.brain.fighters();
+    }
     let position = core.body.position;
     let burning = core.body.fire_ticks > 0;
     core.damage.place_death(result, position, burning);
@@ -280,17 +318,23 @@ impl Family for EldenBoss {
         let Some(base) = world.family_base_tick::<Self, W>(id, level, players) else {
             return;
         };
+        let mut struck = Vec::new();
         if let Some(mob) = world.family_mob_mut::<Self>(id) {
+            let mut thrown = Vec::new();
             if !base.no_ai {
                 let act = think(mob, &*level, players);
                 if base.alive {
                     mob.core.body.trim_small_velocity();
                     arena::carry_out(mob, &*level, &act);
+                    step(mob);
                 }
+                (struck, thrown) = (act.hits, act.throws);
             }
+            struck.extend(blows::fly(mob, &*level, players, &thrown));
             speak(mob);
             settle(mob);
         }
+        blows::deal(world, id, players, &struck);
         world.family_after_move::<Self, W>(id, level, base.game_time, ticks);
     }
 
@@ -305,8 +349,24 @@ impl Family for EldenBoss {
         }
     }
 
-    fn experience(_mob: &mut FamilyMob<Self>) -> i32 {
-        0
+    fn experience(mob: &mut FamilyMob<Self>) -> i32 {
+        let fighters = mob.state.brain.fighters().len();
+        let points = mob.state.def.experience.for_fighters(fighters);
+        i32::try_from(points).unwrap_or(i32::MAX)
+    }
+
+    fn death_drops(mob: &mut FamilyMob<Self>) -> Vec<ItemStack> {
+        let fighters = mob.state.brain.fighters().len();
+        let mut drops = Vec::new();
+        for loot in mob.state.def.drops {
+            let mut left = loot.count_for(fighters);
+            while left > 0 {
+                let count = left.min(STACK);
+                drops.push(ItemStack::new(loot.item, count as u8));
+                left -= count;
+            }
+        }
+        drops
     }
 
     fn despawn(_mob: &FamilyMob<Self>) -> Despawn {
@@ -353,6 +413,32 @@ impl EntityWorld {
 
     pub fn elden_boss_mut(&mut self, id: u64) -> Option<&mut FamilyMob<EldenBoss>> {
         self.family_mob_mut::<EldenBoss>(id)
+    }
+
+    pub fn elden_hurt(
+        &mut self,
+        id: u64,
+        source: Source,
+        player: Option<u64>,
+    ) -> Option<DamageResult> {
+        let mob = self.elden_boss_mut(id)?;
+        let result = take(mob, source, player);
+        if let (true, Some(player)) = (result.applied, player) {
+            mob.core.hurt_by = Some((Target::Player(player), mob.core.tick_count));
+            self.credit(id, result, PLAYER, true);
+        }
+        Some(result)
+    }
+
+    pub fn take_elden_felled(&mut self) -> Vec<(&'static BossDef, u64)> {
+        let store = <EldenBoss as Registered>::store_mut(self);
+        let mut felled = Vec::new();
+        for mob in &mut store.mobs {
+            let def = mob.state.def;
+            let players = std::mem::take(&mut mob.state.felled);
+            felled.extend(players.into_iter().map(|player| (def, player)));
+        }
+        felled
     }
 }
 
@@ -706,6 +792,89 @@ mod tests {
         );
     }
 
+    fn idle(world: &mut EntityWorld, id: u64, players: &[PlayerCandidate]) {
+        for _ in 0..600 {
+            world.tick_with_players(&mut Field, players);
+            if margit(world, id).state.brain.state() == State::Idle {
+                return;
+            }
+        }
+        panic!("he never stands idle between moves");
+    }
+
+    #[test]
+    fn a_kneeling_margit_takes_half_again_from_bullets() {
+        let mut world = EntityWorld::default();
+        let id = margit_at(&mut world, 0.5, 0.5);
+        let front = DVec3::new(0.5, 64.0, 3.0);
+        let players = [
+            player_at(1, front),
+            player_at(2, DVec3::new(6.5, 64.0, 0.5)),
+        ];
+        idle(&mut world, id, &players);
+        assert_eq!(health(&world, id), 1280.0, "two fighters at the wake");
+        let bullet = Source::Bullet { mw2: 30.0 };
+        for shot in 0..160 {
+            assert_eq!(margit(&world, id).state.brain.state(), State::Idle);
+            let hit = world.elden_hurt(id, bullet, Some(1)).unwrap();
+            assert!(hit.applied && hit.full, "every bullet counts: {shot}");
+        }
+        let brain = &margit(&world, id).state.brain;
+        assert_eq!(brain.state(), State::Kneel, "160 bullets break his stance");
+        assert_eq!((brain.health(), brain.stance()), (800.0, 0.0));
+        let hit = world.elden_hurt(id, bullet, Some(1)).unwrap();
+        assert!(hit.applied && hit.full);
+        let brain = &margit(&world, id).state.brain;
+        assert_eq!(800.0 - brain.health(), 4.5, "3 health and half again");
+        assert_eq!(brain.stance(), 0.0);
+        assert_eq!(brain.clip().criticals, 0, "a bullet is never a critical");
+        assert_eq!(brain.state(), State::Kneel);
+    }
+
+    #[test]
+    fn a_friends_bullet_credits_the_friend() {
+        let mut world = EntityWorld::default();
+        let id = margit_at(&mut world, 0.5, 0.5);
+        let players = [
+            player_at(1, DVec3::new(0.5, 64.0, 3.0)),
+            player_at(2, DVec3::new(0.5, 64.0, -12.0)),
+        ];
+        idle(&mut world, id, &players);
+        let brain = &margit(&world, id).state.brain;
+        assert_eq!(brain.target(), Some(1), "the nearer player first");
+        let bullet = Source::Bullet { mw2: 30.0 };
+        let mut turned = false;
+        for tick in 0..400 {
+            if tick % 10 == 0 {
+                assert!(world.elden_hurt(id, bullet, Some(2)).unwrap().applied);
+            }
+            world.tick_with_players(&mut Field, &players);
+            if margit(&world, id).state.brain.target() == Some(2) {
+                turned = true;
+                break;
+            }
+        }
+        assert!(turned, "the friend's threat turns him on the friend");
+        let mob = margit(&world, id);
+        assert_eq!(mob.state.brain.hurt_by(), &[2]);
+        let blamed = mob.core.hurt_by.map(|(target, _)| target);
+        assert_eq!(blamed, Some(Target::Player(2)));
+        let brain = &mut world.elden_boss_mut(id).unwrap().state.brain;
+        brain.set_health(2.0);
+        assert!(world.elden_hurt(id, bullet, Some(2)).unwrap().died);
+        let deaths = world.take_deaths();
+        assert_eq!(deaths.len(), 1);
+        assert!(deaths[0].context.killed_by_player, "the friend's kill");
+        assert_eq!(deaths[0].experience, 150, "two fighters' reward");
+        let mut felled: Vec<u64> = world
+            .take_elden_felled()
+            .into_iter()
+            .map(|(_, player)| player)
+            .collect();
+        felled.sort_unstable();
+        assert_eq!(felled, [1, 2]);
+    }
+
     #[test]
     fn a_killing_blow_credits_the_player_and_joins_the_death_list() {
         let mut world = EntityWorld::default();
@@ -730,8 +899,8 @@ mod tests {
         let death = &deaths[0];
         assert_eq!((death.id, death.table), (id, Some("iw4l:margit")));
         assert!(death.context.killed_by_player);
-        assert_eq!(death.experience, 0, "no reward yet");
-        assert!(death.equipment.is_empty());
+        assert_eq!(death.experience, 100, "one fighter's reward");
+        assert_eq!(death.equipment.len(), 3);
         let mut sounds = Vec::new();
         for _ in 0..25 {
             world.tick_with_players(&mut Field, &players);
@@ -742,6 +911,60 @@ mod tests {
             "{sounds:?}"
         );
         assert!(world.mob_ids().all(|mob| mob != id), "gone after his death");
+    }
+
+    #[test]
+    fn margit_drops_gold_and_experience_by_fighters() {
+        for drops in [true, false] {
+            let mut world = EntityWorld::default();
+            world.set_mob_drops(drops);
+            let id = margit_at(&mut world, 0.5, 0.5);
+            let front = DVec3::new(0.5, 64.0, 3.0);
+            let pair = [
+                player_at(1, front),
+                player_at(2, DVec3::new(3.0, 64.0, 0.5)),
+            ];
+            woken(&mut world, id, &pair);
+            assert_eq!(health(&world, id), 1280.0, "two fighters at the wake");
+            let late = DVec3::new(0.5, 64.0, -3.0);
+            let three = [pair[0], pair[1], player_at(3, late)];
+            world.tick_with_players(&mut Field, &three);
+            assert!(world.player_attack(&sword(3, late), id).hurt);
+            let brain = &mut world.elden_boss_mut(id).unwrap().state.brain;
+            brain.set_health(5.0);
+            assert!(world.player_attack(&sword(1, front), id).died);
+            let deaths = world.take_deaths();
+            let mut felled: Vec<u64> = world
+                .take_elden_felled()
+                .into_iter()
+                .map(|(def, player)| {
+                    assert_eq!(def.id, "iw4l:margit");
+                    player
+                })
+                .collect();
+            felled.sort_unstable();
+            assert_eq!(felled, [1, 2, 3], "the wake's two and a later one");
+            assert!(world.take_elden_felled().is_empty(), "told once");
+            if !drops {
+                assert!(deaths.is_empty(), "no drops without mob drops");
+                continue;
+            }
+            let death = &deaths[0];
+            let items: Vec<(&str, u8)> = death
+                .equipment
+                .iter()
+                .map(|stack| (stack.id.as_str(), stack.count))
+                .collect();
+            assert_eq!(
+                items,
+                [
+                    ("minecraft:enchanted_golden_apple", 1),
+                    ("minecraft:gold_block", 2),
+                    ("minecraft:gold_ingot", 9),
+                ]
+            );
+            assert_eq!(death.experience, 200, "100 and 50 for each more fighter");
+        }
     }
 
     #[test]
@@ -767,5 +990,39 @@ mod tests {
         let lava = Hurt::new(4.0, "minecraft:lava", DamageSourceKind::Hazard);
         assert!(world.hurt_family(id, &lava).unwrap().applied);
         assert_eq!(health(&world, id), 796.0, "lava does");
+    }
+
+    #[test]
+    fn margit_steps_like_an_iron_golem_low() {
+        let mut world = EntityWorld::default();
+        let id = margit_at(&mut world, 0.5, 0.5);
+        let far = [player_at(1, DVec3::new(0.5, 64.0, 40.5))];
+        let mut sounds = Vec::new();
+        for _ in 0..60 {
+            world.tick_with_players(&mut Field, &far);
+            sounds.extend(world.take_sounds());
+        }
+        let steps = |sounds: &[crate::world::MobSound]| {
+            sounds
+                .iter()
+                .filter(|sound| sound.event == "entity.iron_golem.step")
+                .count()
+        };
+        assert_eq!(steps(&sounds), 0, "asleep, he does not walk");
+        let near = [player_at(1, DVec3::new(0.5, 64.0, 10.5))];
+        sounds.clear();
+        for _ in 0..300 {
+            world.tick_with_players(&mut Field, &near);
+            sounds.extend(world.take_sounds());
+        }
+        assert!(margit(&world, id).state.brain.awake());
+        assert!(steps(&sounds) >= 3, "{}", steps(&sounds));
+        for sound in sounds
+            .iter()
+            .filter(|sound| sound.event == "entity.iron_golem.step")
+        {
+            assert_eq!((sound.volume, sound.pitch), (1.0, 0.7));
+            assert_eq!(sound.category, "hostile_volume");
+        }
     }
 }

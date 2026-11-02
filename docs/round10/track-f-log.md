@@ -16,17 +16,68 @@ Segment f2 (commits 7 to 16), 20 stacks:
 IW4L_MINECRAFT_KIT=minecraft:netherite_sword+sharpness=5,minecraft:bow+power=5,minecraft:arrow*64,minecraft:tnt*8,minecraft:flint_and_steel,minecraft:shield,minecraft:cooked_beef*32,minecraft:iron_sword,minecraft:zombie_spawn_egg*4,minecraft:iron_golem_spawn_egg*2,minecraft:wolf_spawn_egg*2,minecraft:bone*16,minecraft:skeleton_spawn_egg*2,minecraft:enderman_spawn_egg*2,minecraft:silverfish_spawn_egg*4,minecraft:cobblestone*256,minecraft:iron_pickaxe
 ```
 
+Group er-look (commits 17 to 19), 7 stacks:
+
+```
+IW4L_MINECRAFT_KIT=minecraft:netherite_sword+sharpness=5,minecraft:cobblestone*256,minecraft:iron_pickaxe,minecraft:cooked_beef*32
+```
+
+Group er-fight (commits 20 and 21), 9 stacks:
+
+```
+IW4L_MINECRAFT_KIT=minecraft:netherite_sword+sharpness=5,minecraft:shield,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots,minecraft:cobblestone*64,minecraft:golden_apple*16,minecraft:cooked_beef*32
+```
+
+Group er-guns (commit 22), 12 stacks:
+
+```
+IW4L_MINECRAFT_KIT=iw4l:m4,iw4l:rifle_ammo*64,iw4l:rifle_ammo*64,iw4l:rifle_ammo*64,iw4l:rifle_ammo*64,iw4l:frag_grenade*8,iw4l:barrett,iw4l:sniper_rounds*64,iw4l:rpg,iw4l:rocket*16,minecraft:golden_apple*16,minecraft:cooked_beef*32
+```
+
+Group er-bar-friend (commit 23 on), 10 stacks:
+
+```
+IW4L_MINECRAFT_KIT=iw4l:m4,iw4l:rifle_ammo*64,iw4l:rifle_ammo*64,iw4l:rifle_ammo*64,minecraft:netherite_sword+sharpness=5,minecraft:shield,minecraft:golden_apple*16,minecraft:cooked_beef*32,minecraft:obsidian*14,minecraft:flint_and_steel
+```
+
+Group er-altar (commits 26 to 28), 11 stacks:
+
+```
+IW4L_MINECRAFT_KIT=minecraft:gold_block*16,minecraft:lantern*8,minecraft:cobblestone*64,minecraft:iron_pickaxe,minecraft:netherite_sword+sharpness=5,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots,minecraft:golden_apple*16,minecraft:cooked_beef*32
+```
+
+Review of segment f3 (commit 29 on), 1 stack:
+
+```
+IW4L_MINECRAFT_KIT=minecraft:white_bed
+```
+
+The whole track's owner's test for the release (27 stacks) is in "Owner's test for the release" at the end of this log.
+
 ## Protocol
 
-Nothing on the wire changed yet.
+**The wire changed in commit 25** (the code is in 81da408f): `MobShow` gained `elden: Option<EldenShow>` (Margit's daggers in flight, up to three, each a start and a velocity as three `f64` and an age as a `u16`), and `MobShow` travels in every `ServerMob` of a `StateFrame`. A host and a friend on builds from either side of it cannot read each other's state frames, so they need the same build. No track-F commit bumps `minecraft_net::PROTOCOL` (8 now): the release step bumps it once for everything on the wire since the last release.
+
+Group er-altar (commits 26 to 28) changes nothing on the wire: the altar's blocks and summon go to friends as every block change and every new mob does, and the fog ring is drawn by each viewer from his anchor and awake flag, which friends already have.
+
+Up to commit 24 nothing on the wire changed. Commit 18 fills Margit's `MobShow.family` (D0's `FamilyShow`, already on the wire) with his clip, and commit 19 adds his critical count as its fifth value; the message format is the same, so it needs no bump of its own. Commit 21 tells a friend "GREAT ENEMY FELLED" as an existing `ToClient::Chat` system line with the overlay flag and plays the chime as an existing `ToClient::Sound`, so it adds nothing to the wire either. Commit 22's `Command::EldenHurt` is a command to the host's own level thread, not a network message: friends' shots already reach the host as MW2 events with the friend's id. Commit 23's boss bar rides the existing `ToClient::BossBar` with a new id range (`1 << 41` plus his id), which friends already keep, so the wire format is unchanged.
 
 ## Vendored files
 
 Files under `third_party/minecraftoss` this track patched or added. Files that track D0 added count as patched here.
 
 - Patched (6): `entities/Cargo.toml`, `entities/src/world.rs`, `entities/src/world/families.rs`, `entities/src/world/families/bosses.rs`, `entities/src/world/families/pests/probe.rs` (test only), `entities/src/world/families/tests.rs` (test only).
-- Added (2): `entities/src/world/families/bosses/elden_bosses.rs`, `entities/src/world/families/bosses/elden_bosses/arena.rs`.
+- Added (3): `entities/src/world/families/bosses/elden_bosses.rs`, `entities/src/world/families/bosses/elden_bosses/arena.rs`, `entities/src/world/families/bosses/elden_bosses/blows.rs`.
 - `entities/Cargo.toml` depends on `elden_boss` (a path dependency on `crates/elden_boss`): the first vendored crate that depends on a fork crate. The root `Cargo.lock` covers it, as the minecraftoss crates have no workspace of their own.
+
+## State doc changes
+
+Wording for the docs this track must not edit; the merge copies it in.
+
+- `docs/MULTIPLAYER.md`, section 9.2 "Mob moves", a new bullet after "Flags that renderers read but neither the NBT nor `MobLook` carry are added to `ServerMob`": "An Elden Ring boss's pose and phase ride the registry's `MobShow.family` like every registered mob's. His daggers in flight ride `MobShow.elden: Option<EldenShow>`: the three newest, each its start, velocity and age, so a friend draws them where the host does. Every other mob sends `None`, one byte."
+- `CLAUDE.md`, Roadmap step 3: "**Elden Ring bosses:** Margit first, then more. Margit's proof of concept is in (round 10, track F): `/summon iw4l:margit` or a lantern on two gold blocks summons him, and the host and friends fight him with MW2 guns and Minecraft weapons through both phases, with his boss bar, music, fog ring and reward; he is our own stand-in model with vanilla sounds. Next: the host loads the real assets and sends them to friends, then more bosses. Design: `docs/ELDEN-RING-BOSSES.md`."
+- `docs/MINECRAFT-SURVIVAL.md`, a new section "### Bosses (round 10, track F)" under "## Implemented", after "### Survival and combat": "Margit, the Fell Omen (`iw4l:margit`), the first Elden Ring boss, built from `docs/ELDEN-RING-BOSSES.md`. `/summon iw4l:margit` or a standing lantern placed on two stacked gold blocks (not on Peaceful) summons him asleep at an anchor; he wakes when a player comes within 24 blocks, fights within a 24-block leash marked by a ring of gold motes on the ground, and resets after 5 s with nobody within 40 blocks. His moves, phases, stance, kneel and criticals are data in the pure crate `crates/elden_boss`; he lives in the entity world as a registered family (`iw4l:margit`, hit key 96) and is saved as a vanilla `minecraft:marker` with `data.iw4l`, so vanilla 26.3 loads the world. Minecraft weapons hurt him with no hurt cooldown, MW2 bullets and blasts through his own resistances; his health scales with the fighters at the wake (x1.6 for two). Every player within 48 blocks gets his red boss bar and the boss music; his death tells every fighter GREAT ENEMY FELLED and drops an enchanted golden apple, gold and experience by fighter. Friends see every move, his golden weapons and his daggers in flight. He is a cube model with a skin painted by code and vanilla sounds; nothing comes from ELDEN RING yet."
+- `docs/MINECRAFT-SURVIVAL.md`, "## Limitations", "### Mobs", new bullets: "Margit: he walks through water and lava with his dry ground walk; his fog ring blocks nothing."
 
 ## Group er-core
 
@@ -518,3 +569,539 @@ After 4556eca4.
   - The new `.rs` files of segment f2 (`elden_bosses.rs` and `arena.rs` in the entities crate, `elden_save.rs` and `families/bosses/elden_bosses.rs` in `minecraft_terrain`) pass `rustfmt --check --edition 2021` with empty output on their staged content, and no line the segment added holds a comment.
 - **Decision:** a `RUSTC_WRAPPER` change does not change cargo's fingerprints, so the check units built through `clippy-driver` replay clippy's warnings on a later plain `check`. Touching `arena.rs` afterwards rebuilt them with rustc; the launcher check above shows no entities warnings again.
 - **Owner's steps:** none: no behaviour changes. The combined kit at the top covers every commit of segment f2 (7 to 16).
+
+## Group er-look
+
+Brief F3, commits F3.1-F3.3, with design doc 5.3, 5.4 and 14.1. It starts on 48b1ecf2 (`minecraft-survival` after release 3, with E2's segment e2a merged in 7c017f0e), so arrows and thrown things already reach Margit through D0's generic arms.
+
+### 17. Margit is drawn as a hooded old man with a cane
+
+After 48b1ecf2.
+
+- **Changed (`minecraft_terrain`):**
+  - New `elden_skin.rs`: `PATH` and `TEXTURE` (`minecraft:iw4l/margit`) and `paint()`, a 64 x 64 skin painted by code from a small palette with seeded noise (a hash of the pixel, no random crate): a pale face with gold eye pixels and dark brows under a shadow, a dark ragged cloak (the hem's bottom rows have transparent pixels, cut out like every entity skin), fur on the hood's rim and on the shoulders, a grey beard, bone horns with dark tips, cane wood with grain, a bare pale left arm, and one gold area with gleams for the dagger, sword, hammer and eyes. Each part's UV origin and paint area are constants beside it.
+  - New `elden_render.rs`: Margit as posed cubes on twelve bones (root, body, head, two horns, right arm, cane, left arm, the left hand that will hold the golden weapons, two legs, and the cloak's skirt): a body leaning 20 degrees forward with the head held up, a hood around the head, two gold eye cubes just in front of the face, a beard, two horns through the hood, a dark right sleeve with the cane planted in front of him, a bare left arm, and a skirt widening to a ragged hem 1.4 blocks wide. The root scales him by 1.4 (`SCALE`), so he stands 3.06 blocks to the tips of his horns, hunched, with his face 0.7 blocks in front of his feet. Idle is the idle clip of his table (Ready and Breathe, built into a looping `keyframes::Definition` from `ClipDef.poses`); walking is a limping one-second loop on `apply_walk` from the client's walk animation (the right leg swings far, the left short, the cane arm plants, the body sways and bobs); the head turns toward his look (head yaw from his facing, at most 75 degrees, and pitch).
+  - `families/bosses/elden_bosses.rs`: the family's `draw` calls `elden_render::append_bosses` (D0's render registry line), for the host, every friend and spawner cages alike. The shadow (1.0) and the pose push were already D0's.
+  - `mesh.rs`, beside the white tile: the skin is listed with the textures, skipped by the pack read and painted into its atlas cell (the cell is 64 pixels, so the skin fills it at full resolution). No PNG is committed. `lib.rs`: the two modules beside `elden_save`.
+- **Tests:** `elden_skin::tests::the_skin_paints_the_cloak_dark_and_the_beard_grey_in_their_uv_boxes` (also the gold eyes, the pale face, the gold and wood areas and the ragged hem). `elden_render::tests::a_standing_margit_is_about_3_blocks_tall_and_1_4_wide_at_his_feet` (fourteen cubes and two eye cubes, feet on the ground, 2.85-3.1 tall, 1.4 wide below half a block, his face ahead of his feet and his cane in front), `every_part_samples_its_own_paint` (every cube's UV box stays inside its paint area), `his_head_follows_his_target_and_his_legs_swing_as_he_walks`. `families::bosses::elden_bosses::tests::margit_is_drawn_from_his_painted_skin_through_his_family` (the atlas cell holds the painted skin, nothing is missing, `families::draw` gives sixteen cubes inside his region and his top 3.06 above his feet).
+- **Decisions:**
+  - **His body is drawn at his facing**, not at the client's body rotation: `ClientMob.y_rot` interpolated with `rot_lerp`. The client's body rotation lags the head by up to 75 degrees while he stands (vanilla's `BodyRotationControl`), and his strikes come from his facing, so a lagging body would swing his cane where no hit lands. The head turns from that facing toward his look.
+  - **The skin is listed in `mesh.rs` beside the white tile, not in the family's `TEXTURES`:** it is a tile made by code like `iw4l/white`, so the pack read must skip it and the cell loop must paint it, which only `mesh.rs` can do; D0's `TEXTURES` lists pack textures. The family's `TEXTURES` stays empty, and D0's test of the registry's texture list is unchanged.
+  - **The scale is 1.4,** so the hem is exactly his box's 1.4 blocks and the horns' tips 3.06 blocks up: his box is 3.0.
+  - **Spawner cages turn him:** his root takes the client pose's display turn (`MobPose.turn`) before his facing, so a spawner holding `iw4l:margit` spins him like any registered mob (D0's cage test).
+  - The hem is a separate skirt cube with its own paint area, so its ragged bottom rows do not cut holes in the other cloth parts, which share one cloth area (torso, sleeve, legs and the skirt's top).
+- **Closes from release 3's known limits:** "He is not drawn, only his shadow."
+- **Owner's steps.** He is drawn, walks and turns his head, but his moves are not animated yet (the next commit), so he stands still while his sounds play, and he has no golden weapons or particles. Release build, survival, Normal, by day, flat open ground in the Overworld. Name each screenshot by its label, `f3-17-1.png`.
+  1. `/summon iw4l:margit ~ ~ ~10`: a hunched old man in a dark hooded cloak stands there, about 3 blocks tall: a pale face with two gold eyes, a grey beard, two small pale horns through the hood, a fur rim on the hood and the shoulders, a cane in his right hand planted in front of him, and a bare pale left arm. His cloak ends in a ragged hem just above his feet. **Screenshot f3-17-1** from the front, about 6 blocks away.
+  2. Walk around him at 6-10 blocks: he limps after you (his right leg swings further than his left, his cane arm swings) and his head follows you. **Screenshot f3-17-2** from the side while he walks.
+  3. Stand still 5 blocks from him and watch his body slowly rise and fall (breathing) between moves.
+  4. Hit him with the sword: he flashes red like any mob.
+
+Kit: none needed for these steps (step 4: any sword).
+
+### 18. Margit's moves and golden weapons are animated from his move table
+
+After 239488a8.
+
+- **Changed (`elden_boss`):** `Clip.from`, the move clock a recovery started from (0 in every other state), so the renderer knows which branch ended the move and how long its recovery lasts. `Brain::clip()`, the clip he shows now (a move's own clock and hold while he plays one), for a copy made from a saved tag. `State::ALL`, the states in a fixed order, whose places are their codes in `FamilyShow`.
+- **Changed (vendored entities crate, `elden_bosses.rs`):** `EldenBoss.shown`, the clip of his last brain step (`Act.clip`), set at his spawn from `Brain::clip()`. The host's view world is a copy of the server's, so the host draws from it.
+- **Changed (`minecraft_terrain`):**
+  - `elden_save::read`: after the reset, `shown` is his walk home, so a loaded Margit and a friend's new copy show it.
+  - `families/bosses/elden_bosses.rs`: `show` and `show_on` carry the clip in D0's `FamilyShow`: the state (four bits, its place in `State::ALL`), held and awake as flags, and the move, its own clock, the phase and the recovery's start as values (`show_clip`, `shown_clip`). The friend's copy never steps its brain; it draws from this.
+  - `elden_render.rs`:
+    - **The pose table:** bone rotations for all 24 `Pose` keys (and the root sinking or rising, and the cane sliding in his grip so it stays planted in low poses). Each pose turns the head back against the body's twist, so his head keeps facing ahead through a swing; the look turn comes on top.
+    - **Clips:** one `keyframes::Definition` per move and per clip that is not picked (wake, kneel, fade, death and the phase 2 shift), built once from their `poses` (Catmull-Rom, seconds are ticks / 20). The renderer samples the shown clip's clock plus the partial tick. During a hold the clock stops, and the tick the hold starts on is drawn frozen too, so a delayed swing stays still on screen exactly as long as the brain holds it.
+    - Asleep, he kneels (the wake clip's first pose), so his wake rises from one knee. A recovery eases from the move's pose where the branch cut it back to Ready over that branch's recovery. Idle and the walk home keep commit 17's idle and walk.
+    - **Golden weapons:** the dagger (3 cubes), the sword (3) and the hammer (2), all in the skin's gold area, on the left hand bone. Each shows only inside its `conjure` window (of a move, or of the shift), grows from nothing to full size over 4 ticks (a scale about the hand, so no translucent pass), and is drawn at full light (`Skin` sky and block 15) without shading. No `append_glowing` and no tint.
+    - **The tell (design doc 5.4):** his eye cubes grow to twice their size and go full bright in the 8 ticks before each strike that follows the move's hold: the cane combo's third swing (clocks 36-43), the cane slam (21-27, 7 ticks after its hold) and the hammer slam (32-39).
+    - **The fade:** he is not drawn from 2 ticks before to 2 ticks after the fade's swap, so the jump to the new spot is not seen sliding.
+- **Tests:**
+  - `elden_render::tests`: `every_pose_sets_every_bone_it_names` (each pose names a bone once, a clip of it sets exactly those bones and leaves the rest), `each_moves_clip_lasts_as_long_as_the_move` (every move, the clips and the shift; the cane combo's first swing is drawn on its strike tick and he is back to ready at its end), `a_held_swing_keeps_its_pose_while_the_clock_stops` (the cane stays raised over any partial tick during the hold and on its first tick, and runs on after it), `the_dagger_part_shows_only_while_conjured` (clocks 2-22 of the dagger throw, growing 0, 0.25, 0.5, 0.75, 1 over 4 ticks, three more cubes drawn; the sword in the sweep, the hammer in the shift, nothing in a kneel), `the_golden_weapons_are_full_bright_and_gold_in_the_skin` (every weapon vertex at sky and block 15 inside the gold area, every pixel of their UV boxes gold, the body not full bright, a half-grown sword reaches less far), `his_eyes_flare_before_a_delayed_swing` (only the three windows above, never during the hold, rising through the window; the flaring eyes are full bright and twice as wide), and two more: `asleep_he_kneels_and_a_fade_hides_him_around_its_swap`, `a_recovery_eases_from_where_the_combo_was_cut_back_to_ready`.
+  - `families::bosses::elden_bosses::tests::a_friend_sees_margits_clip_from_his_show` (a host Margit held in his dagger throw; the friend's copy from his saved tag shows the walk home, then the host's `server_mobs` and `show_on` give it the same clip; every state round-trips through `FamilyShow`, an unknown state code is ignored). `margit_is_drawn_from_his_painted_skin_through_his_family` now finds him asleep on one knee, 2.56 blocks tall.
+  - `elden_boss::brain::tests::a_recovery_shows_the_move_clock_it_was_cut_at` (over 200 seeds: recoveries from clock 16 last under 14 ticks and from 26 under 16; a move shows 0; `clip()` shows a begun move and an asleep brain).
+- **Decisions:**
+  - **The clip goes through D0's `FamilyShow` now,** not a new `MobShow.elden` field: D0's rule is that every drawn state of a registered family goes through `show` and `show_on`, `FamilyShow` is already on the wire, and so friends draw his moves from this commit on with nothing new on the wire. Group `er-bar-friend` (F6) adds only the daggers in flight. Design doc 9.3 says so now.
+  - **A "delayed swing" is a strike that comes after its move's hold.** The flare starts when the hold is over (at most 8 ticks before the strike), never during the hold, so a long hold does not give the timing away. The dagger throw's hold has no strike after it, so it has no flare (the dagger shows in his hand the whole time).
+  - **Weapons and flaring eyes are unshaded** at full light, as vanilla's emissive layers (`RenderType.eyes`) are. They grow in over 4 ticks and vanish at the end of their window without shrinking.
+  - **Asleep, he kneels.** A Margit walking home after a reset drops to his knee when he reaches his anchor; there is no blend between clips, as the host's view is a copy of the server's each tick and keeps no memory of the last clip.
+  - **The poses were checked against the ground:** with a script on the model's own numbers (not committed), no part of any pose goes more than 0.01 blocks below his feet without a weapon; a hammer slammed down goes into the ground, as it should.
+- **Owner's steps.** Release build, survival, Normal, by day, flat open ground in the Overworld. His particles come in the next commit, and his strikes and daggers hurt nobody until group `er-fight`, so you can stand next to him. Name each screenshot by its label, `f3-18-1.png`.
+  1. `/summon iw4l:margit ~ ~ ~20`: he kneels on one knee, his head bowed, leaning on his cane (asleep). Walk to 15 blocks: he rises from the knee over about a second and a half. **Screenshot f3-18-1** while he rises.
+  2. Stand 2-3 blocks in front of him and do not attack. The cane combo: a swing from his right to his left, a backhand from left to right, then the cane goes up overhead and stays there a moment; his two gold eyes grow and glow just before it comes down. Sometimes he stops after one or two swings and settles back. **Screenshot f3-18-2** with the cane up and the eyes bright.
+  3. The cane slam: the cane up overhead, held, the eyes flare, and it comes down in front of him.
+  4. The golden sword: a glowing gold sword grows in his left hand with a chime, he draws it back to his left and sweeps it across to his right. **Screenshot f3-18-3** mid-sweep.
+  5. Step back to 15-20 blocks: a small golden dagger grows in his left hand, he raises it behind his head and holds it for one to one and a half seconds, then throws (no dagger flies yet). **Screenshot f3-18-4** while he holds it.
+  6. At 10-14 blocks: he crouches, roars, leaps with his arms up and lands crouched with the cane down.
+  7. Stand right next to him: he hops back and throws two or three times.
+  8. Hit him with the netherite sword at full charge five times quickly: he drops to one knee, leaning on his cane, for 4 seconds, then rises. Do it again and hit him once from the front while he kneels: he rises at once.
+  9. `/summon iw4l:margit ~ ~ ~6 {Health:401f}` and hit him once: he raises his left hand and a gold hammer grows in it. Then the hammer slam: the hammer high behind his head, held, the eyes flare, and he slams it down in front of him. **Screenshot f3-18-5** with the hammer raised.
+  10. `/summon iw4l:margit ~ ~ ~6 {Health:20f}` and hit him twice: he sinks to his knees and slumps forward, then is gone.
+  11. Optional, two windows (`scripts\mp-local.ps1`): the friend sees the same kneel, swings, golden weapons and eye flare. **Screenshot f3-18-6**, both windows.
+
+```
+IW4L_MINECRAFT_KIT=minecraft:netherite_sword+sharpness=5,minecraft:cooked_beef*32
+```
+
+### 19. Golden mist, sparks and dust show Margit's spawn, phase change, slams and death
+
+After 837f9572.
+
+- **Changed (`elden_boss`):** `Clip.criticals`, a wrapping count of his criticals that the brain keeps across resets, so a viewer can tell a critical from the shown state alone.
+- **Changed (vendored entities crate, `elden_bosses.rs`):** his steps. After his move each tick (walking or root motion), vanilla's step emission (`play_movement`, one step per block walked, none in the air, a monster's swim and splash) plays his own step, `entity.iron_golem.step` at volume 1.0 and pitch 0.7 (design doc 14.1), as a `Voice::Event`. Every other `Cue::Sound` already played on its tick (commit 8).
+- **Changed (`minecraft_terrain`):**
+  - New `elden_effects.rs`, what a viewer draws from the shown clip, with nothing sent:
+    - Each `Cue::Burst` of the clip's cue table (the move's, or the wake, kneel, fade, death or phase 2 shift clip's) fires once on its tick. The view keeps the last clip it showed in one `i32` per mob (D0's `ClientFx.seen`: state, move, clock and the critical count), so a tick seen twice fires nothing, and ticks the view skipped are caught up, at most 4 ticks back.
+    - **Golden mist:** totem sparkles in a sphere around his box with the totem's upward drift, and 16 gold `SpellKind::Effect` motes (gold is 1.0, 0.82, 0.25). It shows his rise, the shift's flash, both halves of a fade and his death.
+    - **Conjure sparks:** 10 `EndRod` sparks at his left hand (the def's dagger hand) as a golden weapon forms.
+    - **A slam:** 16 `Poof` puffs in a 1-block ring, flying outward, and one `Explosion` cloud, centred where the strike lands: a circle's or ring's centre ahead of him (the leap slams, the hammer's shockwave), or half the arc's reach for the cane slam.
+    - **Crits:** 16 `Crit` sparks from his chest when he kneels, and again when the critical count changes while he kneels.
+    - **Phase 2:** 2 gold `SpellKind::Effect` motes a tick drip from his body while he is awake and alive in phase 2.
+    - Nothing was added to `ambient_particles.rs`: the kinds and the spell particles' colour are the existing ones.
+  - `families/bosses/elden_bosses.rs`: the family's `client_effects` (D0's hook, called from every view's tick) runs the above from the client mob's position and facing, the same for the host and every friend. `FamilyShow` carries the critical count as its fifth value.
+  - `lib.rs`: the module beside `elden_render`.
+- **Tests:**
+  - `elden_effects::tests`: `what_he_showed_last_is_remembered_in_one_number`, `each_burst_fires_once_on_its_tick_and_skipped_ticks_catch_up` (the cane slam's dust on clock 29 only, not twice, caught up from 27 to 31, not from a first look at 40; the wake's mist after sleep; the sword's sparks when a branch starts it; a critical's crits during a kneel and none after a reset), `a_slam_rings_dust_where_his_strike_lands` (1, 2 and 1.75 blocks ahead for the leap, the hammer's ring and the cane slam; one explosion and 16 puffs on a 1-block ring).
+  - `families::bosses::elden_bosses::tests`: `a_slam_cue_bursts_on_its_tick_for_host_and_friend_views` (a host Margit plays the cane slam; the host's view and a friend's copy fed by `server_mobs` and `show_on` each draw one explosion, on the tick he shows clock 29, and the same 16 puffs), `golden_mist_shows_his_rise_and_phase_two_drips_gold` (nothing asleep; totem sparkles and 16 gold motes the tick he wakes; then 2 gold motes every tick in phase 2, none in phase 1 or dead). `a_friend_sees_margits_clip_from_his_show` also round-trips the critical count.
+  - `world::families::bosses::elden_bosses::tests::margit_steps_like_an_iron_golem_low` (entities: no step asleep; walking to a player 10 blocks away, at least 3 steps, all at volume 1.0 and pitch 0.7 in `hostile_volume`).
+  - `elden_boss::hurt::tests::a_melee_hit_from_the_front_on_a_kneeling_boss_is_a_critical_and_one_from_behind_is_not` also checks the count on his clip (0, then 1).
+- **Decisions:**
+  - **The critical count rides on the clip.** A critical jumps the kneel clock to its rise, but a view that skipped a tick sees the same jump, so the clock alone cannot show it. A count kept by the brain can, and a burst fires only while he kneels, so a reset (which starts a fresh count) never shows one.
+  - **Catch-up is 4 ticks:** a view that missed a few server ticks still shows a burst it skipped, and a friend who first sees him mid-clip sees no old slam.
+  - **Steps follow vanilla's step emission** (a step per block walked), not the walk clip's footfalls, so they match his speed and stop in the air.
+- **Runs (the whole group):** `test -p elden_boss -p minecraft_terrain -p minecraftoss-entities --locked --lib`: 54, 1575 (and 3 ignored) and 498 passed. After commit 18 the same run without the entities crate gave 54 and 1570; during commit 17, `minecraft_terrain` gave 1560 passed and one failure, D0's spawner cage test, until his root took the display turn; the spawner and Margit tests then passed (28). `check -p launcher --locked`: green after each commit, with only the old render_frame and skate warnings. `minecraft_survival` is not touched. The new files (`elden_skin.rs`, `elden_render.rs`, `elden_effects.rs`) pass `rustfmt --check --edition 2021` with empty output on their staged content, and no added line holds a comment.
+- **Closes from release 3's known limits:** "He has no particles (golden mist, sparks, dust)". The golden ring at the leash is group `er-altar`'s.
+- **Owner's steps.** Release build, survival, Normal, by day, flat open ground in the Overworld. His strikes and daggers still hurt nobody until group `er-fight`. Name each screenshot by its label, `f3-19-1.png`.
+  1. `/summon iw4l:margit ~ ~ ~20` and walk to 15 blocks: as he rises from his knee, green-gold sparkles and gold motes swirl around him with the mirror sound. **Screenshot f3-19-1** while they swirl.
+  2. Walk around him at 6-10 blocks: low, heavy iron golem steps as he limps after you.
+  3. Stand 2-3 blocks in front of him and wait for the cane slam: where the cane hits the ground, 1-2 blocks in front of him, a ring of white puffs flies outward with a small grey explosion cloud and the mace's smash. **Screenshot f3-19-2** at the slam.
+  4. When the golden sword or a dagger forms in his left hand, white sparks fly from the hand with the chime.
+  5. At 10-14 blocks: the leap slam; the ring of puffs and the cloud where he lands.
+  6. Hit him with the netherite sword at full charge five times quickly: sparks burst from his chest as he drops to one knee. Hit him once from the front while he kneels: another burst of sparks with the critical sound, and he rises. **Screenshot f3-19-3** at the second burst.
+  7. `/summon iw4l:margit ~ ~ ~6 {Health:401f}` and hit him once: green-gold sparkles and gold motes flash around him as the hammer forms, and from then on gold motes keep dripping from him. Wait for the hammer slam: a ring of puffs 2 blocks in front of him. **Screenshot f3-19-4** with the gold motes.
+  8. `/summon iw4l:margit ~ ~ ~6 {Health:20f}` and hit him twice: sparkles and gold motes as he falls, and again as he slumps and vanishes.
+  9. Optional, the fade: build a ring of cobblestone 6 high, 4 blocks out from your block on every side, with him outside: after about 5 seconds sparkles where he vanishes, and again inside the ring where he appears.
+  10. Optional, two windows (`scripts\mp-local.ps1`): the friend sees the same sparkles, sparks, puffs and dripping gold, and hears the steps. **Screenshot f3-19-5**, both windows.
+
+```
+IW4L_MINECRAFT_KIT=minecraft:netherite_sword+sharpness=5,minecraft:cobblestone*256,minecraft:iron_pickaxe,minecraft:cooked_beef*32
+```
+
+## Group er-fight
+
+Brief F4, commits F4.1 and F4.2, with design doc sections 5, 7.4 and 13. It starts on 2815efff (group er-look).
+
+### 20. Margit's cane, golden weapons and daggers hurt players
+
+After 2815efff.
+
+- **Changed (`elden_boss`):**
+  - `data.rs`: `Push` (throw and lift) and `Reactions` (one `Push` per reaction, `push(reaction)`), and `BossDef.reactions`. `margit.rs`: flinch none, stagger a throw of 0.8, knockdown a throw of 1.2 and a lift of 0.5 (design doc 7.4), so every number stays in `margit.rs`.
+  - New `flight.rs`: `Flight` (start, velocity, age; group er-bar-friend sends the same three), `Flight::launch` from the brain's `Dagger`, `at(ticks)` and `path()`, and `fly(def, wall, players) -> Flown`. On each tick the dagger's path is its velocity (1.5 blocks). The first player whose box the path crosses before the wall (`shape::segment`) is struck with the def's dagger hit (4 holy, flinch, the dagger weapon, strike `THROWN`, coming from 1 block behind where it struck); a wall stops it where the path meets it; otherwise it moves on and is spent after 40 moves. `share_of` turns a block hit point into a share of the path.
+  - `brain.rs`: `Seen.sight`, whether he sees the player (eye to eye, no block between). A strike skips a player he cannot see on that tick, and may still land later in its window. Throws are unchanged.
+- **Changed (vendored entities crate):**
+  - New `world/families/bosses/elden_bosses/blows.rs`:
+    - `kind(def, hit, feet, facing)`: a physical hit is `PlayerHitKind::Melee` from where it came (his feet for an arc, the centre of a circle or ring), with the reaction's throw away from there (or along his facing when the player stands on that point), its lift, and `disable_shield_seconds` from the strike's shield ticks (100 ticks, 5 s, on both hammer strikes). A holy hit is D0's `PlayerHitKind::Typed` with vanilla's `minecraft:indirect_magic` and its message `indirectMagic`, `bypasses_armor` and `bypasses_shield`, from where it came, with the reaction's throw and lift as its push.
+    - `fly(mob, level, players, thrown)`: moves every dagger in flight one tick against the level's blocks (`sight::clip` on collision shapes, so grass and flowers do not stop it) and the eligible players' boxes, plays `item.trident.hit` (the def's `dagger_hit` cue) where one stops or strikes, drops the spent ones, then adds the daggers his brain threw this tick, so a dagger first moves on the tick after the throw.
+    - `deal(world, id, players, struck)`: each hit becomes a `PlayerHit` through D0's `family_strike`, with his id as the source.
+  - `elden_bosses.rs`: `EldenBoss.daggers`. His tick takes the `Act`'s hits and throws only on a tick his brain stepped (a Margit without AI swings and throws nothing; daggers already in flight fly on), flies the daggers, and deals the hits after his move. `think` passes his eyes (feet + 2.55) to the sense.
+  - `arena.rs` `seen`: each eligible player's `sight` from `sight::line_of_sight` (vanilla's `hasLineOfSight`, eye to eye).
+- **Changed (`minecraft_terrain`, `elden_render.rs`):** `dagger_root` and `append_daggers`: each dagger in flight is F3's dagger part (three gold cubes) at full light, scaled like Margit, centred on its position with the blade along its flight, and drawn one tick behind like every mob's position (`age - 1 + partial`, never before his hand). `append_bosses` draws them after his model under their own overlay mark, so his red hurt flash does not tint them, and also while a fade hides him.
+- **Tests:**
+  - `elden_boss`: `flight::tests::a_flight_stops_where_the_wall_or_the_nearer_player_is`, `brain::tests::a_player_he_cannot_see_is_not_struck`.
+  - Entities, `world::families::bosses::elden_bosses::blows::tests`:
+    - `a_cane_hit_becomes_a_melee_player_hit_from_margit` (4 damage from his id, from his feet, no extra throw or lift, the shield left up)
+    - `the_hammer_disables_a_shield_for_5_seconds` (the hammer's arc is melee with 5 s; its shockwave is a holy 4 through shields and armour)
+    - `a_knockdown_lifts_and_throws_the_player` (lift 0.5 and a throw of 1.2 away from him; a stagger's 0.8 away, and along his facing when the player stands on the point)
+    - `a_dagger_stops_at_a_wall` (a 4-high wall 7.5 blocks out: no hit, one `item.trident.hit` on the wall's face)
+    - `a_dagger_hits_the_first_player_on_its_path` (a player stepping into its path after the throw takes it; the target behind does not)
+    - `a_dagger_is_gone_after_40_ticks` (in flight for 40 ticks, then gone with no hit and no sound)
+    - and `arena::tests::a_player_behind_a_wall_is_out_of_his_sight` (he still sees into a 2-deep hole beside him).
+  - Terrain: `elden_render::tests::a_flying_dagger_is_drawn_along_its_flight`.
+  - Survival, `death::tests`: `a_holy_hit_is_magic_and_ignores_a_raised_shield` (his sword sweep through `mob_hit`: `indirect_magic`, past armour, no shield direction so a raised shield blocks nothing, knockback from where it came and a stagger of 0.8; his cane slam is `mob_attack`, and a raised shield facing him blocks it), `a_player_killed_by_a_dagger_is_told_killed_using_magic` ("Sos was killed by Margit, the Fell Omen using magic"; the test language gains vanilla's `death.attack.indirectMagic`).
+- **Runs:** `test -p elden_boss --locked`: 56 passed. `test -p minecraftoss-entities --locked --lib`: 505 passed. `test -p minecraft_terrain --locked --lib elden`: 26 passed. `test -p minecraft_survival --locked --lib death::tests`: 51 passed. `check -p launcher --locked`: green, with only the old render_frame and skate warnings. The new files (`flight.rs`, `blows.rs`) and the track's own files touched here pass `rustfmt --check` (edition 2024 in `elden_boss`, 2021 in the entities crate and `minecraft_terrain`) with empty output on their content with LF line ends.
+- **Decisions:**
+  - **Holy hits are `Typed`, not `Magic`.** The brief names `PlayerHitKind::Magic { at }`, but the survival side gives `Magic` no knockback source and no push. `Typed` with `minecraft:indirect_magic` and `indirectMagic` gives the same damage type, death line, armour and shield bypass and difficulty scaling, plus vanilla's knockback (indirect magic is not in 26.3's `#no_knockback`, checked in the jar) and the sword sweep's stagger.
+  - **Strikes need sight.** Vanilla's `MeleeAttackGoal` only attacks a target it sees, eye to eye, so the brain gets the answer in `Seen.sight` and skips unseen players. Because the brain decides, its stuck rule ("none of his hits landed") counts only hits that really land, so a player behind a wall he cannot reach still gets the fade. He sees into a 2-deep hole beside him, so commit 12's hole rule holds.
+  - **A dagger that strikes or meets a block is gone at once.** It does not stick in the wall. The hit sound plays where it stopped.
+  - **Daggers fly on while he dies** and are gone with his body. A Margit without AI never throws one.
+  - **Reactions push away from where the hit came from**, not from his feet: a leap's landing circle or a hammer's shockwave throws a player away from its centre.
+- **Closes from release 3's known limits:** "His strikes and daggers hurt nobody, and no dagger flies", and "His strikes ignore walls".
+- **Left for later:** a friend is hit by daggers but does not see them fly until group er-bar-friend sends them in `MobShow`. The host sees them.
+- **Owner's steps.** Release build, survival, Normal, by day, flat open ground in the Overworld. Wear the diamond armour except where a step says otherwise, and keep a golden apple ready. Name each screenshot by its label, `f4-20-1.png`.
+  1. Take the armour off. `/summon iw4l:margit ~ ~ ~6` and stand 2-3 blocks in front of him. The cane combo: each of the first two swings takes about 2 hearts and pushes you back a little; the third (after the raised cane and the flaring eyes) takes 3 hearts and throws you back further. **Screenshot f4-20-1** of your health right after a swing.
+  2. Put the armour on and hold the shield up facing him: his cane swings and the cane slam are blocked with the shield sound and take nothing.
+  3. Keep the shield up for the golden sword: the sweep goes through the shield and the armour, takes about 3.5 hearts and throws you back a block or so. **Screenshot f4-20-2** right after it.
+  4. Step back to 15-20 blocks and stand still: the golden dagger leaves his hand as a small glowing gold blade and flies at your chest. It hits through the raised shield and the armour for 2 hearts with the trident's hit sound. Next time, strafe sideways as he throws: it flies past. **Screenshot f4-20-3** with a dagger in the air.
+  5. Build a cobblestone wall 3 high and 5 wide between you and him at about 15 blocks and stand right behind it: a dagger thrown at you clinks into the wall with the trident's hit sound and does nothing.
+  6. Stay behind that wall with him close on the other side: his swings do not reach through it, and he walks around it to get at you.
+  7. At 10-14 blocks in the open, wait for the leap: he lands in front of you, takes 4 hearts and tosses you up and back.
+  8. `/summon iw4l:margit ~ ~ ~6 {Health:401f}` and hit him once: the hammer forms. Stand 2-3 blocks in front with the shield raised for the hammer slam: the shield blocks the hammer but goes down with the break sound and stays unusable for 5 seconds, you are thrown back, and the shockwave ring then takes 2 hearts through the shield. Without the shield the hammer tosses you up and back. For the next hammer slam, jump as the ring spreads under you: the ring does nothing.
+  9. Take the armour off, drop any totem, and let the cane kill you: "Sos was slain by Margit, the Fell Omen". Respawn, summon another, and let a dagger or the sword finish you: "Sos was killed by Margit, the Fell Omen using magic". **Screenshot f4-20-4** of the death screen.
+  10. Optional, two windows (`scripts\mp-local.ps1`): a friend standing in a dagger's path is hurt by it, though the friend does not see it fly yet.
+
+```
+IW4L_MINECRAFT_KIT=minecraft:netherite_sword+sharpness=5,minecraft:shield,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots,minecraft:cobblestone*64,minecraft:golden_apple*16,minecraft:cooked_beef*32
+```
+
+### 21. Margit drops gold and experience when he dies, and every fighter sees GREAT ENEMY FELLED
+
+After 55daa528.
+
+- **Changed (`elden_boss`, `data.rs`):** `Experience::for_fighters` (the base plus the per-fighter amount for each fighter after the first), `Loot::count_for` (the count plus the per-fighter count for each fighter, at least one fighter), and `FELLED`, "GREAT ENEMY FELLED". The numbers stay in `margit.rs` (design doc 13): 1 enchanted golden apple, 2 gold blocks, 3 gold ingots per fighter, and 100 experience plus 50 per fighter after the first.
+- **Changed (vendored entities crate, `elden_bosses.rs`):**
+  - D0's `experience` hook gives his experience by `Brain::fighters()` (the wake's fighters plus everyone who hurt him), and the `death_drops` hook his items by the same count, in stacks of at most 64. D0's `take_deaths` applies vanilla's rules to both: no drops and no experience with `mob_drops` off, and experience only for a player's kill.
+  - `EldenBoss.felled`: on the hit that kills him, `take` keeps the fighters. `EntityWorld::take_elden_felled()` hands each fighter out once, with his def.
+- **Changed (`minecraft_terrain`):**
+  - New `elden_felled.rs`: `Felled { player, text, sounds }` and `felled(world)`, each fighter with "GREAT ENEMY FELLED" and the def's `felled` cue sounds (`minecraft:ui.toast.challenge_complete`).
+  - `server.rs`: `Output.elden_felled`, filled in `run_tick` beside `dragons_killed`, every tick, so a kill by a player's swing between ticks is told on the next one.
+- **Changed (`minecraft_survival`):**
+  - `entities.rs`: `PlayerOutputs.own_sounds` (sounds only that player hears), and `route` sends each `Felled` to its player's queue beside the wither bars: the line as `Clientbound::System { overlay: true }` in `told`, and the chime in `own_sounds`. A fighter not in the level (gone to another dimension) is skipped.
+  - `heard.rs`: `minecraft:ui.toast.challenge_complete` joins `ACTOR_ONLY`, so the chime a friend's recorded sounds retell reaches that friend only, and the host's reaches no friend.
+- **Changed (`render_anim`):**
+  - `minecraft_players.rs` `struck`: each own sound plays for that player, not at a place (the host hears it, a friend's recorder retells it to the friend). The line goes out with the other `told` lines: to a friend as `ToClient::Chat`, which the friend shows on the action bar (`show_overlays`).
+  - `minecraft_world.rs`: the host's struck lines now also go to `minecraft_respawn::show_messages`, which puts an overlay line on the action bar; the chat still takes the others. Until now no struck line was an overlay.
+- **Tests:**
+  - `elden_boss`: `margit::tests::his_reward_grows_with_the_fighters`.
+  - Entities: `world::families::bosses::elden_bosses::tests::margit_drops_gold_and_experience_by_fighters` (two fighters at the wake and a third who hurt him later: an enchanted golden apple, 2 gold blocks, 9 gold ingots and 200 experience; with `mob_drops` off no death drops anything; the three are felled once either way). `a_killing_blow_credits_the_player_and_joins_the_death_list` now expects one fighter's reward (100 experience, three stacks).
+  - Terrain: `elden_felled::tests::each_fighter_is_told_once_with_the_challenge_chime`.
+  - Survival: `entities::tests::every_fighter_is_told_great_enemy_felled` (the host and a friend each get the white action-bar line and the chime; a player of another level gets nothing; the chime is actor only), and `heard::tests::bubbles_and_portal_noises_stay_with_the_player_who_made_them` also checks the chime.
+- **Runs:** `test -p elden_boss --locked`: 57 passed. `test -p minecraftoss-entities --locked --lib elden`: 30 passed (the whole crate gave 505 in commit 20, and only Margit's files changed since). `test -p minecraft_terrain --locked --lib`: 1577 passed and 3 ignored. `test -p minecraft_survival --locked`: 803 passed, `vanilla_world` 1 passed. `test -p render_anim --locked --lib`: 217 passed. `check -p launcher --locked`: green, with only the old render_frame and skate warnings. The new `elden_felled.rs` and the track's own files touched here pass `rustfmt --check` with empty output on their content with LF line ends.
+- **Decisions:**
+  - **The drops are the death's equipment**, as the wither's nether star is, so they drop where he dies through the existing death drops, after the (empty) loot table.
+  - **The line and the chime do not depend on `mob_drops`**: only the items and the experience do, as in vanilla. They come whether a player or the world landed the killing hit, since he only dies in a fight.
+  - **The fighters are told from his state, not from the death list:** with `mob_drops` off the death list is empty, and a death's experience needs a player's kill.
+  - **The chime is an own sound of the player, not a mob voice:** mob voices are heard by everyone near, and the design wants it for the fighters alone, so it rides `ACTOR_ONLY` like the raid horn.
+- **Closes from release 3's known limits:** "he gives no drops, experience or reward" (the boss bar, music and altar are groups er-bar-friend and er-altar).
+- **Owner's steps.** Release build, survival, Normal, by day, flat open ground in the Overworld, best in a fresh world so the experience bar starts empty. Name each screenshot by its label, `f4-21-1.png`.
+  1. `/summon iw4l:margit ~ ~ ~6 {Health:20f}`, walk up as he rises and hit him twice with the netherite sword: he sinks into golden mist. "GREAT ENEMY FELLED" shows in white above the hotbar with the challenge-complete fanfare, and where he fell lie an enchanted golden apple, 2 gold blocks, 3 gold ingots and experience orbs. **Screenshot f4-21-1** with the line and the drops in view.
+  2. Pick it all up: the orbs give 100 points, about level 7 from an empty bar.
+  3. `/gamerule mob_drops false`, then summon and kill another the same way: the line and the fanfare come, and nothing drops. `/gamerule mob_drops true`.
+  4. Optional, two windows (`scripts\mp-local.ps1`): both stand within 24 blocks as the host runs `/summon iw4l:margit ~ ~ ~6 {Health:20f}`, and the friend lands the last hit. Both windows show "GREAT ENEMY FELLED" and each hears the fanfare once; the drops are 6 gold ingots with the apple and the 2 gold blocks, and 150 points of orbs. **Screenshot f4-21-2**, both windows.
+  5. Optional, two windows: the friend stays 60 blocks away and never hits him while the host kills one: only the host sees the line and hears the fanfare.
+
+```
+IW4L_MINECRAFT_KIT=minecraft:netherite_sword+sharpness=5,minecraft:cooked_beef*32
+```
+
+## Group er-guns
+
+Brief F5, commit F5.1, with design doc sections 2.2 and 7.1. It starts on 1103ebd2 (group er-fight).
+
+### 22. MW2 guns and explosives hurt Margit through his own resistances
+
+After 1103ebd2.
+
+- **Changed (vendored entities crate, `elden_bosses.rs`):** `EntityWorld::elden_hurt(id, source, player)`: an `elden_boss::Source` straight into his `take` (commit 9: his resistances and stance, no hurt cooldown for anything but `Environment`, the red flash, his hurt voice at most every 10 ticks, and the fighters kept on a killing hit). A hit he takes from a player then gets the same blame and credit as D0's arms give a player's hit: `hurt_by` names the player, and `credit` with `minecraft:player` remembers the hit for the kill (`killed_by_player`, so his experience drops). `PLAYER` is that attacker name.
+- **Changed (`minecraft_terrain`, `server.rs`):** `Command::EldenHurt { id, source, player }` beside `Command::EndHit`, sent by `ServerHandle::elden_hurt` beside `ServerHandle::end_hit` and run beside it in the command loop by `ServerSim::elden_hurt`, which applies the hit and then drops the remains of a death (`drop_death_loot`, as `mob_blast` does), so his gold and orbs fall at once.
+- **Changed (`minecraft_survival`):**
+  - `Cargo.toml`: `elden_boss = { path = "../elden_boss" }`. `Cargo.lock` gained the edge from one `check` without `--locked`.
+  - `entities.rs`: `elden_boss_of(key)` beside `end_target_of`: a hit key whose byte is the Elden Ring bosses' family key (96, `elden_bosses::KEY`, D0's allocation in `docs/round10/mobs.md`) names a boss. In `Entities::shoot` such a key goes to `elden_hurt` with `Source::Bullet { mw2 }` and the shooter's id, and in `Entities::blast` with `Source::Blast { mw2 }` and the blast's player, in both cases right after the dragon's `end_hit` arm and instead of `mob_action` and `mob_blast`. `mw2` is the raw MW2 damage `sim::combat` sends, already scaled by distance and hit location (a head hit is x1.4), before any mob scale: his own `Bullet` (x0.2 x0.5, stance /60) and `Blast` (x0.8 x0.25, stance /15) rules apply instead of the generic melee hit at x0.2 and level blast at x0.8.
+- **Already there (D0's registry):** his hit key encodes and decodes through D0's generic arm (`MobHit::Family(96, id)`), and his 1.4 x 3.0 box reaches MW2 through `EntityView::boxes`, which `shot_boxes` hands to MW2's trace and aim assist (`sim::voxel::set_mob_boxes`). A friend's boxes come from the friend's mirrored copy with the host's ids, and friends' shots reach the host's `shoot` and `blast` with the friend's id (`render_anim` `minecraft_world.rs` and `minecraft_levels.rs`), so threat, the kill and the reward go to the friend with nothing new.
+- **Outside the registry:** `entities.rs` `shoot` and `blast` (survival) are not in D0's never-edit list (that names `encode`, `decode`, the key constants, `resting_monsters` and `mob_hit`, none of which changed); the brief (F5) names these two sites. Each gained one arm beside the dragon's, and the new `elden_boss_of` asks `decode` rather than a key constant of its own.
+- **Design doc kept in step:** 2.2 names the route (`ServerHandle::elden_hurt` beside the dragon's `end_hit`). No number changed.
+- **Tests:**
+  - Entities, `world::families::bosses::elden_bosses::tests`:
+    - `a_kneeling_margit_takes_half_again_from_bullets` (two fighters, 1280 health: 160 bullets of 30 points take 480 health and his 80 stance, he kneels, and the next bullet takes 4.5 and no stance; a bullet is never a critical)
+    - `a_friends_bullet_credits_the_friend` (player 1 stands nearer and is his target; player 2's bullets, one every 10 ticks, turn him on player 2 after his move; `hurt_by` and the core's blame name player 2; player 2's killing bullet is a player's kill with two fighters' 150 experience, and both fighters are felled)
+  - Survival, `entities::tests`:
+    - `a_margit_hit_key_encodes_and_decodes` (byte 96 round-trips and names a boss; a wither, a silverfish and the free byte 97 do not; no End, fireball, bullet or frame key)
+    - `an_m4_bullet_on_margit_takes_3_health_and_half_a_stance_point` (through `Entities::shoot` with 30 from the friend: 797 health, 79.5 stance, hurt by the friend; the host stands 41 blocks from his anchor, so he is no fighter and Margit keeps 800)
+    - `a_frag_on_margit_takes_30` (through `Entities::blast` with 150 by the host: 770 health, 70 stance, hurt by the host)
+    - `a_friends_killing_bullet_gives_the_friend_margits_reward` (a Margit summoned at 2 health at the same spot walks up to the friend and dies to one bullet from the friend: the friend gets "GREAT ENEMY FELLED" on the action bar and all 100 points of his orbs; the host, no fighter, gets neither)
+  - Survival, `entity_view::tests::margits_gun_box_is_1_4_by_3` (one shot box with his family key, 1.4 wide and 3 tall from his feet, the same box MW2's trace and aim assist read).
+- **Runs:** `test -p minecraftoss-entities --locked --lib`: 508 passed. `test -p minecraft_terrain --locked --lib`: 1577 passed and 3 ignored. `test -p minecraft_survival --locked`: 808 passed, `vanilla_world` 1 passed; its 7 Margit tests passed three runs in a row. `check -p launcher --locked`: green, with only the old render_frame and skate warnings. `elden_bosses.rs` passes `rustfmt --check --edition 2021` with empty output on its content with LF line ends, and no added line holds a comment. `elden_boss` is not touched.
+- **Decisions:**
+  - **The brief's `Hurt::Bullet` is `Source::Bullet`:** group er-rules named the enum of hit kinds `Source`, and `elden_boss::Hurt` is a source with the player and the tick. The command carries the source and the player; the tick is his own (`tick_of`), which only the level knows.
+  - **No player attack sound for a bullet on Margit.** `mob_action` played the sword's swoosh (`entity.player.attack.strong`) at the shooter for every bullet on a mob; a bullet is not a swing, and the dragon's `end_hit` plays none either. His hurt voice and the red flash stay.
+  - **Blasts neither push nor slow him:** `mob_blast` pushed by the impact and gave a stun's slowness, but nothing moves him but his own legs (commit 8) and no effect lasts on him (commit 8), so `elden_hurt` takes neither. A stun or flash with no damage takes nothing and is refused like any 0 hit.
+  - **A blast with no player** (`by_player` is `None`) still hurts him as a `Blast` with no credit, like a level explosion by nobody.
+  - **A player's MW2 hit is credited as direct** (`credit(.., true)`), as `mob_action` and `player_blast` credited it before.
+  - **The survival tests' spot:** he is summoned on the corner of the friend's stone platform, 41 blocks from the host, so only the friend is a fighter at the wake. For the kill he first walks up to the friend: orbs dropped on the corner rolled off the platform (a first run got 80 of the 100 points).
+- **Closes from release 3's known limits:** "MW2 bullets and blasts count as melee hits and level blasts until group er-guns. So a bullet breaks his stance at 1.5 times, and a close shot from the front at a kneeling Margit is a critical."
+- **Owner's steps.** Release build, survival, Normal, by day, flat open ground in the Overworld. The class's M4A1 (or the kit's) with Red Dot Sight. His boss bar comes with group er-bar-friend, so these steps count hits. Name each screenshot by its label, `f5-22-1.png`.
+  1. `/summon iw4l:margit ~ ~ ~10 {Health:20f}`: he rises. From where you stand, about 10 blocks, shoot his chest with single M4A1 shots and count the hit markers: he dies on the 7th body hit (each takes 3 of his 20 health; release 3 took 4). Each hit shows the hit marker and his red flash, his deep hurt voice comes at most every half second, and you no longer hear a sword swoosh with each hit. **Screenshot f5-22-1** as he sinks into the golden mist.
+  2. The same with head shots (the top of his hood): 5 hits.
+  3. `/summon iw4l:margit ~ ~ ~10 {Health:20f}` and the Barrett: two or three body hits kill him.
+  4. `/summon iw4l:margit ~ ~ ~10 {Health:40f}`: cook a frag so it bursts right at his feet. He lives (it takes about 30; release 3 took about 60). A few M4A1 body hits finish him.
+  5. `/summon iw4l:margit ~ ~ ~10`: hold the trigger on his body from about 10 blocks, reloading quickly, and eat a golden apple when you need one. After about 135 body hits (half his health) he raises his left hand and the golden hammer forms. Keep shooting: after about 160 hits in all (five or six magazines) he drops to one knee in sparks with the stunned sound. If you stop shooting for 6 seconds his stance refills, and the count for the kneel starts again. **Screenshot f5-22-2** as he kneels.
+  6. While he kneels, walk up and shoot him from the front at close range: no critical sound, and he stays down for the full 4 seconds (a bullet is never a critical; release 3 made it one).
+  7. `/summon iw4l:margit ~ ~ ~10 {Health:40f}` and fire an RPG rocket at his feet: it takes at least as much as the frag, and he dies by the second rocket at the latest.
+  8. Optional, two windows (`scripts\mp-local.ps1`, with `/op Friend`): the host stands more than 40 blocks away. The friend runs `/summon iw4l:margit ~ ~ ~10 {Health:20f}` and kills him with 7 M4A1 body hits: only the friend sees "GREAT ENEMY FELLED" and hears the fanfare, and the friend picks up the 100 points of orbs. **Screenshot f5-22-3**, the friend's window.
+
+```
+IW4L_MINECRAFT_KIT=iw4l:m4,iw4l:rifle_ammo*64,iw4l:rifle_ammo*64,iw4l:rifle_ammo*64,iw4l:rifle_ammo*64,iw4l:frag_grenade*8,iw4l:barrett,iw4l:sniper_rounds*64,iw4l:rpg,iw4l:rocket*16,minecraft:golden_apple*16,minecraft:cooked_beef*32
+```
+
+## Group er-bar-friend
+
+Brief F6, commits F6.1 and F6.2, with design doc sections 9 and 10. It starts on 9f730490 (group er-guns).
+
+### 23. Everyone near Margit sees his boss bar and hears the boss music
+
+After 9f730490.
+
+- **Changed (`minecraft_terrain`):**
+  - New `elden_bar.rs`, like `wither_bar.rs`: `EldenBar { id, name, progress }`, `bosses(world)` (every Elden Ring boss of the level that is awake: not asleep, not walking home after a reset, not dead), `bars_for(bosses, feet)` (each boss within his def's `arena.bar`, 48 blocks, of the feet, measured in all three directions from his body) and `progress` (health over his scaled maximum, so two fighters' 1280 is a full bar). `COLOR` red and `OVERLAY` progress. `lib.rs`: the module beside `elden_effects`.
+  - `server.rs`: `Output.elden_bars` beside `wither_bars`, filled beside it every tick by `elden_bars(sim, input)`: one list per player of the level, empty for a dead player.
+- **Changed (`minecraft_survival`):** `PlayerOutputs.elden_bars` and its route beside the wither bars (`entities.rs`), `Player.elden_bars` (`player.rs`). `session.rs`: `ELDEN_BARS = 1 << 41`, `elden_bar_id(id)`, `elden_bar(bar)` (`BossBarOperation::Add` with `Text::literal` of his name, `BossBarColor::Red`, `BossBarOverlay::Progress`, and `play_music` as the only flag), `Session::send_elden_bars` (add, progress and remove, as the wither's) and `Sessions::send_elden_bars`.
+- **Changed (`frame`, `hud`):** `MinecraftUi.elden_bars` beside `wither_bars`. `hud` `minecraft_boss.rs`: `shown_bars(ui)`, the dragon's, the raids', the withers' and then the Elden Ring bosses' bars in that order, which `draw_boss_bars` draws.
+- **Changed (`render_anim`):**
+  - New `minecraft_elden.rs` (like `minecraft_wither.rs`): `show_elden_bars` keeps `ui.elden_bars` in step with the host player's bars: red, progress overlay, asking for music, sliding to a new health like every bar. Called beside `show_wither_bars` in `minecraft_world.rs`.
+  - `minecraft_players.rs` `struck`: the player's `elden_bars` from the outputs, beside the wither bars. `minecraft_host.rs`: `send_elden_bars` beside `send_wither_bars`, so friends get `ToClient::BossBar` with the id `1 << 41` plus his id; a friend keeps every bar id already (`remote.rs`).
+  - `minecraft_music.rs`: `situational` plays `END_BOSS` (`music.dragon`) whenever a bar asks for music, in any dimension, and `update` stops `END_BOSS` when no bar asks any more and the situation has no music (outside the End). The host's music input counts `ui.elden_bars` too; the friend's already counts every bar.
+- **Tests:**
+  - Terrain: `elden_bar::tests::a_player_within_48_blocks_of_an_awake_margit_gets_his_bar` (47.5 blocks across or down gets it, 48.5 across or 34 across and 34 up does not; 200 of 800 health is a quarter bar), `an_asleep_margit_shows_no_bar` (asleep, walking home after a reset, and dead with his body still there), `a_player_in_another_level_gets_no_bar` (the same feet in another level's world get nothing). `server::tests::each_living_player_within_48_blocks_of_an_awake_margit_gets_his_bar_every_tick` (through `run_tick`: none asleep; 600 of 800 for the player 10 blocks away and none for the one 52 away; none while dead; none after a reset).
+  - Survival: `session::tests::the_elden_bar_is_red_with_his_name_and_asks_for_music` (add, nothing when unchanged, progress, remove), `session::tests::margits_bar_ids_never_meet_wither_raid_or_dragon_ids`, `entities::tests::each_player_of_his_level_gets_margits_bar` (an empty list takes a bar away; a player of another level is not queued).
+  - `hud`: `minecraft_boss::tests::the_host_shows_margits_bar_after_the_wither_bars` (with the red sprites). `render_anim`: `minecraft_elden::tests::the_host_sees_a_red_bar_named_margit_that_asks_for_music`, `minecraft_music::tests::boss_music_plays_in_the_overworld_while_a_bar_asks_for_it_and_stops_after` (at once, loops, stops, nothing else starts in 30000 ticks, starts again for the next fight; the Nether too), `minecraft_music::tests::the_end_music_rules_are_unchanged` (the End's situations; after the dragon's bar the End's own music takes over as before; with no bar no boss music). `the_situation_is_the_credits_then_the_boss_then_the_end` now expects the boss music outside the End when a bar asks.
+- **Runs:** `test -p minecraft_terrain -p minecraft_survival -p render_anim -p hud -p frame --locked --lib --tests`: 1581 passed and 3 ignored, 811 and `vanilla_world` 1, 220, 200 and 28. `check -p launcher --locked`: green. The new `elden_bar.rs` and `minecraft_elden.rs` pass `rustfmt --check` (editions 2021 and 2024) with empty output on their staged content, and no added line holds a comment.
+- **Decisions:**
+  - **Only living players get the bar,** as vanilla's dragon and raid bars (`EntitySelector.ENTITY_STILL_ALIVE`): a dead player's list is sent empty, so the bar goes on the death screen and comes back after the respawn while he is near and awake. A dead player still gets an entry each tick, so a bar never sticks.
+  - **48 blocks in all three directions from his body,** as the dragon's and the raids' bars measure (`distanceToSqr`), not from his anchor and not by chunk tracking like the wither's: the design doc says "within 48 blocks of him".
+  - **The range is his def's `arena.bar`,** already in `margit.rs` (design doc 10), so every number stays there.
+  - **The music stops at once** when no bar asks for it outside the End, and starts again at once for the next bar. In the End nothing changed: the dragon's bar is the only one there that asks, and the End's own music replaces the boss music as before. A wither's bar still asks for no music.
+  - **The name is plain text** (`Text::literal`), since there is no language key for him (design doc 10).
+- **Closes from release 3's known limits:** "There is no boss bar, no music" (the altar is group er-altar).
+- **Owner's steps.** Release build, survival, Normal, by day, flat open ground in the Overworld, with the music volume up in the options. Name each screenshot by its label, `f6-23-1.png`.
+  1. `/summon iw4l:margit ~ ~ ~10`: as he rises, a full red bar named "Margit, the Fell Omen" shows at the top of the screen, and the Ender Dragon fight music starts at once. **Screenshot f6-23-1** with the bar.
+  2. Shoot him with the M4A1 and hit him with the sword: the bar slides down a little with each hit.
+  3. With him awake 5-10 blocks in front of you, type `/tp @s ~ ~ ~-55` (55 blocks straight back): the bar is gone and the music stops at once. Within 5 seconds type `/tp @s ~ ~ ~55`: the bar is back, as low as you left it, and the music starts again.
+  4. Run 45 blocks away from where you summoned him and wait 6 seconds: his fight resets, and the bar and the music go while he walks home. Walk back within 24 blocks of his spot: he wakes again with a full bar and the music.
+  5. `/summon iw4l:margit ~ ~ ~6 {Health:20f}` and hit him twice with the sword: the bar is nearly empty, and it goes with the music as he sinks into the golden mist.
+  6. Let a new Margit kill you (no armour, no totem): the bar goes on the death screen. Respawn and walk back to him: the bar returns while he is still awake.
+  7. Build a Nether portal from the obsidian, light it and go through. `/summon iw4l:margit ~ ~ ~10` in the Nether: the same red bar and the same music. **Screenshot f6-23-2** in the Nether.
+  8. Vanilla check: back in the Overworld, `/summon minecraft:wither ~ ~ ~10`: its purple bar comes, with no music. `/difficulty peaceful` removes it; then `/difficulty normal`.
+  9. Optional, two windows (`scripts\mp-local.ps1`): a friend within 48 blocks of an awake Margit has the same red bar and hears the music; a friend 60 blocks away has neither. **Screenshot f6-23-3**, both windows.
+
+```
+IW4L_MINECRAFT_KIT=iw4l:m4,iw4l:rifle_ammo*64,iw4l:rifle_ammo*64,iw4l:rifle_ammo*64,minecraft:netherite_sword+sharpness=5,minecraft:shield,minecraft:golden_apple*16,minecraft:cooked_beef*32,minecraft:obsidian*14,minecraft:flint_and_steel
+```
+
+### 24. Registered Minecraft mobs can show friends more than their family show
+
+After 3f7797e9.
+
+- **Why:** brief F6, commit 2 sends Margit's daggers in flight to friends in `MobShow.elden`. D0's `FamilyShow` (a `u32` of flags and eight `i32` values) carries his clip already but cannot hold three flights, and D0's checklist forbids family code in `mob_tracking.rs` `shows` and `show_on` and says a missing hook goes into the registry's root file in a commit of its own. This is that hook.
+- **Changed (`minecraft_terrain`, root `families.rs`):** `TerrainFamily::show_more(mob, &mut MobShow)` and `show_more_on(mob, &MobShow)` next to `show` and `show_on`, both doing nothing by default. `shows_of` lets the family add to the `MobShow` after D0's `family` value, and `show_on_one` hands the family the whole `MobShow` after D0's `show_on`. The macro and the group files are unchanged.
+- **Tests:** `families::tests::a_registered_mob_sends_friends_only_its_family_show_unless_its_family_adds_more` (a silverfish sends exactly its `FamilyShow` and nothing else, and a mirror applying it only places the mob). `test -p minecraft_terrain --locked --lib families`: 19 passed; `mob_tracking`: 30 passed. `check -p launcher --locked`: green.
+- **Decision:** the hook hands the family the whole `MobShow`, not a payload type of its own, so a later family with a field of its own (a wire change noted under "Protocol") needs no new hook. Nothing changes on the wire in this commit.
+- **Owner's steps:** nothing changes in game until the next commit uses the hook. No kit line.
+
+### 25. A friend sees Margit's moves and fights him
+
+After 81da408f.
+
+The run stopped for the week on 2026-10-29 after 81da408f ("Unfinished: friends see Margit's moves, phase and daggers"), which held this commit's code, not yet built or tested. That code was read again on 2026-11-02, found right, built and tested unchanged; this commit adds its log. History is not rewritten, so the code is in 81da408f and the log here.
+
+- **Changed (`minecraft_terrain`, in 81da408f):**
+  - New `elden_show.rs`: `DaggerShow { start, velocity, age }` and `EldenShow { daggers: [Option<DaggerShow>; 3] }`. `EldenShow::of(flights)` keeps the three newest daggers in flight (the brain adds new throws last), and `flights()` turns them back into `elden_boss::Flight`s, the same three values the host flies and draws them from (commit 20). `lib.rs`: the module beside `elden_save`.
+  - `mob_tracking.rs`: `MobShow.elden: Option<EldenShow>` beside `wither`, `None` for every other mob.
+  - `families/bosses/elden_bosses.rs`: Margit's `show_more` and `show_more_on` (commit 24's hook): the host fills `MobShow.elden` from his daggers each tick, and the friend's copy takes its daggers from it, so it draws them where the host does. The friend's world is never ticked, so its copy never flies a dagger itself. His clip, phase, held and awake still ride D0's `MobShow.family` (commit 18), and his tracking range is 10 chunks (`TRACKING_RANGE` since commit 8), capped by the friend's view distance like every mob's.
+- **Tests:**
+  - Terrain: `elden_show::tests::only_the_three_newest_daggers_are_sent_and_come_back_as_flights` (none, two, and four of which the oldest stays behind). `families::bosses::elden_bosses::tests::a_friend_sees_margit_swing_and_his_daggers_fly` (a friend's copy spawned from his tag with `spawn_tracked`, fed by `server_mobs` and `show_on` each tick: the tracking range is 10; the friend shows the host's clip and daggers on every tick of the cane combo's first swing and of the backstep throws, with at least two daggers in the air at once, and a spent dagger is gone for the friend too) and `a_friend_draws_the_same_clip_time_as_the_host` (the dagger throw over 70 ticks: the friend's vertices equal the host's at partial ticks 0, 0.5 and 0.9, through the held throw and the dagger in flight).
+  - Survival: `mob_sender::tests::margits_daggers_cross_the_state_lane` (a dagger round-trips through the state lane's codec, another mob carries `None`, an `EldenShow` with no dagger costs 3 bytes more than `None`, and a dagger more than that).
+- **Runs:** `test -p minecraft_terrain --locked --lib`: 1585 passed and 3 ignored (the four new tests of commits 24 and 25 among them). `test -p minecraft_survival --locked`: 812 passed, `vanilla_world` 1 passed. `check -p launcher --locked`: green, with only the old render_frame and skate warnings. The new `elden_show.rs` and the track's own `families/bosses/elden_bosses.rs` pass `rustfmt --check --edition 2021` with empty output on their committed content, and no added line holds a comment. `mob_sender.rs` is an existing file; its new test follows the long lines of the test beside it.
+- **Wire:** `MobShow` gained a field, so `ServerMob` in every `StateFrame` changed (see "Protocol"). `PROTOCOL` stays 8.
+- **Decisions:**
+  - **`EldenShow` holds only the daggers,** not the clip the brief also lists: commit 18 put the clip in D0's `FamilyShow`, already on the wire, and `FamilyShow`'s eight `i32` values cannot hold three flights of `f64` points. So the field the brief names carries what `FamilyShow` cannot.
+  - **At most the three newest daggers,** as the brief says. The backstep throws three, and a dagger from an earlier throw is the oldest, at the end of its 40 moves; the host still flies it and it can still hit, but the friend no longer sees it.
+  - **Start, velocity and age, in full `f64`,** like `ServerMob.position`, so the friend's dagger is at the host's spot to the last digit and the same draw code places it. A dagger in flight costs about 50 bytes; an awake Margit with none in flight 4 bytes, and every other mob 1 byte.
+  - **The friend's daggers are replaced by each state frame.** A lost frame holds them for a tick, and the next frame puts them right; a dagger that struck or met a wall is gone on the friend's next frame.
+- **Closes:** commit 20's "Left for later" (a friend is hit by daggers but does not see them fly). From release 3's tests, F-10 said only that the track had not tried a friend's copy in two windows; the tests above now play the friend's copy against the host's, and the steps below try it.
+- **Owner's steps (two windows).** Release build. `& scripts\mp-local.ps1 -Exe iw4l-survival.exe -World r10f6 -Fresh -HostSound`; both windows read the kit line. Host H (`Sos`) and friend F, both in survival on flat open ground in the Overworld by day. Host: `/difficulty normal`, `/gamerule keep_inventory true` and `/op Friend`. Name each screenshot by its label, `f6-25-1-host.png` and `f6-25-1-friend.png` when a step asks for both windows.
+  1. H and F stand 10 blocks apart. H: `/summon iw4l:margit ~ ~ ~10`. In both windows he kneels, then rises in golden mist with green-gold sparkles; both get the red bar "Margit, the Fell Omen" and the dragon fight music. **Screenshot f6-25-1**, both windows.
+  2. F stands 2-3 blocks in front of him and does not attack. F sees the cane combo (the raised cane and the flaring gold eyes before the third swing), the cane slam's ring of puffs and the golden sword sweep, as H sees them from the side at the same moment.
+  3. F backs off to 15-20 blocks and stands still: F sees a golden dagger form in his left hand, the throw, and a small glowing gold blade fly at F and hit for 2 hearts. Next time F strafes as he throws: F sees it fly past. Before this build F was hit by a dagger F could not see. **Screenshot f6-25-2**, the friend's window with a dagger in the air.
+  4. F stands right next to him: he hops back and throws two or three daggers; F sees each one fly, and H, standing to the side, sees the same daggers on the same paths. **Screenshot f6-25-3**, both windows.
+  5. F shoots him with the M4A1 and slashes him with the sword: the bar drops in both windows. F keeps hurting him for 10 seconds while H only watches: he turns on F and walks to F.
+  6. F takes the armour off (if any) and lets him kill F: the death line reads "Friend was slain by Margit, the Fell Omen" (or "Friend was killed by Margit, the Fell Omen using magic" for a dagger or the sword) in both chats. F respawns, walks back, and the fight goes on.
+  7. Both run 45 blocks from where he was summoned and wait 6 seconds: the fight resets, both bars and the music go, and both see him walk home and kneel.
+  8. H, with both within 24 blocks of the spot: `/summon iw4l:margit ~ ~ ~10 {Health:20f}`. F kills him with M4A1 body hits: it takes about 11 hits (two fighters scale his 20 of 800 to 32 of 1280; alone it takes 7). Both see "GREAT ENEMY FELLED" and the drops fall (6 gold ingots for two fighters). **Screenshot f6-25-4**, both windows.
+  9. F stays about 60 blocks away while H wakes a new Margit and fights him: F still sees him move and his daggers fly, but has no bar and no music.
+
+```
+IW4L_MINECRAFT_KIT=iw4l:m4,iw4l:rifle_ammo*64,iw4l:rifle_ammo*64,iw4l:rifle_ammo*64,minecraft:netherite_sword+sharpness=5,minecraft:shield,minecraft:golden_apple*16,minecraft:cooked_beef*32
+```
+
+## Group er-altar
+
+Brief F7, commits F7.1 and F7.2, with design doc sections 8 and 11.2. It starts on 8f2a8074 (group er-bar-friend).
+
+### 26. Margit rises from golden mist when a lantern is set on two gold blocks
+
+After 8f2a8074.
+
+- **Changed (`minecraft_terrain`):**
+  - New `elden_altar.rs`, pure and tested without a level: `find(placed, block_at) -> Option<Altar>` is an altar when the placed block is a standing `minecraft:lantern` (its `hanging` is not `true`; a lantern's default state stands) and the two blocks straight under it are `minecraft:gold_block`. `Altar::blocks()` gives the lantern and the two gold blocks, `Altar::feet()` the centre of the lower gold block's bottom, where he stands. `facing(feet, players)` is the yaw toward the nearest player, 0 (south) with nobody there. `BOSS` is `iw4l:margit`. `lib.rs`: the module beside `elden_bar`.
+  - `server.rs`: `player_edit_block` calls the new `ServerSim::elden_altar_placed` right after `wither_skull_placed`, on every player placement. Not on Peaceful. On an altar it clears the three blocks without drops as the wither build does (set to air, then each block's break particles and sound through the level's destroyed list, and the neighbours updated) and summons him through `ServerSim::summon`, the same path as `/summon iw4l:margit` (`elden_save::summon`: his marker tag, a new UUID, asleep with his anchor at the pillar's base), facing the nearest living player of the level who is not a spectator. The placer stands within reach of the lantern, so within his 24 wake blocks, and he rises at once in the golden mist of his wake (commit 19), with his bar and music (commit 23).
+- **Tests:**
+  - `elden_altar::tests`: `a_standing_lantern_on_two_gold_blocks_is_an_altar` (its blocks and his feet; a lantern without its property; the top two of a taller gold pillar; under a roof), `a_hanging_lantern_or_one_gold_block_is_not` (a hanging lantern, one gold block over stone or over air, a soul lantern, iron blocks, a gold block placed under a lantern, a lantern beside the pillar), `margit_rises_facing_the_nearest_player` (south, east and west of three players, nobody, a player on his spot).
+  - `server::tests` (with the 26.3 data): `the_altar_summons_margit_and_clears_its_blocks` (two gold blocks summon nothing; the lantern clears all three, each with its break event, lantern first; one asleep Margit at full health with his anchor at the base, facing the nearer of two players, saved as his marker; with that player near he is in his wake by the second tick; nothing drops), `the_altar_does_nothing_on_peaceful` (on Peaceful the three blocks stay and nobody comes; on Normal a lantern hanging from a stone over the pillar does nothing, and a standing one summons him).
+- **Runs:** `test -p minecraft_terrain --locked --lib`: 1590 passed and 3 ignored, the five new tests among them (the two server tests load the 26.3 data and take about a second each). `check -p launcher --locked`: green. The new `elden_altar.rs` passes `rustfmt --check --edition 2021` with empty output on its staged content, and no added line holds a comment.
+- **Decisions:**
+  - **He faces the nearest living player who is not a spectator, creative included,** where brief F7 says the nearest eligible one. `Command::PlayerEdit` carries no player id (design doc 11.2) and only a living player who is no spectator can place a lantern, so this player is the placer in practice, in creative too (where he does not wake for them, as for any creative player). With nobody in the level he faces south. The positions are the level's `living_players`, which each tick fills from the level's own players.
+  - **The summon goes through `ServerSim::summon`,** so an altar's Margit is exactly a `/summon` one: the same tag, UUID and marker, and the same Peaceful rule, checked first here so the blocks stay on Peaceful, as the wither build leaves its blocks.
+  - **Only the placed lantern triggers it,** as only a placed skull triggers the wither: setting the gold blocks under a lantern does nothing, and the pillar is checked straight down from the lantern. A taller gold pillar gives up its top two; the rest stays under him.
+  - **Only `minecraft:lantern`,** not the soul lantern or the copper lanterns: the design names a lantern.
+  - **Cleared without drops, each block with its break particles and sound,** as vanilla's `CarvedPumpkinBlock.clearPatternBlocks` (`levelEvent` 2001 for each block) and our wither build do. The blocks go through the level's `remove_blocks`, which sets them to air for every client and then updates their neighbours, as `updatePatternBlocks` does after the spawn.
+- **Closes from release 3's known limits:** "There is no ... altar (only `/summon`)". The golden ring at the leash is the next commit.
+- **Owner's steps.** Release build, survival, Normal, by day, flat open ground in the Overworld. Name each screenshot by its label, `f7-26-1.png`.
+  1. Place two gold blocks on top of each other on the ground. Stand 2-3 blocks from them and put a lantern on top of the upper one. The lantern and both gold blocks break with their particles and sounds, and nothing drops. Margit kneels where the pillar stood, facing you, and at once rises from his knee in golden mist (green-gold sparkles and gold motes with the mirror sound); the red bar "Margit, the Fell Omen" shows and the boss music starts. **Screenshot f7-26-1** as he rises.
+  2. `/difficulty peaceful`: he vanishes. Build the same altar again: the lantern stays on the gold blocks and nothing happens. **Screenshot f7-26-2** of the altar on Peaceful. `/difficulty normal`, and break the lantern.
+  3. Build a column of 4 cobblestone right beside the pillar, then put one cobblestone against the side of its top block so it sits over the pillar, with one empty block between it and the upper gold block. Click the underside of that cobblestone with a lantern: it hangs over the gold blocks, and nothing happens. Break it.
+  4. Break the upper gold block with the iron pickaxe and put a lantern on the one that is left: nothing happens.
+  5. Optional, two windows (`scripts\mp-local.ps1`): the host stands 30 blocks away while the friend builds the altar: Margit rises facing the friend, and both windows see the three blocks break and the golden mist. **Screenshot f7-26-3**, both windows.
+
+```
+IW4L_MINECRAFT_KIT=minecraft:gold_block*16,minecraft:lantern*8,minecraft:cobblestone*64,minecraft:iron_pickaxe,minecraft:netherite_sword+sharpness=5,minecraft:golden_apple*8,minecraft:cooked_beef*32
+```
+
+### 27. Registered Minecraft mobs can show effects on the blocks around the viewer
+
+After 1bd91900.
+
+- **Why:** brief F7, commit 2 draws a golden ring on the ground at Margit's 24-block leash, only on the part within 20 blocks of the viewer and at the ground's height there. D0's `client_effects` hook (called from `EntityView::advance`) knows neither the viewer nor the blocks, and D0's checklist lists survival `entity_view.rs` among the files never edited for one family and says a missing hook goes into the registry's root file in a commit of its own. This is that hook.
+- **Changed:**
+  - `minecraft_terrain`, root `families.rs`: `ViewerFx` (the viewer's feet, the view's tick, the blocks' collision boxes as a lookup, and the view's ambient and spell particles and random), `TerrainFamily::viewer_effects(mobs, poses, fx)` next to `client_effects` (doing nothing by default), the macro's per-group `viewer_effects` next to `client_effects`, and the root `viewer_effects(world, poses, fx)` that calls every group. The group files are unchanged.
+  - `minecraft_survival`, `entity_view.rs`: `EntityView::animate_tick`, which the host's and the friend's views already call once per client tick with the viewer's feet and the level's blocks (`render_anim` `minecraft_world.rs` and `minecraft_remote.rs`, unchanged), ends with one generic call to `families::viewer_effects`, the boxes read from the scene (`World::collision_boxes`). Its scene must therefore be a `minecraftoss_player::World` as well, which the only scene passed there, `HandcraftedScene`, is; `Entities::animate_tick` (`entities.rs`), which hands the scene through, takes the same bound.
+- **Tests:** `families::tests::a_registered_mob_shows_nothing_around_the_viewer_unless_its_family_does` (a silverfish and an endermite over eight ticks: no particle, no block read and no random drawn). `test -p minecraft_terrain --locked --lib families`: 22 passed. `test -p minecraft_survival --locked --lib entity_view`: 12 passed. `check -p launcher --locked`: green, with only the old render_frame and skate warnings.
+- **Decisions:**
+  - **The hook hangs on `animate_tick`,** not on `advance`: `animate_tick` is vanilla's `ClientLevel.animateTick` place, run once per client tick for the player who looks, and it already has the blocks and the feet, for the host and for a friend alike.
+  - **The blocks are a lookup of collision boxes,** the same boxes walking and Margit's arena use, so a family can find the ground under a point without knowing the scene type.
+  - **The tick is the view's own client tick count,** so a family can space its effects out (Margit's ring every 4 ticks) without keeping a clock of its own.
+- **Owner's steps:** nothing changes in game until the next commit uses the hook. No kit line.
+
+### 28. Margit's arena shows a golden fog ring while he fights
+
+After cc414444.
+
+- **Changed (`minecraft_terrain`):**
+  - `elden_effects.rs`:
+    - `ring_arc(centre, radius, viewer, near)`: the part of a circle within `near` blocks of the viewer, measured across (not up), as its middle angle and half-width; the whole circle when all of it is that near, nothing when none is.
+    - `ground_near(boxes, x, z, level)`: the ground at a point, nearest the viewer's height. When the viewer's feet block is free there, the first collision top at most 10 blocks down (`RING_DROP`); when it is solid, the top of the solid blocks below the first free one at most 6 up (`RING_RISE`). Nothing over a deeper drop or inside a taller wall.
+    - `ring_points`: one point for each 3 blocks of the arc in view (`RING_SPACING`), each at a random place along it and 0.1 to 0.5 above the ground there (`RING_LIFT`, `RING_HEIGHT`); a point with no ground in reach is left out.
+    - `Sparks::ring` spawns a gold `SpellKind::Effect` mote (`GOLD`, the gold of his mist) at each point.
+    - Nothing was added to `ambient_particles.rs` (brief F0: no new kinds and no tint).
+  - Design doc 8, the fog ring row, names the 4 ticks, the 20 blocks and the file. No number in `margit.rs` changed.
+  - `families/bosses/elden_bosses.rs`: Margit's `viewer_effects` (commit 27's hook). Every 4 ticks of the view (`RING_EVERY`), for each Margit whose shown clip is awake, the ring around his anchor at his def's leash, 24 blocks (`margit.rs`), within 20 blocks of the viewer (`RING_NEAR`). The host's view world is a copy of the server's, and a friend's copy has his anchor from his saved tag (`elden_save::read` on `spawn_tracked`) and his awake flag from `FamilyShow` (commit 18), so host and friend draw the same ring with nothing sent.
+- **Tests:**
+  - `elden_effects::tests`: `the_ring_shows_only_the_part_within_20_blocks_of_the_viewer` (a viewer 20 blocks out from his spot: 15 motes, each 24 blocks from his spot, at most 20 from the viewer and 0.1 to 0.5 over flat ground, on both sides of the viewer; the arc's ends exactly 20 away; none for a viewer 60 blocks out or at his spot; a small ring all round), `the_ring_sits_on_the_ground_nearest_the_viewer` (flat ground, a slab, a viewer on a slab, a 2-high step, under a canopy and on it from above, on a fence post and beside it, 9 blocks down, too far down, a pit, a tall wall).
+  - `families::bosses::elden_bosses::tests::the_fog_ring_shows_only_while_he_is_awake_and_near_the_viewer` (nothing asleep; awake, 15 motes on the view's tick 4 and none on ticks 5 to 7; the friend's copy, fed by `server_mobs` and `show_on`, has the same anchor and draws the same 15; none for a viewer 36 blocks out, at his spot or 26 blocks above the ground; none walking home, dead, asleep or removed).
+  - `minecraft_survival`, `entity_view::tests::margits_fog_ring_shows_on_the_ground_near_the_viewer_while_he_fights` (through `EntityView::animate_tick` on a `HandcraftedScene` of stone: nothing while he sleeps, a ring of motes once his clip is awake).
+- **Runs:** `test -p minecraft_terrain -p minecraft_survival --locked`: 1594 passed and 3 ignored (terrain, with the nine new tests of commits 26 to 28), 813 passed and `vanilla_world` 1 passed (survival). `check -p launcher --locked`: green, with only the old render_frame and skate warnings. `elden_effects.rs` and the terrain `families/bosses/elden_bosses.rs`, both the track's own, pass `rustfmt --check --edition 2021` with empty output on their staged content, and no added line holds a comment.
+- **Decisions:**
+  - **The ring sits on the ground nearest the viewer's height,** found in the column at each point, not at his anchor's height: an arena on a slope shows its ring on the slope, and under a tree it shows on the ground where the viewer walks, not on the leaves.
+  - **20 blocks across,** as the brief says. A viewer more than 10 blocks above the ground there (on a pillar, flying) sees no ring below, because the ground search ends; the ring is for the players in the arena.
+  - **Awake is his shown clip's awake flag:** his wake, the fight, kneeling, the phase shift and a fade, the same states that give the boss bar. Not asleep, not walking home after a reset, not dead.
+  - **Gold motes, not a wall:** it blocks nothing (design doc 8). A spell mote lives 8 to 40 ticks (16 on average) and drifts up slowly, so one mote per 3 blocks every 4 ticks keeps about four alight on each 3 blocks of the arc: a dotted line, not a curtain.
+  - **Every 4 ticks of the view's own tick count:** when one frame runs two client ticks, the view calls the hook twice on the same count, so the ring shows twice or skips one round; that is not visible.
+- **Closes from release 3's known limits:** "no golden ring at the leash". With the altar of commit 26, every item of release 3's "What's missing" list for Margit is closed; of its "Not handled yet", the bed beside him and his walk through water and lava remain (see "Left for later" in the owner's test below).
+- **Owner's steps.** Release build, survival, Normal, by day, flat open ground in the Overworld, the diamond armour on. Name each screenshot by its label, `f7-28-1.png`.
+  1. `/summon iw4l:margit ~ ~ ~10` and let him rise. Turn round, away from him: about 14 blocks behind you an arc of small gold sparkles shows on the ground, curving round the spot where he appeared, as far as about 20 blocks to each side of you. **Screenshot f7-28-1** with the arc.
+  2. Walk along the arc, keeping away from his swings: the part you see moves with you, and the far side of the ring never shows.
+  3. Walk to the exact spot where you summoned him: the ring is 24 blocks away all round, so no sparkles show. Walk 5 or more blocks toward any side: the arc on that side shows again.
+  4. Build the fight on a slope instead (summon him at the foot of a hill): the arc runs over the hill on the ground, not in the air or inside it. **Screenshot f7-28-2** on the slope.
+  5. Run 45 blocks from his spot and wait 6 seconds: the fight resets and the sparkles stop while he walks home and sleeps. Walk back within 24 blocks: he wakes, and the ring shows again.
+  6. `/summon iw4l:margit ~ ~ ~6 {Health:20f}` and kill him with two sword hits: his ring goes with him (the first Margit's stays while he is awake).
+  7. Optional, two windows (`scripts\mp-local.ps1`): the friend stands 15 blocks from the spot on the other side: each window shows the arc nearest its own player. **Screenshot f7-28-3**, both windows.
+
+```
+IW4L_MINECRAFT_KIT=minecraft:netherite_sword+sharpness=5,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots,minecraft:golden_apple*16,minecraft:cooked_beef*32
+```
+
+## Review of segment f3
+
+The adversarial review of groups er-look, er-fight, er-guns, er-bar-friend and er-altar (commits 17 to 28, from `r10-f3-base`). It read every commit of the segment against the brief, the design doc, D0's checklist and vanilla 26.3: the boss bar, music and felled line per player, the friend's clip and daggers on the state lane, the altar and the fog ring, the comments rule and `rustfmt --check` on the segment's new files. The unfinished commit 81da408f is finished by 8f2a8074 and stays in history. It found one gap that vanilla does not have; its fix follows.
+
+### 29. Margit keeps a player beside a bed awake like every monster
+
+After 8a37d278.
+
+- **Why:** vanilla's `ServerPlayer.startSleepInBed` refuses the bed with "You may not rest now; there are monsters nearby" (`block.minecraft.bed.not_safe`) while a monster stands in the 8 x 5 x 8 box around it and its `isPreventingPlayerRest` holds. `Monster.isPreventingPlayerRest` returns true (checked with javap on the 26.3 `client.jar`); only the zombified piglin overrides it. Margit's family is a registered monster, and D0's generic loop in `resting_monsters` already hands his body to the sleep check, but `sleep::prevents_rest` knew only the vanilla ids of `sleep::MONSTERS`, so a player could sleep right beside him.
+- **Changed (`minecraft_survival`, `sleep.rs`):** `prevents_rest` is also true for every Elden Ring boss id (`elden_boss::def`). `MONSTERS` and `entities.rs` `resting_monsters` (on D0's never-edit list) are unchanged, so a later boss of `elden_boss::IDS` keeps players awake with no new line.
+- **Tests:** `entities::tests::a_player_cannot_sleep_beside_margit` (an asleep Margit 2 blocks from the bed keeps the player awake, one 12 blocks off does not, nor does a dead one; `prevents_rest` knows `iw4l:margit` and not an unknown `iw4l:` id).
+- **Runs:** `test -p minecraft_survival --locked --lib -- sleep`: 26 passed. `check -p launcher --locked`: green, with only the old render_frame and skate warnings. No added line holds a comment, and no file is new.
+- **Decision:** an asleep Margit keeps the player awake too, as any vanilla monster does whatever its AI is doing.
+- **Closes from release 3's known limits:** "A player can sleep in a bed beside him". Of its "Not handled yet" list, only his walk through water and lava remains.
+- **Owner's steps.** Release build, survival, Normal, flat open ground in the Overworld. Name each screenshot by its label, `f-29-1.png`.
+  1. `/time set night`. Place the bed on open ground and stand beside it.
+  2. `/summon iw4l:margit ~ ~ ~4 {NoAI:1b}`: he kneels asleep 4 blocks away and never wakes (no AI). Right-click the bed: "You may not rest now; there are monsters nearby" shows above the hotbar, and you stay standing. **Screenshot f-29-1** with the line and Margit in view.
+  3. `/difficulty peaceful`: he vanishes. Right-click the bed: you lie down, and the night skips to morning. `/difficulty normal`.
+
+```
+IW4L_MINECRAFT_KIT=minecraft:white_bed
+```
+
+## Final checks of segment f3
+
+### 30. Margit's skin, walk and felled test pass clippy
+
+After 2224aa49.
+
+- **Why:** clippy on the crates segment f3 touched (from `git diff --stat r10-f3-base..HEAD`: `elden_boss`, `frame`, `hud`, `minecraft_survival`, `minecraft_terrain`, `render_anim` and the vendored `minecraftoss-entities`) warned on nine lines this segment added: seven `clippy::manual_is_multiple_of` in `elden_skin.rs`, one `clippy::type_complexity` in `elden_render.rs` and one `clippy::cloned_ref_to_slice_refs` in the felled test of `minecraft_survival`'s `entities.rs`.
+- **Changed:**
+  - `minecraft_terrain`, `elden_skin.rs`: the seven noise checks of `paint()` use `u32::is_multiple_of` instead of `% n == 0`. The skin's pixels are the same.
+  - `minecraft_terrain`, `elden_render.rs`: the walk's keys have a type alias `WalkKeys`, so `walk()`'s rotation table reads `[(Bone, WalkKeys); 5]`. Same keys.
+  - `minecraft_survival`, `entities.rs` (test only): `every_fighter_is_told_great_enemy_felled` compares the player's sounds with `std::slice::from_ref(&chime)`.
+- **Tests:** none new; nothing changes in behaviour.
+- **Runs:**
+  - `clippy -p elden_boss -p frame -p hud -p minecraft_survival -p minecraft_terrain -p render_anim -p minecraftoss-entities --locked --all-targets -- -A clippy::approx_constant`: after the fix no warning on a line segment f3 added (checked against the added lines of `git diff -U0 r10-f3-base`); `elden_boss` and `frame` have none at all; the older warnings of `hud` (62), `minecraft_terrain` (34), `minecraft_survival` (1, `menus.rs`) and `render_anim` (82) stay. The entities crate, outside the workspace, was linted through `clippy-driver` as `RUSTC_WRAPPER` (as in commit 16) after touching its three Margit files: 79 warnings in its lib, none in Margit's files or on a line of this segment.
+  - `test -p elden_boss -p frame -p hud --locked`: 57, 28 and 200 passed; doc-tests 0.
+  - `test -p minecraft_terrain --locked`: 1594 passed and 3 ignored; doc-tests 0.
+  - `test -p minecraft_survival --locked`: 814 passed, `vanilla_world` 1 passed; doc-tests 0.
+  - `test -p render_anim --locked`: 220 passed; doc-tests 0.
+  - `test -p minecraftoss-entities --locked`: 508 passed (the bins have no tests); doc-tests 0.
+  - `check -p launcher --locked`: green, with only the old render_frame and skate warnings.
+  - Every new `.rs` file of segment f3 (`elden_boss/src/flight.rs` with edition 2024, `elden_altar.rs`, `elden_bar.rs`, `elden_effects.rs`, `elden_felled.rs`, `elden_render.rs`, `elden_show.rs` and `elden_skin.rs` in `minecraft_terrain` and the entities crate's `blows.rs` with 2021, `render_anim/src/minecraft_elden.rs` with 2024) passes `rustfmt --check` with empty output on its staged content, and no line the segment added holds a comment.
+- **Owner's steps:** none: no behaviour changes. Every commit of the segment (17 to 29) has its steps above, and the release test below covers them all with one kit line.
+
+## Owner's test for the release
+
+Brief F, "Owner's test for the release", adjusted to what was built (commits 7 to 29). What the owner runs on the release build after segment f2 merges. Name each screenshot by its label, `f03_margit_rises.png`; for a step that asks for both windows, `f12_friend_view-host.png` and `f12_friend_view-friend.png`.
+
+### Setup
+- Survival, a new world, open flat ground (a plains). In every new world the host types `/difficulty normal` and `/gamerule keep_inventory true`; in two windows also `/op Friend`.
+- Class: an **M4A1** with Red Dot Sight (the first join gives it on hotbar slot 1 with frags and flashes in the grenade slots, and rifle rounds on hotbar slots 3 to 5 because the kit fills the backpack).
+- Music volume up in the options.
+- Two windows: `& scripts\mp-local.ps1 -Exe iw4l-survival.exe -World r10f -Fresh -HostSound`. Both windows read the kit line below. Steps 1 to 19 need only the host's window.
+
+### Host
+1. `/summon iw4l:margit ~ ~ ~10`: he kneels for a moment, then rises from his knee in golden mist (green-gold sparkles and gold motes with the mirror sound). A hunched, hooded old man in a dark cloak with a cane in his right hand, two gold eyes, a grey beard and two small horns, about 3 blocks tall. The red bar "Margit, the Fell Omen" appears and the Ender Dragon fight music starts. **f03_margit_rises**
+2. Do not attack. Stand 2-3 blocks in front of him and watch: the cane combo (one, two or three swings; before the third the cane is raised and held, and his eyes grow and glow before it falls), the cane slam (held, the eyes flare, a ring of puffs where it lands), and the golden sword (it grows in his left hand with white sparks, then sweeps from his left to his right). Run straight back as a swing winds up: it misses. Each cane swing takes about 2 hearts without armour, the third about 3. **f04_cane_combo**, **f05_golden_sword**
+3. Put the diamond armour on. Back off to 15-20 blocks: a golden dagger forms in his left hand, he holds it behind his head for a second or so and throws; the small glowing blade flies at your chest. Strafe: it misses. Let one hit you with the shield raised: it goes through the shield and the armour for 2 hearts, with the trident's hit sound. A dagger thrown at you behind a cobblestone wall clinks into the wall. **f06_dagger**
+4. Stand right next to him: he hops back and throws two or three daggers.
+5. At 10-14 blocks: he crouches, roars and leaps; he lands in front of you with a ring of puffs, and the landing tosses you up and back. **f07_leap_slam**
+6. M4A1 body shots from about 10 blocks: each hit shows the hit marker and his red flash, and the bar drops a little (about 270 body hits kill him alone; a head hit takes 1.4 times as much). A frag at his feet takes about 4% of the bar, a Barrett body hit about 1.3%, an RPG rocket at his feet at least as much as the frag. No sword swoosh plays with a bullet. **f10_m4_hits**
+7. Netherite sword: every full-charge hit counts, even in quick succession; jump for crits. Keep hitting and shooting until he drops to one knee in sparks with a stunned sound (about 160 M4A1 body hits in a row, or five quick full-charge sword hits). Stop for 6 seconds and his stance refills. While he kneels, hit him from the front with the sword: a big critical with a burst of sparks, and he gets up at once. A bullet from the front is never a critical: he stays down for the full 4 seconds. **f15_kneel_critical**
+8. Bow and trident hurt him; a TNT lit beside him hurts him and does not lift him.
+9. Keep fighting. At half health he stops, raises his left hand, and a golden hammer forms with a flash of green-gold sparkles and gold motes; from then on gold motes keep dripping from him. **f16_phase_two** (In a later run, alone, `/summon iw4l:margit ~ ~ ~10 {Health:401f}` and one hit of any kind reach this at once.)
+10. Phase 2: the hammer slam (raised behind his head and held, the eyes flare, then the slam and a ring of puffs 2 blocks in front of him: the shockwave runs out along the ground; jump as it passes under you and it does nothing), the jumping hammer slam from range, and two cane swings that turn into the hammer slam. A hammer hit on the raised shield blocks it but disables the shield for 5 s with the break sound; the shockwave then still takes 2 hearts through the shield. **f17_hammer_slam**
+11. Kill him: he sinks to his knees, slumps and vanishes in golden mist; "GREAT ENEMY FELLED" (white) shows above the hotbar with the challenge-complete fanfare; where he fell lie an enchanted golden apple, 2 gold blocks, 3 gold ingots and experience orbs (100 points). The bar and the music stop. **f09_felled**
+12. Summon another. Take the armour off, drop the totem, and let him kill you: a cane death reads "Sos was slain by Margit, the Fell Omen", a dagger or golden sword death "Sos was killed by Margit, the Fell Omen using magic". The bar goes on the death screen. Respawn, put the armour on.
+13. Go back to him (the bar returns while he is awake), then run 45 blocks from the spot where he was summoned and wait 6 s: the bar and the music go. Come back: he is walking home at full health, phase 1, and kneels on his spot; he wakes again when you come within 24 blocks of it.
+14. Pillar up 5 blocks near him on a single column: he throws daggers and never fades up to you. Come down, dig a 1 x 1 hole 2 deep and stand in it: his cane still reaches you. Climb out, build a ring of cobblestone 2 high, 3 blocks out from the hole all round, and stand in the hole again: he gets in, by a leap over the ring or, within about 5 s, by vanishing in golden mist (with the mirror sound) and appearing inside the ring beside the hole, and keeps swinging.
+15. Hurt him, then Save and Quit, and load: he stands where he was, at full health, and walks back to his spot and kneels. **f02_after_load**
+16. `/time set night` and `/give @s minecraft:white_bed`. Place the bed, stand beside it and run `/summon iw4l:margit ~ ~ ~4 {NoAI:1b}` (he kneels asleep and never wakes): right-clicking the bed says "You may not rest now; there are monsters nearby". `/difficulty peaceful`: he vanishes, and the bed lets you lie down and skip the night. Then build the altar of step 17 on Peaceful: the lantern stays on the gold blocks and nothing happens. Break the lantern, `/difficulty normal`.
+17. Stack two gold blocks, stand 2-3 blocks away and put a lantern on top: the lantern and the gold blocks break with their particles and sounds (nothing drops), and Margit kneels where the pillar stood, facing you, and at once rises in golden mist with his bar and music. A lantern hanging over two gold blocks, or a lantern on one gold block, does nothing. **f13_altar**
+18. While he fights, turn away from him: on the ground about 24 blocks from the spot where he appeared, an arc of small gold sparkles curves round that spot, the part of it within about 20 blocks of you. From the spot itself none shows; walk toward any side and that side's arc shows. It stops when his fight resets or he dies. **f14_fog_ring**
+19. **Optional, vanilla check:** with Margit asleep, quit, copy the world and open the copy in vanilla 26.3: it loads with no error, and `/data get entity @e[type=minecraft:marker,sort=nearest,limit=1]` near his spot shows `data.iw4l.boss`. Open the copy in our game again: Margit is there.
+
+### Friend (two windows)
+20. The friend sees him kneel and rise, every move, the golden weapons, the flaring eyes, the daggers in flight on the same paths as the host sees them, the dust and sparks, and the fog ring near the friend's own player; hears him and his heavy steps; and has the bar and the music within 48 blocks of him. **f12_friend_view**, both windows.
+21. `/summon iw4l:margit ~ ~ ~10` with both of you within 24 blocks: the bar empties more slowly than alone (x1.6, 1280 health). `/summon iw4l:margit ~ ~ ~10 {Health:20f}` with both near: the friend needs about 11 M4A1 body hits (alone it takes 7).
+22. The friend shoots and slashes him: the bar drops for both. If the friend hurts him most for 10 s, he turns on the friend.
+23. He kills the friend: the death line names him in both chats; the friend respawns and the fight goes on.
+24. The friend lands the last hit: both see GREAT ENEMY FELLED and each hears the fanfare once; the drops fall (6 gold ingots for two fighters, 150 points of orbs).
+25. Both run 45 blocks away for 6 s: the fight resets and both bars go. A friend 60 blocks away while the host fights still sees him move and his daggers fly, but has no bar and no music.
+
+### Known limits
+- Margit is our own stand-in: a cube model with a skin painted by code, our own move table and numbers, and vanilla sounds. Nothing comes from ELDEN RING (design doc 14), and the host does not load or send its assets yet.
+- He walks through water and lava with his dry ground walk. Lava and fire do hurt him.
+- The fog ring is gold motes on the ground; it blocks nothing (design doc 8), and a player more than 10 blocks above the ground sees none.
+- Loading the world resets his fight by design: full health, phase 1, and he walks back to his anchor. He takes no damage while asleep or while he walks home.
+- Not in this track (design doc 16): ELDEN RING game data and its baker, an Elden Ring style bottom bar, the gate arena, Margit's Shackle, a spawn egg, lock-on, a dodge roll, hit-stop, status buildup, the MW2 knife against mobs, several hurtboxes, punishing heals, and mobs fighting him.
+
+### Kit for the release test (27 stacks)
+
+```
+IW4L_MINECRAFT_KIT=iw4l:rifle_ammo*64,iw4l:rifle_ammo*64,iw4l:rifle_ammo*64,iw4l:rifle_ammo*64,iw4l:rifle_ammo*64,iw4l:barrett,iw4l:sniper_rounds*64,iw4l:rpg,iw4l:rocket*16,minecraft:netherite_sword+sharpness=5,minecraft:bow+power=5,minecraft:arrow*64,minecraft:trident,minecraft:shield,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots,minecraft:golden_apple*16,minecraft:cooked_beef*32,minecraft:totem_of_undying,minecraft:gold_block*8,minecraft:lantern*4,minecraft:cobblestone*64,minecraft:tnt*8,minecraft:flint_and_steel,minecraft:iron_shovel
+```

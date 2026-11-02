@@ -42,7 +42,7 @@ A boss is a mob of the level he stands in, like the wither. The host's level thr
 
 ### 2.2 MW2 guns
 - **Bullets.** MW2's trace finds his box (`EntityView::boxes`, the same boxes aim assist reads) and sends a mob shot with the shooter's id. MW2's own hit-location multiplier applies first, so a hit on the top of the box is a headshot.
-- **His resistances.** The shot reaches him by a typed route (`Bullet` or `Blast`) instead of the generic mob attack, so his own resistance and stance rules apply (section 7).
+- **His resistances.** The shot reaches him by a typed route (`Bullet` or `Blast`, through `ServerHandle::elden_hurt` beside the dragon's `end_hit`) instead of the generic mob attack, so his own resistance and stance rules apply (section 7).
 - **One box.** The proof of concept gives him one box of 1.4 x 3.0 blocks. Several boxes on his bones (head, body, weapon) come with real hurtbox data later.
 - **The MW2 knife** does not hurt any Minecraft mob today: its trace only reaches blocks and players (`crates/sim/src/combat.rs`). So it does not hurt him either. Making the knife hit mobs is its own later change (section 17).
 - **Killstreaks** hit him as blasts.
@@ -117,6 +117,7 @@ Who he is, briefly: a hunched old man in a dark hooded cloak who walks with a ca
 | `random` | The brain's own seeded random (SplitMix64) |
 | `hurt` | Damage into the boss: resistances, stance, kneeling, criticals, threat |
 | `fight` | The arena: waking, scaling, leash, reset, being stuck |
+| `flight` | A dagger in flight: where it is, and whether a block or a player stops it this tick |
 | tests | Unit tests per module, and a headless whole fight |
 
 The rest of the game reads one thing: a `&'static BossDef`. The hand-written tables are `static`. A baked table (section 14.2) is loaded once at start and leaked into a `'static` table, so the game keeps one type.
@@ -137,6 +138,7 @@ The rest of the game reads one thing: a `&'static BossDef`. The hand-written tab
 | `phases` | Each phase: where it starts, cooldown factor, idle gap, the shift move | section 6 |
 | `moves` | The move table | section 5 |
 | `daggers` | Speed, flight ticks, damage | 1.5 blocks a tick, 40 ticks, 4 holy |
+| `reactions` | How far each reaction throws and lifts a player (section 7.4) | flinch none, stagger 0.8, knockdown 1.2 and lift 0.5 |
 | `experience`, `drops` | Base experience, per-fighter experience, items | 100 (+50 a fighter); section 13 |
 | `voices`, `cues` | Ambient, hurt and death sounds; shared cue names | section 14.1 |
 
@@ -181,7 +183,7 @@ One `Brain` per boss, stepped once per server tick with a `Sense` and returning 
 | `Return` | After a reset or a load: walks back to his anchor at full health and takes no damage; fades home if he gets no closer to it for 100 ticks | `Asleep`, or `Wake` if a player comes within the wake radius |
 | `Dead` | 20 ticks: collapses into golden mist | removed |
 
-`Sense` holds: the tick, his position, facing and anchor, whether he stands on the ground, and the eligible players (id, feet, eye height, the height of the ground under their feet for the ring test, whether a path reaches them, and a spot beside them with room for his box, if the game found one, for the stuck fade). The game fills the ground height from the level's blocks: `PlayerCandidate` has no on-ground flag. `Act` holds: where to walk, where to face, the root motion this tick, the hits that landed (player, damage, physical or holy, reaction, shield disable, where it came from), the daggers to launch, the cues to play, a fade target, and the clip shown (state, move, the move's own clock, whether it is held, phase, awake). His health is kept by the brain, which takes every hit (`Brain::take`).
+`Sense` holds: the tick, his position, facing and anchor, whether he stands on the ground, and the eligible players (id, feet, eye height, the height of the ground under their feet for the ring test, whether a path reaches them, a spot beside them with room for his box, if the game found one, for the stuck fade, and whether he sees them, eye to eye with no block between, as vanilla's melee mobs must before they strike). A strike never lands on a player he cannot see. The game fills the ground height from the level's blocks: `PlayerCandidate` has no on-ground flag. `Act` holds: where to walk, where to face, the root motion this tick, the hits that landed (player, damage, physical or holy, reaction, shield disable, where it came from), the daggers to launch, the cues to play, a fade target, and the clip shown (state, move, the move's own clock, whether it is held, phase, awake, and the move clock a recovery started from). His health is kept by the brain, which takes every hit (`Brain::take`).
 
 **Choosing a move:** the moves of his phase that are off cooldown, whose distance band holds his target and whose angle band holds the angle to it. One is rolled by weight. If none fits, he walks closer, or turns. Follow-ups ignore cooldowns.
 
@@ -303,9 +305,10 @@ So **player-made hits skip the cooldown on Margit**: bullets, blasts, melee, arr
 
 ### 7.4 Damage out (his hits on players)
 - **Physical** hits are vanilla mob attacks (`PlayerHitKind::Melee`, damage type `mob_attack`): armour, Protection and a raised shield count. Hammer hits disable a shield for 5 s, like an axe.
-- **Holy** hits are magic from a mob (`PlayerHitKind::Magic`, damage type `indirect_magic`): they ignore armour and shields, because vanilla 26.3 lists `indirect_magic` in `#bypasses_armor` and so in `#bypasses_shield` (checked in the 26.3 data). This is our mapping of Elden Ring's holy damage, not game data.
+- **Holy** hits are magic from a mob (damage type `indirect_magic`, death message `indirectMagic`): they ignore armour and shields, because vanilla 26.3 lists `indirect_magic` in `#bypasses_armor` and so in `#bypasses_shield` (checked in the 26.3 data). They travel as D0's `PlayerHitKind::Typed` with that damage type rather than `PlayerHitKind::Magic`, because `Magic` carries neither where the hit came from nor a push: vanilla knocks a player back from indirect magic (it is not in `#no_knockback`), and the sword's stagger needs its throw. This is our mapping of Elden Ring's holy damage, not game data.
 - **Difficulty** scales them like every mob hit with a source (`difficulty_scaled`): Easy halves them and adds 1, Hard x1.5. On Peaceful he does not exist.
-- **Reactions:** a flinch is the vanilla knockback; a stagger throws the player 0.8 back; a knockdown lifts 0.5 and throws 1.2 back, like an iron golem's toss. There is no movement lock: that would be new MW2 movement code.
+- **Reactions:** a flinch is the vanilla knockback; a stagger throws the player 0.8 back; a knockdown lifts 0.5 and throws 1.2 back, like an iron golem's toss. "Back" is away from where the hit came from (his feet for an arc, the centre of a circle or ring, behind a dagger along its flight), or along his facing when the player stands right there. The numbers are `reactions` in `margit.rs`. There is no movement lock: that would be new MW2 movement code.
+- **Walls:** a strike lands only on a player he sees, eye to eye with no block between (vanilla's `MeleeAttackGoal` asks the same), so his swings and shockwaves do not reach through a wall. Daggers fly through the world instead: each stops at the first block on its path (`item.trident.hit`) or hits the first player whose box its path crosses.
 - **Death messages:** "Sos was slain by Margit, the Fell Omen" for physical hits, "Sos was killed by Margit, the Fell Omen using magic" for holy ones.
 
 ### 7.5 How long a fight takes (estimates)
@@ -332,7 +335,7 @@ His **anchor** is where he appeared. The arena is a circle around it; there are 
 | Leash | 24 blocks | He never walks or leaps to a point farther than 24 from his anchor. A target outside gets daggers |
 | Reset | 40 blocks, 100 ticks | No eligible player within 40 of the anchor for 5 s: full health, phase 1, full stance, cooldowns and threat cleared, the bar goes, he walks back (or fades home if he gets no closer to it for 100 ticks) and sleeps |
 | Stuck | 100 ticks | His target is inside the leash, but no path reaches it and none of his hits landed on it for 5 s (a hole deeper than his swings reach, a nook walled in so he cannot get next to it): he fades and appears beside it, within 3 blocks across and 2 blocks up or down of its feet. If there is no room there (a player on a pillar), he keeps throwing daggers instead. Our own anti-cheese rule, not Elden Ring's |
-| Fog ring | 24 blocks | While he fights, golden particles mark the leash circle near each viewer. They stand in for Elden Ring's fog wall and block nothing |
+| Fog ring | 24 blocks | While he fights, golden particles mark the leash circle near each viewer: every 4 ticks, the part of it within 20 blocks of the viewer, on the ground there (`crates/minecraft_terrain/src/elden_effects.rs`). They stand in for Elden Ring's fog wall and block nothing |
 
 **Eligible** means alive, not a spectator, attackable (not creative) and in the same level. If every fighter dies, nobody is within 40 blocks for 5 s and the fight resets. A dead player respawns at their bed, anchor, spawn point or tactical insertion flare, which works well as a site of grace near an arena.
 
@@ -361,7 +364,8 @@ After each move, and at the wake, he picks the eligible player with the most **t
 |---|---|---|
 | The boss itself | `MobAdd` with his saved tag (the marker carrier, with his anchor) | no |
 | Position and facing | the per-tick `ServerMob` | no |
-| Pose, phase, daggers | `MobShow.elden: Option<EldenShow>` (clip, the move's own clock, held, phase, awake, up to 3 daggers as start, velocity and age) | yes, a wire change |
+| Pose and phase | the clip in D0's per-family `MobShow.family` (`FamilyShow`: state, held and awake as flags; the move, its own clock, the phase and the recovery's start as values) | no |
+| Daggers | `MobShow.elden: Option<EldenShow>` (up to 3 daggers as start, velocity and age) | yes, a wire change |
 | Sounds | the mob voice path (`Voice::Event`), like every mob sound | no |
 | Particles | drawn by each viewer from the clip and the cue table, so nothing is sent | no |
 | The bar | `ToClient::BossBar` | no |
@@ -394,7 +398,7 @@ Every hit carries the player's id, friends included. Threat, the kill and the ex
 - When a player places the lantern (standing, not hanging), the three blocks vanish in golden mist and Margit rises where the pillar stood, facing the nearest player, who is the placer in practice: `Command::PlayerEdit` (`crates/minecraft_terrain/src/server.rs`) carries no player id, and adding one would change a shared command for every track. His anchor is that spot.
 - It works in every dimension, and not on Peaceful, like the wither.
 - It costs 18 gold ingots and a lantern (iron nuggets and a torch): reachable without the Nether, unlikely to happen by accident, and gold is his colour.
-- The check runs where the wither's skull check runs (`ServerSim::player_edit_block`), in our own module.
+- The check runs where the wither's skull check runs (`ServerSim::player_edit_block`), in our own module (`crates/minecraft_terrain/src/elden_altar.rs`).
 
 ### 11.3 Later: finding him
 - **A gate arena** generated in the world: a walled stone courtyard of about 24 x 32 with a gate and a fog wall, a nod to Stormveil's gate, with Margit asleep at its centre. It needs a fork structure set beside the vanilla ones, and it appears only in new chunks.
@@ -433,7 +437,9 @@ A loaded Margit stands where he was saved, at full health, in phase 1, with full
 - **Death:** 20 ticks; he sinks to his knees and dissolves into golden mist (`entity.evoker.death` low, `entity.illusioner.mirror_move`).
 - **Drops,** where he dies: 1 enchanted golden apple, 2 gold blocks (the altar's gold back) and 3 gold ingots per fighter.
 - **Experience:** 100, plus 50 per fighter after the first, as orbs.
-- **Every fighter** (the fighters at the wake, plus anyone who hurt him) sees "GREAT ENEMY FELLED" on the action bar and hears `ui.toast.challenge_complete`. The action bar line is white: our overlay line has no colour (`frame::minecraft_ui::McOverlayMessage` holds plain text, drawn white in `hud/src/minecraft_hotbar.rs`). A gold line is left for later.
+- **Every fighter** (the fighters at the wake, plus anyone who hurt him) sees "GREAT ENEMY FELLED" on the action bar and hears `ui.toast.challenge_complete`, which only that player hears. The action bar line is white: our overlay line has no colour (`frame::minecraft_ui::McOverlayMessage` holds plain text, drawn white in `hud/src/minecraft_hotbar.rs`). A gold line is left for later.
+- **Game rules:** the drops and the experience follow `mob_drops` like every mob's loot (vanilla's `dropCustomDeathLoot` and `dropExperience`), and the experience needs a player's kill, as vanilla's does. The line and the chime come either way.
+- **Where it lives:** the counts are `experience` and `drops` in `margit.rs`; the entity's `death_drops` and `experience` hooks give them, and the fighters leave the level as `Output.elden_felled` (`crates/minecraft_terrain/src/elden_felled.rs`), routed to each player beside the wither bars.
 - **A player he kills** dies like any player killed by a mob: drops, death message (section 7.4), respawn.
 
 The loot is our decision, not Elden Ring data.

@@ -1,6 +1,7 @@
 use super::EldenBoss;
 use crate::fluid::FluidFrame;
 use crate::navigation::{GroundNavigation, ground_view, plan_walk_path};
+use crate::sight::line_of_sight;
 use crate::tempt::PlayerCandidate;
 use crate::walk_path::{WalkProfile, WalkTarget};
 use crate::world::families::{FamilyMob, MobCore};
@@ -193,19 +194,26 @@ pub fn survey<W: World>(mob: &mut FamilyMob<EldenBoss>, level: &W, players: &[Pl
     state.planned = core.tick_count;
 }
 
-pub fn seen<W: World>(level: &W, players: &[PlayerCandidate], ways: &[Way]) -> Vec<Seen> {
+pub fn seen<W: World>(
+    level: &W,
+    players: &[PlayerCandidate],
+    ways: &[Way],
+    eyes: DVec3,
+) -> Vec<Seen> {
     players
         .iter()
         .filter(|player| eligible(player))
         .map(|player| {
             let way = ways.iter().find(|way| way.player == player.id);
+            let eye = f64::from(player.eye_height);
             Seen {
                 id: player.id,
                 feet: player.position,
-                eye: f64::from(player.eye_height),
+                eye,
                 ground: ground_under(level, player.position),
                 reachable: way.is_none_or(|way| way.reachable),
                 room: way.and_then(|way| way.room),
+                sight: line_of_sight(level, eyes, player.position + DVec3::Y * eye),
             }
         })
         .collect()
@@ -668,6 +676,24 @@ mod tests {
         assert!(hit, "his swings reach a block below his feet");
         let way = margit(&world, id).state.ways[0];
         assert!(!way.reachable, "no path ends in the hole");
+    }
+
+    #[test]
+    fn a_player_behind_a_wall_is_out_of_his_sight() {
+        let mut scene = Scene::default();
+        let eyes = at(0.5, 66.55, 0.5);
+        let players = [player_at(1, at(0.5, 64.0, 3.5))];
+        assert!(seen(&scene, &players, &[], eyes)[0].sight);
+        for y in 64..68 {
+            scene.stone.insert((0, y, 2));
+        }
+        assert!(!seen(&scene, &players, &[], eyes)[0].sight);
+        scene.air.extend([(3, 63, 0), (3, 62, 0)]);
+        let hole = [player_at(1, at(3.5, 62.0, 0.5))];
+        assert!(
+            seen(&scene, &hole, &[], eyes)[0].sight,
+            "he sees into a hole"
+        );
     }
 
     #[test]

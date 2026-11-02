@@ -87,6 +87,7 @@ pub struct MobShow {
     pub ravager: [i32; 3],
     pub glowing: bool,
     pub wither: WitherShow,
+    pub elden: Option<crate::elden_show::EldenShow>,
     pub family: Option<crate::families::FamilyShow>,
 }
 

@@ -189,6 +189,25 @@ fn a_click_on_a_registered_mob_passes_unless_its_family_takes_it() {
 }
 
 #[test]
+fn a_registered_mob_sends_friends_only_its_family_show_unless_its_family_adds_more() {
+    let mut world = EntityWorld::default();
+    let fish = spawn(&mut world, FISH, 0.5);
+    let mut sent = Vec::new();
+    shows(&world, &mut |id, show| sent.push((id, show)));
+    let only_family = MobShow {
+        family: Some(FamilyShow::default()),
+        ..MobShow::default()
+    };
+    assert_eq!(sent, [(fish, only_family)]);
+    let mut moved = server_mobs(&world)[0];
+    assert_eq!(moved.show, only_family);
+    moved.position = DVec3::new(2.5, 64.0, 0.5);
+    assert!(show_on(&mut world, &moved));
+    let core = world.family_core(fish).unwrap().1;
+    assert_eq!(core.body.position, moved.position, "placed, and nothing more");
+}
+
+#[test]
 fn client_effects_forget_registered_mobs_that_are_gone() {
     let mut world = EntityWorld::default();
     let fish = spawn(&mut world, FISH, 0.5);
@@ -216,4 +235,35 @@ fn client_effects_forget_registered_mobs_that_are_gone() {
     client_effects(&world, &mobs, &mut fx);
     assert!(fx.seen.is_empty(), "both left with their chunk");
     assert!(world.family::<Endermite>().is_empty());
+}
+
+#[test]
+fn a_registered_mob_shows_nothing_around_the_viewer_unless_its_family_does() {
+    let mut world = EntityWorld::default();
+    spawn(&mut world, FISH, 0.5);
+    spawn(&mut world, MITE, 2.5);
+    let mobs = seen_by_client(&world);
+    let mut ambient = AmbientParticles::new(1);
+    let mut spell = SpellParticles::new(1);
+    let mut random = LegacyRandom::new(1);
+    let asked = std::cell::Cell::new(0);
+    let boxes = |_: (i32, i32, i32)| {
+        asked.set(asked.get() + 1);
+        vec![[0.0, 0.0, 0.0, 1.0, 1.0, 1.0]]
+    };
+    for tick in 0..8 {
+        let mut fx = ViewerFx {
+            feet: DVec3::new(1.5, 64.0, 0.5),
+            tick,
+            boxes: &boxes,
+            ambient: &mut ambient,
+            spell: &mut spell,
+            random: &mut random,
+        };
+        viewer_effects(&world, &mobs, &mut fx);
+    }
+    assert_eq!(ambient.kinds_at().count(), 0);
+    assert!(spell.is_empty());
+    assert_eq!(asked.get(), 0, "no block is read for them");
+    assert_eq!(random.next_int(1000), LegacyRandom::new(1).next_int(1000));
 }

@@ -2811,7 +2811,25 @@ impl ServerSim {
         if matches!(edit, PlayerEdit::Place) {
             self.power_placed_opening(at, block);
             self.level.wither_skull_placed(at);
+            self.elden_altar_placed(pos);
         }
+    }
+
+    fn elden_altar_placed(&mut self, pos: BlockPos) {
+        if self.level.difficulty == 0 {
+            return;
+        }
+        let at = |(x, y, z): BlockPos| minecraftoss_core::BlockPos::new(x, y, z);
+        let Some(altar) = crate::elden_altar::find(pos, |cell| self.states.block(self.level.block(at(cell)))) else { return };
+        let cells: Vec<_> = altar.blocks().into_iter().map(at).collect();
+        let old: Vec<_> = cells.iter().map(|&cell| self.level.block(cell)).collect();
+        self.level.remove_blocks(&cells, BlockStateId::AIR);
+        if let Some(destroyed) = self.level.destroyed.as_mut() {
+            destroyed.extend(cells.into_iter().zip(old));
+        }
+        let players: Vec<glam::DVec3> = self.level.living_players.iter().map(|(feet, _)| glam::DVec3::from_array(*feet)).collect();
+        let feet = altar.feet();
+        let _ = self.summon(crate::elden_altar::BOSS, feet.to_array(), None, crate::elden_altar::facing(feet, &players));
     }
 
     fn may_place(&self, at: minecraftoss_core::BlockPos, target: BlockStateId) -> bool {
@@ -3384,6 +3402,11 @@ impl ServerSim {
                 self.end_events(events);
             }
         }
+    }
+
+    pub fn elden_hurt(&mut self, id: u64, source: elden_boss::Source, player: Option<u64>) {
+        self.mobs.elden_hurt(id, source, player);
+        self.drop_death_loot();
     }
 
     fn crystal_destroyed(&mut self, destroyed: crate::end_crystal::Destroyed) {
@@ -4136,6 +4159,7 @@ pub enum Command {
     Reattach { player: u64, root: Box<minecraftoss_core::nbt::Tag> },
     Job(Job),
     EndHit { target: crate::end_crystal::EndTarget, damage: crate::end_crystal::EndDamage },
+    EldenHurt { id: u64, source: elden_boss::Source, player: Option<u64> },
     FrameAction { player: u64, id: u64, action: crate::item_frame::FrameAction },
     ChestOpeners { player: Option<u64>, pos: BlockPos, count: u32 },
     Lectern { player: u64, pos: BlockPos, action: crate::lectern::LecternAction },
@@ -4369,6 +4393,7 @@ pub struct Output {
     pub tick_phases: Option<([f64; 6], (u32, f64), f64)>,
     pub jobs: Vec<Box<dyn std::any::Any + Send>>,
     pub dragons_killed: Vec<[i32; 4]>,
+    pub elden_felled: Vec<crate::elden_felled::Felled>,
     pub fight_reports: Vec<FightReport>,
     pub tick_nanos: Vec<u64>,
     pub eye_answers: Vec<crate::eye_of_ender::EyeAnswer>,
@@ -4383,6 +4408,7 @@ pub struct Output {
     pub raid_horns: Vec<(u64, [f64; 3])>,
     pub raid_bars: Option<Vec<(u64, Vec<crate::raids::RaidBar>)>>,
     pub wither_bars: Option<Vec<(u64, Vec<crate::wither_bar::WitherBar>)>>,
+    pub elden_bars: Option<Vec<(u64, Vec<crate::elden_bar::EldenBar>)>>,
 }
 
 /// The integrated server on its own thread, as vanilla runs it: the client
@@ -4679,6 +4705,10 @@ impl ServerHandle {
         self.send(Command::EndHit { target, damage });
     }
 
+    pub fn elden_hurt(&mut self, id: u64, source: elden_boss::Source, player: Option<u64>) {
+        self.send(Command::EldenHurt { id, source, player });
+    }
+
     pub fn frame_action(&mut self, player: u64, id: u64, action: crate::item_frame::FrameAction) {
         self.send(Command::FrameAction { player, id, action });
     }
@@ -4867,6 +4897,7 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                 Command::GameTime(game_time) => sim.set_game_time(game_time),
                 Command::Job(job) => out.jobs.push(job(&mut sim)),
                 Command::EndHit { target, damage } => sim.end_hit(target, damage),
+                Command::EldenHurt { id, source, player } => sim.elden_hurt(id, source, player),
                 Command::FrameAction { player, id, action } => {
                     let answers = matches!(action, crate::item_frame::FrameAction::Use { held: Some(_), .. });
                     let outcome = sim.acting(Some(player), |sim| sim.frame_action(id, action));
@@ -5015,6 +5046,7 @@ fn run_tick(sim: &mut ServerSim, input: &mut TickInput, normal: bool, out: &mut 
     out.mob_sounds.extend(sim.take_wind_sounds());
     out.mob_sounds.append(&mut sim.vaults.sounds);
     out.dragons_killed.extend(sim.take_dragons_killed());
+    out.elden_felled.extend(crate::elden_felled::felled(&mut sim.mobs));
     out.fight_reports.extend(sim.take_fight_reports());
     out.pearl_teleports.extend(sim.take_pearl_teleports());
     out.pearl_gateways.extend(sim.take_pearl_gateways());
@@ -5042,6 +5074,7 @@ fn run_tick(sim: &mut ServerSim, input: &mut TickInput, normal: bool, out: &mut 
     out.bullet_puffs.extend(sim.mobs.take_bullet_puffs());
     out.mob_sounds.extend(sim.level.sounds.drain(..).map(|s| minecraftoss_entities::world::MobSound { event: s.event.to_owned(), position: glam::DVec3::from_array(s.pos), volume: s.volume, pitch: s.pitch, category: "ambient" }));
     out.wither_bars = Some(wither_bars(sim, input));
+    out.elden_bars = Some(elden_bars(sim, input));
     sim.level.last_tick_phases[5] += mobs_started.elapsed().as_secs_f64() * 1000.0;
     for player in &mut input.players {
         let (id, feet) = (player.id, player.feet);
@@ -5079,6 +5112,18 @@ fn wither_bars(sim: &ServerSim, input: &TickInput) -> Vec<(u64, Vec<crate::withe
         .map(|player| {
             let view = input.watchers.iter().find(|watcher| watcher.id == player.id).map_or(input.view_distance, |watcher| watcher.view_distance);
             (player.id, crate::wither_bar::bars_for(&withers, player.position.to_array(), view))
+        })
+        .collect()
+}
+
+fn elden_bars(sim: &ServerSim, input: &TickInput) -> Vec<(u64, Vec<crate::elden_bar::EldenBar>)> {
+    let bosses = crate::elden_bar::bosses(&sim.mobs);
+    input
+        .mob_players
+        .iter()
+        .map(|player| {
+            let bars = if player.alive { crate::elden_bar::bars_for(&bosses, player.position.to_array()) } else { Vec::new() };
+            (player.id, bars)
         })
         .collect()
 }
@@ -7392,6 +7437,73 @@ mod tests {
         server.level.difficulty = 2;
         assert_eq!(server.summon("iw4l:margit", [8.5, 200.0, 8.5], None, 0.0), Ok(()));
         assert_eq!(server.mobs.elden_bosses().len(), 1);
+    }
+
+    fn altar_lantern() -> Block {
+        Block::new(crate::elden_altar::LANTERN).with("hanging", "false")
+    }
+
+    #[test]
+    fn the_altar_summons_margit_and_clears_its_blocks() {
+        let Some((mut server, mut scene)) = door_world() else { return };
+        let near = [8.5, 200.0, 12.5];
+        server.level.living_players = vec![([30.5, 200.0, 8.5], 1.62), (near, 1.62)];
+        place(&mut server, &mut scene, (8, 200, 8), Block::new(crate::elden_altar::GOLD));
+        place(&mut server, &mut scene, (8, 201, 8), Block::new(crate::elden_altar::GOLD));
+        server.take_changes();
+        server.take_destroyed();
+        assert!(server.mobs.elden_bosses().is_empty(), "two gold blocks summon nothing");
+        place(&mut server, &mut scene, (8, 202, 8), altar_lantern());
+        let changes: std::collections::HashMap<_, _> = server.take_changes().into_iter().collect();
+        for pos in [(8, 200, 8), (8, 201, 8), (8, 202, 8)] {
+            assert_eq!(changes.get(&pos), Some(&None), "{pos:?} is cleared");
+        }
+        let destroyed: Vec<_> = server.take_destroyed().into_iter().map(|(pos, block)| (pos, block.id.key())).collect();
+        let gold = crate::elden_altar::GOLD.to_owned();
+        assert_eq!(destroyed, [((8, 202, 8), crate::elden_altar::LANTERN.to_owned()), ((8, 201, 8), gold.clone()), ((8, 200, 8), gold)], "each block breaks with its particles and sound");
+        let bosses = server.mobs.elden_bosses();
+        assert_eq!(bosses.len(), 1);
+        let mob = &bosses[0];
+        assert_eq!(mob.state.brain.state(), elden_boss::State::Asleep);
+        assert_eq!((mob.state.anchor, mob.core.yaw, mob.state.rest_yaw, mob.core.health), (glam::DVec3::new(8.5, 200.0, 8.5), 0.0, 0.0, 800.0), "at the pillar's base, facing the nearer player to the south");
+        assert!(crate::elden_save::claims(&server.mob_tags[&mob.core.id]), "saved as his marker");
+        server.set_simulation_area((0, 0), 1);
+        let mut woke = None;
+        for tick in 1..=5 {
+            server.tick();
+            server.tick_mobs(&[candidate(0, near)], false);
+            let state = server.mobs.elden_bosses()[0].state.brain.state();
+            if state != elden_boss::State::Asleep {
+                woke = Some((tick, state));
+                break;
+            }
+        }
+        assert!(matches!(woke, Some((tick, elden_boss::State::Wake)) if tick <= 2), "the placer stands near, so he rises at once: {woke:?}");
+        assert!(server.items().is_empty(), "the blocks drop nothing");
+    }
+
+    #[test]
+    fn the_altar_does_nothing_on_peaceful() {
+        let Some((mut server, mut scene)) = door_world() else { return };
+        server.level.living_players = vec![([8.5, 200.0, 12.5], 1.62)];
+        place(&mut server, &mut scene, (8, 200, 8), Block::new(crate::elden_altar::GOLD));
+        place(&mut server, &mut scene, (8, 201, 8), Block::new(crate::elden_altar::GOLD));
+        server.level.difficulty = 0;
+        place(&mut server, &mut scene, (8, 202, 8), altar_lantern());
+        assert!(server.mobs.elden_bosses().is_empty(), "no Margit on peaceful");
+        for (y, kept) in [(200, crate::elden_altar::GOLD), (201, crate::elden_altar::GOLD), (202, crate::elden_altar::LANTERN)] {
+            assert_eq!(block_id(&server, (8, y, 8)), kept, "the altar stays");
+        }
+        server.level.difficulty = 2;
+        take(&mut server, &mut scene, (8, 202, 8));
+        place(&mut server, &mut scene, (8, 203, 8), Block::new("minecraft:stone"));
+        let hanging = Block::new(crate::elden_altar::LANTERN).with("hanging", "true");
+        place(&mut server, &mut scene, (8, 202, 8), hanging);
+        assert_eq!(block_id(&server, (8, 202, 8)), crate::elden_altar::LANTERN, "it hangs from the stone");
+        assert!(server.mobs.elden_bosses().is_empty(), "a hanging lantern is no altar");
+        take(&mut server, &mut scene, (8, 202, 8));
+        place(&mut server, &mut scene, (8, 202, 8), altar_lantern());
+        assert_eq!(server.mobs.elden_bosses().len(), 1, "on Normal it summons him");
     }
 
     #[test]
@@ -14089,6 +14201,30 @@ mod tests {
         sim.mobs.remove_mobs(&[id]);
         let shown = bars(run_ticks(&mut sim, &mut input, true, 1));
         assert!(shown[&0].is_empty() && shown[&1].is_empty(), "a removed wither takes its bar");
+    }
+
+    #[test]
+    fn each_living_player_within_48_blocks_of_an_awake_margit_gets_his_bar_every_tick() {
+        let Some((mut sim, _)) = frozen_sim() else { return };
+        let at = glam::DVec3::new(8.5, 120.0, 8.5);
+        let id = sim.mobs.spawn_elden_boss(&elden_boss::margit::MARGIT, at, 0.0, at, true);
+        let mut input = two_players([[8.5, 120.0, 18.5], [8.5, 120.0, 60.5]]);
+        let bars = |out: Output| out.elden_bars.expect("bars every tick").into_iter().collect::<std::collections::HashMap<_, _>>();
+        let shown = bars(run_ticks(&mut sim, &mut input, true, 1));
+        assert!(shown[&0].is_empty() && shown[&1].is_empty(), "asleep");
+        assert!(sim.mobs.elden_boss_mut(id).unwrap().state.brain.begin("dagger_throw"));
+        sim.mobs.elden_boss_mut(id).unwrap().state.brain.set_health(600.0);
+        let shown = bars(run_ticks(&mut sim, &mut input, true, 1));
+        let bar = crate::elden_bar::EldenBar { id, name: "Margit, the Fell Omen", progress: 0.75 };
+        assert_eq!(shown[&0], vec![bar]);
+        assert!(shown[&1].is_empty(), "52 blocks away");
+        input.mob_players[0].alive = false;
+        let shown = bars(run_ticks(&mut sim, &mut input, true, 1));
+        assert!(shown[&0].is_empty(), "not while dead");
+        input.mob_players[0].alive = true;
+        sim.mobs.elden_boss_mut(id).unwrap().state.brain.reset(0);
+        let shown = bars(run_ticks(&mut sim, &mut input, true, 1));
+        assert!(shown[&0].is_empty(), "a reset takes his bar");
     }
 
     fn held(player: &TickPlayer) -> Vec<(String, u8)> {

@@ -475,7 +475,7 @@ impl EntityView {
         self.ticks
     }
 
-    pub fn animate_tick<S: Scene + ?Sized>(
+    pub fn animate_tick<S: Scene + minecraftoss_player::World + ?Sized>(
         &mut self,
         scene: &S,
         feet: [f64; 3],
@@ -492,6 +492,8 @@ impl EntityView {
         for (kind, start, motion) in tick.particles {
             self.ambient.add(kind, start, motion);
         }
+        let boxes = |cell| minecraftoss_player::World::collision_boxes(scene, cell);
+        minecraft_terrain::families::viewer_effects(&self.world, &self.client, &mut minecraft_terrain::families::ViewerFx { feet: DVec3::from_array(feet), tick: self.ticks, boxes: &boxes, ambient: &mut self.ambient, spell: &mut self.spell, random: &mut self.random });
         tick.sounds
     }
 
@@ -1591,6 +1593,37 @@ mod tests {
         assert_eq!(view.boxes().iter().map(|(key, _)| decode(*key)).collect::<Vec<_>>(), [Some(MobHit::Family(37, mite))], "a dead mob is not shot");
         view.world.family_core_mut(mite).unwrap().1.removed = true;
         assert!(view.boxes().is_empty(), "nor one that left");
+    }
+
+    #[test]
+    fn margits_gun_box_is_1_4_by_3() {
+        let mut view = EntityView::new(3);
+        let margit = view.world.spawn_family_kind("iw4l:margit", DVec3::new(0.5, 64.0, 0.5)).unwrap();
+        let boxes = view.shot_boxes(None);
+        assert_eq!(boxes.len(), 1);
+        let (key, bounds) = boxes[0];
+        assert_eq!(decode(key), Some(MobHit::Family(96, margit)));
+        let expected = [-0.2, 64.0, -0.2, 1.2, 67.0, 1.2];
+        assert!(bounds.iter().zip(expected).all(|(a, b)| (a - b).abs() < 1e-6), "{bounds:?}");
+        assert_eq!(view.boxes(), boxes, "MW2's trace and aim assist read the same box");
+    }
+
+    #[test]
+    fn margits_fog_ring_shows_on_the_ground_near_the_viewer_while_he_fights() {
+        let mut view = EntityView::new(9);
+        let margit = view.world.spawn_family_kind("iw4l:margit", DVec3::new(0.5, 65.0, 0.5)).unwrap();
+        let mut scene = HandcraftedScene::default();
+        for x in -24..=24 {
+            for z in 0..=25 {
+                scene.set((x, 64, z), Some(Block::new("minecraft:stone")));
+            }
+        }
+        let feet = [0.5, 65.0, 22.5];
+        view.animate_tick(&scene, feet);
+        assert!(view.spell.is_empty(), "asleep, no ring");
+        view.world.elden_boss_mut(margit).unwrap().state.shown.awake = true;
+        view.animate_tick(&scene, feet);
+        assert!(view.spell.len() >= 10, "a ring of gold motes on the stone: {}", view.spell.len());
     }
 
     #[test]

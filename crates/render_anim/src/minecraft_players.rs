@@ -780,6 +780,7 @@ pub(crate) fn struck(
         raid_bars,
         wither_bars,
         warden_tracker,
+        elden_bars,
         ..
     } = player;
     let local_uuid = &*uuid;
@@ -1000,6 +1001,14 @@ pub(crate) fn struck(
     }
     if let Some(bars) = outputs.wither_bars {
         *wither_bars = bars;
+    }
+    if let Some(bars) = outputs.elden_bars {
+        *elden_bars = bars;
+    }
+    for (event, volume, pitch) in outputs.own_sounds {
+        if let Some(sounds) = sounds.as_mut() {
+            sounds.play(packs, &event, None, volume, pitch);
+        }
     }
     outputs.told
 }

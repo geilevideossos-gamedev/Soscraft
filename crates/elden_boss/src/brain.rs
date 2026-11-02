@@ -25,6 +25,19 @@ pub enum State {
 }
 
 impl State {
+    pub const ALL: [State; 10] = [
+        State::Asleep,
+        State::Wake,
+        State::Idle,
+        State::Move,
+        State::Recover,
+        State::Kneel,
+        State::Shift,
+        State::Fade,
+        State::Return,
+        State::Dead,
+    ];
+
     pub fn awake(self) -> bool {
         matches!(
             self,
@@ -47,6 +60,7 @@ pub struct Seen {
     pub ground: f64,
     pub reachable: bool,
     pub room: Option<DVec3>,
+    pub sight: bool,
 }
 
 impl Seen {
@@ -77,6 +91,8 @@ pub struct Clip {
     pub held: bool,
     pub phase: u8,
     pub awake: bool,
+    pub from: u16,
+    pub criticals: u8,
 }
 
 impl Clip {
@@ -153,6 +169,8 @@ pub struct Brain {
     pub(crate) target: Option<PlayerId>,
     pub(crate) gap: u16,
     pub(crate) recovery: u16,
+    pub(crate) from: u16,
+    pub(crate) criticals: u8,
     pub(crate) around: f64,
     pub(crate) ready: Vec<u64>,
     pub(crate) playing: Option<Playing>,
@@ -173,6 +191,8 @@ impl Brain {
             target: None,
             gap: 0,
             recovery: 0,
+            from: 0,
+            criticals: 0,
             around: 1.0,
             ready: vec![0; def.moves.len()],
             playing: None,
@@ -197,6 +217,15 @@ impl Brain {
 
     pub fn target(&self) -> Option<PlayerId> {
         self.target
+    }
+
+    pub fn clip(&self) -> Clip {
+        match &self.playing {
+            Some(playing) if self.state == State::Move => {
+                self.shown(playing.clock, playing.holding > 0)
+            }
+            _ => self.shown(self.clock, false),
+        }
     }
 
     pub fn gone(&self) -> bool {
@@ -330,6 +359,12 @@ impl Brain {
             held,
             phase: self.phase,
             awake: self.awake(),
+            from: if self.state == State::Recover {
+                self.from
+            } else {
+                0
+            },
+            criticals: self.criticals,
         }
     }
 
@@ -507,6 +542,7 @@ impl Brain {
                     self.state = State::Recover;
                     self.clock = 0;
                     self.recovery = recovery;
+                    self.from = clock;
                     self.recover(sense, act);
                 }
             }
@@ -524,7 +560,7 @@ impl Brain {
             let tick = clock - strike.from;
             let ticks = strike.to - strike.from + 1;
             for player in sense.players {
-                if playing.struck.contains(&(index, player.id)) {
+                if !player.sight || playing.struck.contains(&(index, player.id)) {
                     continue;
                 }
                 if shape::struck(
@@ -789,6 +825,7 @@ pub(crate) mod tests {
             ground: 0.0,
             reachable: true,
             room: None,
+            sight: true,
         }
     }
 
@@ -982,6 +1019,39 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_player_he_cannot_see_is_not_struck() {
+        let hidden = Seen {
+            sight: false,
+            ..player(1, -0.4, 2.0)
+        };
+        let players = [hidden, player(2, 0.4, 2.0)];
+        for seed in 0..20 {
+            let mut field = Field::new(seed);
+            field.brain.begin("cane_slam");
+            let hits: Vec<PlayerId> = field
+                .play_out(&players)
+                .iter()
+                .flat_map(|act| act.hits.iter().map(|hit| hit.player))
+                .collect();
+            assert_eq!(hits, [2], "seed {seed}");
+        }
+        let mut field = Field::new(3);
+        field.brain.begin("cane_slam");
+        let mut struck = Vec::new();
+        loop {
+            let act = field.step(&[Seen {
+                sight: field.brain.playing.as_ref().is_some_and(|p| p.clock >= 29),
+                ..player(1, 0.0, 2.0)
+            }]);
+            if act.clip.state != State::Move {
+                break;
+            }
+            struck.extend(act.hits.iter().map(|hit| hit.player));
+        }
+        assert_eq!(struck, [1], "seen again inside the window");
+    }
+
+    #[test]
     fn a_jump_clears_the_hammer_shockwave() {
         for jumping in [false, true] {
             for seed in 0..10 {
@@ -1077,6 +1147,38 @@ pub(crate) mod tests {
         assert!(
             counts[1] > 60 && counts[2] > 50 && counts[3] > 150,
             "{counts:?}"
+        );
+    }
+
+    #[test]
+    fn a_recovery_shows_the_move_clock_it_was_cut_at() {
+        let target = player(1, 0.0, 2.5);
+        let combo = index("cane_combo");
+        let mut cuts = Vec::new();
+        for seed in 0..200 {
+            let mut field = Field::new(seed);
+            assert_eq!(field.brain.clip().state, State::Asleep);
+            field.brain.begin("cane_combo");
+            let clip = field.brain.clip();
+            assert_eq!(
+                (clip.state, usize::from(clip.index), clip.clock, clip.held),
+                (State::Move, combo, 0, false)
+            );
+            loop {
+                let act = field.step(&[target]);
+                match act.clip.state {
+                    State::Move => assert_eq!(act.clip.from, 0),
+                    State::Recover => cuts.push((act.clip.from, act.clip.clock)),
+                    _ => break,
+                }
+            }
+        }
+        assert!(cuts.iter().any(|&(from, _)| from == 16), "{cuts:?}");
+        assert!(cuts.iter().any(|&(from, _)| from == 26), "{cuts:?}");
+        assert!(
+            cuts.iter()
+                .all(|&(from, clock)| (from == 16 && clock < 14) || (from == 26 && clock < 16)),
+            "{cuts:?}"
         );
     }
 

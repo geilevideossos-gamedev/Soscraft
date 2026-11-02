@@ -1,13 +1,54 @@
 use crate::client_mobs::ClientMobs;
-use crate::families::{FamilyDraw, TerrainFamily};
+use crate::elden_effects::{RING_EVERY, Sparks};
+use crate::elden_show::EldenShow;
+use crate::families::{ClientFx, FamilyDraw, FamilyShow, TerrainFamily, ViewerFx};
 use crate::lighting::SkyLight;
 use crate::mesh::Atlas;
+use crate::mob_tracking::MobShow;
+use elden_boss::shape::Frame;
+use elden_boss::{Clip, State};
 use minecraftoss_core::nbt::Tag;
 use minecraftoss_entities::world::families::FamilyMob;
 pub use minecraftoss_entities::world::families::bosses::elden_bosses::EldenBoss;
 
 pub const TRACKING_RANGE: i32 = 10;
 pub const SHADOW_RADIUS: f32 = 1.0;
+pub const STATE_BITS: u32 = 0xf;
+pub const HELD: u32 = 1 << 4;
+pub const AWAKE: u32 = 1 << 5;
+
+pub fn show_clip(clip: &Clip) -> FamilyShow {
+    let state = State::ALL.iter().position(|state| *state == clip.state);
+    let mut flags = state.map_or(0, |state| state as u32);
+    if clip.held {
+        flags |= HELD;
+    }
+    if clip.awake {
+        flags |= AWAKE;
+    }
+    let mut values = [0; 8];
+    values[0] = i32::from(clip.index);
+    values[1] = i32::from(clip.clock);
+    values[2] = i32::from(clip.phase);
+    values[3] = i32::from(clip.from);
+    values[4] = i32::from(clip.criticals);
+    FamilyShow { flags, values }
+}
+
+pub fn shown_clip(show: &FamilyShow) -> Option<Clip> {
+    let state = *State::ALL.get((show.flags & STATE_BITS) as usize)?;
+    let [index, clock, phase, from, criticals, ..] = show.values;
+    Some(Clip {
+        state,
+        index: u8::try_from(index).ok()?,
+        clock: u16::try_from(clock).ok()?,
+        held: show.flags & HELD != 0,
+        phase: u8::try_from(phase).ok()?,
+        awake: show.flags & AWAKE != 0,
+        from: u16::try_from(from).ok()?,
+        criticals: u8::try_from(criticals).ok()?,
+    })
+}
 
 impl TerrainFamily for EldenBoss {
     const TRACKING_RANGE: i32 = TRACKING_RANGE;
@@ -22,14 +63,72 @@ impl TerrainFamily for EldenBoss {
         crate::elden_save::fields(mob)
     }
 
+    fn show(mob: &FamilyMob<Self>) -> FamilyShow {
+        show_clip(&mob.state.shown)
+    }
+
+    fn show_on(mob: &mut FamilyMob<Self>, show: &FamilyShow) {
+        if let Some(clip) = shown_clip(show) {
+            mob.state.shown = clip;
+        }
+    }
+
+    fn show_more(mob: &FamilyMob<Self>, show: &mut MobShow) {
+        show.elden = Some(EldenShow::of(&mob.state.daggers));
+    }
+
+    fn show_more_on(mob: &mut FamilyMob<Self>, show: &MobShow) {
+        mob.state.daggers = show.elden.map_or_else(Vec::new, |elden| elden.flights());
+    }
+
     fn draw(
-        _out: &mut FamilyDraw<'_>,
-        _mobs: &[FamilyMob<Self>],
-        _poses: &ClientMobs,
-        _atlas: &Atlas,
-        _light: &SkyLight,
-        _partial: f32,
+        out: &mut FamilyDraw<'_>,
+        mobs: &[FamilyMob<Self>],
+        poses: &ClientMobs,
+        atlas: &Atlas,
+        light: &SkyLight,
+        partial: f32,
     ) {
+        crate::elden_render::append_bosses(out.models, mobs, poses, atlas, light, partial);
+    }
+
+    fn client_effects(mobs: &[FamilyMob<Self>], poses: &ClientMobs, fx: &mut ClientFx<'_>) {
+        for mob in mobs.iter().filter(|mob| !mob.core.removed) {
+            let id = mob.core.id;
+            let Some(shown) = poses.get(id) else {
+                continue;
+            };
+            let frame = Frame {
+                origin: shown.position,
+                yaw: f64::from(shown.y_rot),
+            };
+            let mut sparks = Sparks {
+                ambient: &mut *fx.ambient,
+                spell: &mut *fx.spell,
+                random: &mut *fx.random,
+            };
+            let last = fx.seen.get(&id).copied();
+            let now = sparks.show(mob.state.def, &mob.state.shown, &frame, last);
+            fx.seen.insert(id, now);
+        }
+    }
+
+    fn viewer_effects(mobs: &[FamilyMob<Self>], _poses: &ClientMobs, fx: &mut ViewerFx<'_>) {
+        if !fx.tick.is_multiple_of(RING_EVERY) {
+            return;
+        }
+        let awake = mobs
+            .iter()
+            .filter(|mob| !mob.core.removed && mob.state.shown.awake);
+        for mob in awake {
+            let mut sparks = Sparks {
+                ambient: &mut *fx.ambient,
+                spell: &mut *fx.spell,
+                random: &mut *fx.random,
+            };
+            let leash = mob.state.def.arena.leash;
+            sparks.ring(mob.state.anchor, leash, fx.feet, fx.boxes);
+        }
     }
 }
 
@@ -131,5 +230,476 @@ mod tests {
             1,
             "one hurt voice for both"
         );
+    }
+
+    #[test]
+    fn margit_is_drawn_from_his_painted_skin_through_his_family() {
+        let temp = crate::test_dir::tempdir().unwrap();
+        let meta = r#"{"pack":{"min_format":[97,1],"max_format":[97,1]}}"#;
+        std::fs::write(temp.path().join("pack.mcmeta"), meta).unwrap();
+        let packs = crate::pack::PackStack::open(vec![temp.path().into()]).unwrap();
+        let texture = crate::pack::ResourceId::parse(crate::elden_skin::TEXTURE).unwrap();
+        let atlas = crate::mesh::make_atlas(&packs, vec![texture.clone()]).unwrap();
+        assert!(atlas.missing.is_empty(), "{:?}", atlas.missing);
+        let width = atlas.pixels.width() as f32;
+        let region = atlas.region(&texture);
+        let (x, y) = (
+            (region[0] * width).floor() as u32,
+            (region[1] * width).floor() as u32,
+        );
+        let skin = crate::elden_skin::paint();
+        for (u, v) in [(9, 11), (33, 3), (45, 20)] {
+            assert_eq!(atlas.pixels.get_pixel(x + u, y + v), skin.get_pixel(u, v));
+        }
+        let mut world = EntityWorld::default();
+        let at = DVec3::new(0.5, 64.0, 0.5);
+        world.spawn_elden_boss(&MARGIT, at, 0.0, at, false);
+        let mut poses = ClientMobs::default();
+        poses.spawn_missing(&crate::client_mobs::server_mobs(&world));
+        let light =
+            SkyLight::from_levels((-8, 56, -8), (17, 17, 17), vec![15; 4913], vec![0; 4913]);
+        let (mut models, mut culled, mut translucent, mut held) = Default::default();
+        let mut out = FamilyDraw {
+            models: &mut models,
+            culled: &mut culled,
+            translucent: &mut translucent,
+            held: &mut held,
+        };
+        crate::families::draw(&mut out, &world, &poses, &atlas, &light, 0.0);
+        assert_eq!(models.faces, 6 * 16, "one Margit of sixteen cubes");
+        let skin = atlas.entity_region(&texture);
+        assert!(models.vertices.iter().all(|vertex| {
+            (skin[0]..=skin[2]).contains(&vertex.uv[0])
+                && (skin[1]..=skin[3]).contains(&vertex.uv[1])
+        }));
+        let top = models
+            .vertices
+            .iter()
+            .map(|v| v.position[1])
+            .fold(f32::MIN, f32::max);
+        assert!(top > 66.4 && top < 66.7, "asleep, he kneels: {top}");
+    }
+
+    #[test]
+    fn a_friend_sees_margits_clip_from_his_show() {
+        let mut host = EntityWorld::default();
+        let at = DVec3::new(0.5, 64.0, 0.5);
+        let id = host.spawn_elden_boss(&MARGIT, at, 0.0, at, false);
+        let players = [player_at(1, DVec3::new(0.5, 64.0, 3.0))];
+        for _ in 0..40 {
+            host.tick_with_players(&mut Field, &players);
+        }
+        assert!(host.elden_bosses()[0].state.brain.awake());
+        host.elden_boss_mut(id)
+            .unwrap()
+            .state
+            .brain
+            .begin("dagger_throw");
+        let shown = |world: &EntityWorld| world.elden_bosses()[0].state.shown;
+        for _ in 0..12 {
+            host.tick_with_players(&mut Field, &players);
+        }
+        let held = shown(&host);
+        let index = MARGIT.move_index("dagger_throw").unwrap() as u8;
+        assert_eq!(
+            (held.state, held.index, held.clock, held.held),
+            (State::Move, index, 10, true)
+        );
+        let tags = crate::server_mobs::mob_tags_where(
+            &host,
+            |_, _| true,
+            &std::collections::HashMap::new(),
+            false,
+        );
+        let (_, tag) = tags.into_iter().find(|(saved, _)| *saved == id).unwrap();
+        let mut friend = EntityWorld::default();
+        assert!(crate::mob_tracking::spawn_tracked(&mut friend, id, &tag));
+        assert_eq!(
+            shown(&friend).state,
+            State::Return,
+            "a loaded copy walks home"
+        );
+        for mob in crate::client_mobs::server_mobs(&host) {
+            crate::mob_tracking::show_on(&mut friend, &mob);
+        }
+        assert_eq!(shown(&friend), held);
+        for state in State::ALL {
+            let clip = Clip {
+                state,
+                index: 5,
+                clock: 77,
+                held: true,
+                phase: 2,
+                awake: false,
+                from: 26,
+                criticals: 3,
+            };
+            assert_eq!(shown_clip(&show_clip(&clip)), Some(clip));
+        }
+        let unknown = FamilyShow {
+            flags: 12,
+            values: [0; 8],
+        };
+        assert_eq!(shown_clip(&unknown), None);
+    }
+
+    fn friend_of(host: &EntityWorld, id: u64) -> EntityWorld {
+        let tags = crate::server_mobs::mob_tags_where(
+            host,
+            |_, _| true,
+            &std::collections::HashMap::new(),
+            false,
+        );
+        let (_, tag) = tags.into_iter().find(|(saved, _)| *saved == id).unwrap();
+        let mut friend = EntityWorld::default();
+        assert!(crate::mob_tracking::spawn_tracked(&mut friend, id, &tag));
+        friend
+    }
+
+    fn mirror(host: &EntityWorld, friend: &mut EntityWorld) {
+        for mob in crate::client_mobs::server_mobs(host) {
+            crate::mob_tracking::show_on(friend, &mob);
+        }
+    }
+
+    fn shown_state(world: &EntityWorld) -> (Clip, Vec<elden_boss::Flight>) {
+        let state = &world.elden_bosses()[0].state;
+        (state.shown, state.daggers.clone())
+    }
+
+    #[test]
+    fn a_friend_sees_margit_swing_and_his_daggers_fly() {
+        let mut host = EntityWorld::default();
+        let at = DVec3::new(0.5, 64.0, 0.5);
+        let id = host.spawn_elden_boss(&MARGIT, at, 0.0, at, false);
+        let near = [player_at(1, DVec3::new(0.5, 64.0, 3.0))];
+        for _ in 0..40 {
+            host.tick_with_players(&mut Field, &near);
+        }
+        assert!(host.elden_bosses()[0].state.brain.awake());
+        assert_eq!(
+            crate::mob_tracking::tracking_range(MARGIT.id),
+            10,
+            "ten chunks, as vanilla's bosses"
+        );
+        let mut friend = friend_of(&host, id);
+        assert!(friend.elden_bosses()[0].state.daggers.is_empty());
+        host.elden_boss_mut(id)
+            .unwrap()
+            .state
+            .brain
+            .begin("cane_combo");
+        let combo = MARGIT.move_index("cane_combo").unwrap() as u8;
+        let mut swinging = 0;
+        for _ in 0..14 {
+            host.tick_with_players(&mut Field, &near);
+            mirror(&host, &mut friend);
+            assert_eq!(shown_state(&friend), shown_state(&host));
+            let (clip, _) = shown_state(&friend);
+            if clip.state == State::Move && clip.index == combo {
+                swinging += 1;
+            }
+        }
+        assert_eq!(swinging, 14, "the friend sees the first swing");
+        let far = [player_at(1, DVec3::new(0.5, 64.0, 20.0))];
+        host.elden_boss_mut(id)
+            .unwrap()
+            .state
+            .brain
+            .begin("backstep_daggers");
+        let mut most = 0;
+        for _ in 0..60 {
+            host.tick_with_players(&mut Field, &far);
+            mirror(&host, &mut friend);
+            assert_eq!(shown_state(&friend), shown_state(&host));
+            most = most.max(friend.elden_bosses()[0].state.daggers.len());
+        }
+        assert!(most >= 2, "two daggers in the air at once: {most}");
+        for _ in 0..60 {
+            host.tick_with_players(&mut Field, &far);
+            mirror(&host, &mut friend);
+            if host.elden_bosses()[0].state.daggers.is_empty() {
+                break;
+            }
+        }
+        assert!(
+            friend.elden_bosses()[0].state.daggers.is_empty(),
+            "a spent dagger is gone for the friend too"
+        );
+    }
+
+    #[test]
+    fn a_friend_draws_the_same_clip_time_as_the_host() {
+        let temp = crate::test_dir::tempdir().unwrap();
+        let meta = r#"{"pack":{"min_format":[97,1],"max_format":[97,1]}}"#;
+        std::fs::write(temp.path().join("pack.mcmeta"), meta).unwrap();
+        let packs = crate::pack::PackStack::open(vec![temp.path().into()]).unwrap();
+        let texture = crate::pack::ResourceId::parse(crate::elden_skin::TEXTURE).unwrap();
+        let atlas = crate::mesh::make_atlas(&packs, vec![texture]).unwrap();
+        let light =
+            SkyLight::from_levels((-8, 56, -8), (17, 17, 17), vec![15; 4913], vec![0; 4913]);
+        let draw = |world: &EntityWorld, poses: &ClientMobs, partial: f32| {
+            let (mut models, mut culled, mut translucent, mut held) = Default::default();
+            let mut out = FamilyDraw {
+                models: &mut models,
+                culled: &mut culled,
+                translucent: &mut translucent,
+                held: &mut held,
+            };
+            crate::families::draw(&mut out, world, poses, &atlas, &light, partial);
+            models.vertices
+        };
+        let mut host = EntityWorld::default();
+        let at = DVec3::new(0.5, 64.0, 0.5);
+        let id = host.spawn_elden_boss(&MARGIT, at, 0.0, at, false);
+        let players = [player_at(1, DVec3::new(0.5, 64.0, 14.0))];
+        for _ in 0..40 {
+            host.tick_with_players(&mut Field, &players);
+        }
+        let mut friend = friend_of(&host, id);
+        host.elden_boss_mut(id)
+            .unwrap()
+            .state
+            .brain
+            .begin("dagger_throw");
+        let (mut holding, mut flying) = (0, 0);
+        for _ in 0..70 {
+            host.tick_with_players(&mut Field, &players);
+            mirror(&host, &mut friend);
+            let mut poses = ClientMobs::default();
+            poses.spawn_missing(&crate::client_mobs::server_mobs(&host));
+            for partial in [0.0, 0.5, 0.9] {
+                let seen = draw(&host, &poses, partial);
+                assert!(!seen.is_empty());
+                assert_eq!(draw(&friend, &poses, partial), seen);
+            }
+            let (clip, daggers) = shown_state(&host);
+            holding += usize::from(clip.held);
+            flying += usize::from(!daggers.is_empty());
+        }
+        assert!(
+            holding >= 10 && flying > 0,
+            "a held throw and a dagger in flight: {holding} {flying}"
+        );
+    }
+
+    struct View {
+        world: EntityWorld,
+        poses: ClientMobs,
+        ambient: crate::ambient_particles::AmbientParticles,
+        spell: crate::spell_particles::SpellParticles,
+        portal: crate::portal_particles::PortalParticles,
+        poof: crate::poof_particles::PoofParticles,
+        sounds: Vec<(String, DVec3, f32, f32)>,
+        random: minecraftoss_player::rng::LegacyRandom,
+        seen: std::collections::HashMap<u64, i32>,
+    }
+
+    impl View {
+        fn of(world: EntityWorld) -> View {
+            let mut poses = ClientMobs::default();
+            poses.spawn_missing(&crate::client_mobs::server_mobs(&world));
+            View {
+                world,
+                poses,
+                ambient: crate::ambient_particles::AmbientParticles::new(1),
+                spell: crate::spell_particles::SpellParticles::new(1),
+                portal: Default::default(),
+                poof: Default::default(),
+                sounds: Vec::new(),
+                random: minecraftoss_player::rng::LegacyRandom::new(1),
+                seen: Default::default(),
+            }
+        }
+
+        fn effects(&mut self) {
+            let mut fx = ClientFx {
+                ambient: &mut self.ambient,
+                spell: &mut self.spell,
+                portal: &mut self.portal,
+                poof: &mut self.poof,
+                sounds: &mut self.sounds,
+                random: &mut self.random,
+                seen: &mut self.seen,
+            };
+            crate::families::client_effects(&self.world, &self.poses, &mut fx);
+        }
+
+        fn count(&self, kind: crate::ambient_particles::Kind) -> usize {
+            let kinds = self.ambient.kinds_at();
+            kinds.filter(|(seen, _)| *seen == kind).count()
+        }
+
+        fn ring(&mut self, feet: DVec3, tick: u64) -> usize {
+            let before = self.spell.len();
+            let ground = |(_, y, _): (i32, i32, i32)| {
+                if y < 64 {
+                    vec![[0.0, 0.0, 0.0, 1.0, 1.0, 1.0]]
+                } else {
+                    Vec::new()
+                }
+            };
+            let mut fx = ViewerFx {
+                feet,
+                tick,
+                boxes: &ground,
+                ambient: &mut self.ambient,
+                spell: &mut self.spell,
+                random: &mut self.random,
+            };
+            crate::families::viewer_effects(&self.world, &self.poses, &mut fx);
+            self.spell.len() - before
+        }
+    }
+
+    #[test]
+    fn a_slam_cue_bursts_on_its_tick_for_host_and_friend_views() {
+        use crate::ambient_particles::Kind;
+        let mut world = EntityWorld::default();
+        let at = DVec3::new(0.5, 64.0, 0.5);
+        let id = world.spawn_elden_boss(&MARGIT, at, 0.0, at, false);
+        let players = [player_at(1, DVec3::new(0.5, 64.0, 3.0))];
+        for _ in 0..40 {
+            world.tick_with_players(&mut Field, &players);
+        }
+        let tags = crate::server_mobs::mob_tags_where(
+            &world,
+            |_, _| true,
+            &std::collections::HashMap::new(),
+            false,
+        );
+        let (_, tag) = tags.into_iter().find(|(saved, _)| *saved == id).unwrap();
+        let mut copy = EntityWorld::default();
+        assert!(crate::mob_tracking::spawn_tracked(&mut copy, id, &tag));
+        let mut host = View::of(world);
+        let mut friend = View::of(copy);
+        host.world
+            .elden_boss_mut(id)
+            .unwrap()
+            .state
+            .brain
+            .begin("cane_slam");
+        let mut slams = Vec::new();
+        for _ in 0..80 {
+            host.world.tick_with_players(&mut Field, &players);
+            for mob in crate::client_mobs::server_mobs(&host.world) {
+                crate::mob_tracking::show_on(&mut friend.world, &mob);
+            }
+            let before = (host.count(Kind::Explosion), friend.count(Kind::Explosion));
+            host.effects();
+            friend.effects();
+            let after = (host.count(Kind::Explosion), friend.count(Kind::Explosion));
+            if after != before {
+                let clip = host.world.elden_bosses()[0].state.shown;
+                slams.push((clip.state, clip.clock, clip.held, after));
+            }
+        }
+        assert_eq!(slams, [(State::Move, 29, false, (1, 1))]);
+        let poofs = host.count(Kind::Poof);
+        assert_eq!(poofs, crate::elden_effects::SLAM_POOFS);
+        assert_eq!(friend.count(Kind::Poof), poofs);
+    }
+
+    #[test]
+    fn golden_mist_shows_his_rise_and_phase_two_drips_gold() {
+        use crate::ambient_particles::Kind;
+        let mut world = EntityWorld::default();
+        let at = DVec3::new(0.5, 64.0, 0.5);
+        let id = world.spawn_elden_boss(&MARGIT, at, 0.0, at, false);
+        let mut view = View::of(world);
+        view.effects();
+        assert_eq!(
+            (view.count(Kind::Totem), view.spell.len()),
+            (0, 0),
+            "asleep"
+        );
+        let players = [player_at(1, DVec3::new(0.5, 64.0, 10.0))];
+        for _ in 0..2 {
+            view.world.tick_with_players(&mut Field, &players);
+        }
+        let rise = view.world.elden_bosses()[0].state.shown;
+        assert_eq!((rise.state, rise.clock), (State::Wake, 0));
+        view.effects();
+        assert!(view.count(Kind::Totem) > 0);
+        assert_eq!(view.spell.len(), crate::elden_effects::MIST_SPELLS);
+        let mut drips = |clip: Clip| {
+            view.world.elden_boss_mut(id).unwrap().state.shown = clip;
+            let before = view.spell.len();
+            view.effects();
+            view.spell.len() - before
+        };
+        let idle = Clip {
+            state: State::Idle,
+            index: 0,
+            clock: 3,
+            held: false,
+            phase: 1,
+            awake: true,
+            from: 0,
+            criticals: 0,
+        };
+        assert_eq!(drips(idle), 0, "phase 1");
+        let second = Clip { phase: 2, ..idle };
+        assert_eq!(drips(second), crate::elden_effects::SHIMMER);
+        assert_eq!(drips(second), crate::elden_effects::SHIMMER, "every tick");
+        let dead = Clip {
+            state: State::Dead,
+            clock: 15,
+            ..second
+        };
+        assert_eq!(drips(dead), 0);
+    }
+
+    #[test]
+    fn the_fog_ring_shows_only_while_he_is_awake_and_near_the_viewer() {
+        let mut world = EntityWorld::default();
+        let at = DVec3::new(0.5, 64.0, 0.5);
+        let id = world.spawn_elden_boss(&MARGIT, at, 0.0, at, false);
+        let copy = friend_of(&world, id);
+        let mut host = View::of(world);
+        let mut friend = View::of(copy);
+        let near = DVec3::new(0.5, 64.0, 20.5);
+        assert_eq!(host.ring(near, 0), 0, "asleep");
+        let players = [player_at(1, near)];
+        for _ in 0..2 {
+            host.world.tick_with_players(&mut Field, &players);
+        }
+        mirror(&host.world, &mut friend.world);
+        let anchors = |view: &View| view.world.elden_bosses()[0].state.anchor;
+        assert_eq!((anchors(&host), anchors(&friend)), (at, at));
+        assert!(friend.world.elden_bosses()[0].state.shown.awake);
+        let shown = host.ring(near, 4);
+        assert_eq!(shown, 15, "one mote for each 3 blocks of the ring in view");
+        assert_eq!(
+            friend.ring(near, 4),
+            shown,
+            "the friend draws the same ring"
+        );
+        for tick in 5..8 {
+            assert_eq!(host.ring(near, tick), 0, "every 4 ticks");
+        }
+        assert_eq!(
+            host.ring(DVec3::new(0.5, 64.0, 60.5), 8),
+            0,
+            "36 blocks out"
+        );
+        assert_eq!(host.ring(at, 8), 0, "24 blocks in, at his spot");
+        assert_eq!(host.ring(DVec3::new(0.5, 90.0, 20.5), 8), 0, "high above");
+        let fighting = host.world.elden_bosses()[0].state.shown;
+        let mut shows = |clip: Clip| {
+            host.world.elden_boss_mut(id).unwrap().state.shown = clip;
+            host.ring(near, 12)
+        };
+        assert_eq!(shows(fighting), shown);
+        for state in [State::Return, State::Dead, State::Asleep] {
+            let done = Clip {
+                state,
+                awake: false,
+                ..fighting
+            };
+            assert_eq!(shows(done), 0, "{state:?}");
+        }
+        host.world.elden_boss_mut(id).unwrap().core.removed = true;
+        assert_eq!(host.ring(near, 16), 0, "gone");
     }
 }

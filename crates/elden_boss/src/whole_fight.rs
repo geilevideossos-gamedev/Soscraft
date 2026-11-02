@@ -138,6 +138,7 @@ impl Fight {
             ground: 0.0,
             reachable: true,
             room: None,
+            sight: true,
         })
     }
 
