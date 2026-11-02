@@ -946,7 +946,12 @@ mod tests {
             assert_eq!(felled, [1, 2, 3], "the wake's two and a later one");
             assert!(world.take_elden_felled().is_empty(), "told once");
             if !drops {
-                assert!(deaths.is_empty(), "no drops without mob drops");
+                let death = &deaths[0];
+                assert_eq!(
+                    (death.table, death.experience, death.reward),
+                    (None, 0, 200)
+                );
+                assert!(death.equipment.is_empty(), "no drops without mob drops");
                 continue;
             }
             let death = &deaths[0];
