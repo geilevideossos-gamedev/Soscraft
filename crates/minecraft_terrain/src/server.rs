@@ -1373,6 +1373,7 @@ impl ServerSim {
         self.drop_death_loot();
         self.throw_barters();
         self.drop_cat_gifts();
+        crate::families::drop_family_gifts(&mut self.mobs, self.entity_loot.as_mut(), &mut self.level);
         self.drop_leads();
         self.raid_villager_events();
         for gone in self.mobs.take_departed_traders() {

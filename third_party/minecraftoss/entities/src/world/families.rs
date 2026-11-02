@@ -1008,6 +1008,13 @@ macro_rules! first_static {
     };
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FamilyGift {
+    pub table: &'static str,
+    pub this_type: &'static str,
+    pub at: DVec3,
+}
+
 #[derive(Clone, Default)]
 pub struct Families {
     pub pests: pests::Group,
@@ -1017,6 +1024,7 @@ pub struct Families {
     pub water: water::Group,
     pub night: night::Group,
     pub bosses: bosses::Group,
+    pub gifts: Vec<FamilyGift>,
 }
 
 pub fn kinds() -> Vec<&'static str> {
@@ -1277,6 +1285,7 @@ impl Families {
             water: self.water.clone_where(keep),
             night: self.night.clone_where(keep),
             bosses: self.bosses.clone_where(keep),
+            gifts: Vec::new(),
         }
     }
 
@@ -1612,5 +1621,17 @@ impl EntityWorld {
             core.swings += 1;
         }
         result
+    }
+
+    pub fn family_gift(&mut self, table: &'static str, this_type: &'static str, at: DVec3) {
+        self.families.gifts.push(FamilyGift {
+            table,
+            this_type,
+            at,
+        });
+    }
+
+    pub fn take_family_gifts(&mut self) -> Vec<FamilyGift> {
+        std::mem::take(&mut self.families.gifts)
     }
 }

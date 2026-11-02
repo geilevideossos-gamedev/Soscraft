@@ -1249,3 +1249,32 @@ fn a_typed_hit_reaches_the_player() {
     assert_eq!(probe(&world, victim).core.health, probe::MAX_HEALTH - 3.0);
     assert_eq!(probe(&world, id).core.swings, 2);
 }
+
+#[test]
+fn a_queued_family_gift_waits_until_the_server_takes_it() {
+    const SNEEZE: &str = "minecraft:gameplay/panda_sneeze";
+    const SHED: &str = "minecraft:gameplay/armadillo_shed";
+    let mut world = EntityWorld::default();
+    assert!(world.take_family_gifts().is_empty());
+    world.family_gift(SNEEZE, "minecraft:panda", at(1.5));
+    world.family_gift(SHED, "minecraft:armadillo", at(4.5));
+    let view = world.clone_where(|_| true);
+    assert!(view.families.gifts.is_empty(), "a view drops no gifts");
+    let gifts = world.take_family_gifts();
+    assert_eq!(
+        gifts,
+        [
+            FamilyGift {
+                table: SNEEZE,
+                this_type: "minecraft:panda",
+                at: at(1.5),
+            },
+            FamilyGift {
+                table: SHED,
+                this_type: "minecraft:armadillo",
+                at: at(4.5),
+            },
+        ]
+    );
+    assert!(world.take_family_gifts().is_empty(), "each gift once");
+}
