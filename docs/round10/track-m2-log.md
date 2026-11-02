@@ -47,6 +47,7 @@ No commit of this track has changed a `ToClient`/`ToServer` message or the codec
 
 - `docs/MINECRAFT-SURVIVAL.md` (water-buckets 1): "Cod, salmon, tropical fish, pufferfish, axolotl and tadpole buckets pour their water with their own splash (a hiss in the Nether; in creative the mob bucket stays in the hand); the sulfur cube bucket pours nothing. Each lets out its mob with the bucket's data and `FromBucket`; until the mob's family is live it is kept in the world but not shown."
 - `docs/MINECRAFT-SURVIVAL.md` (squids-live 3): "Squids spawn near the surface of oceans and rivers (up to 13 blocks below sea level) and glow squids in unlit water 33 or more blocks below it; both wait in the world, not yet shown, until `squids-drawn`."
+- `docs/MINECRAFT-SURVIVAL.md` (squids-drawn 2), replacing squids-live 3's line: "Squids and glow squids are live: they spawn in oceans and rivers (glow squids in unlit water 33 blocks below sea level), hatch from their eggs, swim in pulses, squirt and flee when hit, dry out on land, grow up (a golden dandelion locks a baby) and are saved; a glow squid glows at full brightness and goes dark for five seconds after it squirts. Friends see the same strokes, tilts and rolls."
 
 ## Game events still to add
 
@@ -577,4 +578,68 @@ After efd113a9.
 
 ```
 IW4L_MINECRAFT_KIT=minecraft:rabbit_spawn_egg*2,minecraft:silverfish_spawn_egg*2
+```
+
+#### 2. Minecraft squids and glow squids are saved, hatch from eggs and are drawn like vanilla
+
+After d11758b3 (its subject starts with a byte-order mark that PowerShell put in front of the message; the text is right, and the commit was not amended).
+
+- **javap (26.3 `client.jar`):**
+  - `SquidRenderer extends AgeableMobRenderer(SquidModel, BabySquidModel, shadow 0.7)`; textures `entity/squid/{squid,squid_baby}` and, in `GlowSquidRenderer`, `entity/squid/{glow_squid,glow_squid_baby}`, picked by `isBaby`.
+  - `extractRenderState` lerps `oldTentacleAngle`/`tentacleAngle`, `xBodyRotO`/`xBodyRot` and `zBodyRotO`/`zBodyRot` by the partial tick; the body yaw is `LivingEntityRenderer`'s `rotLerp(yBodyRotO, yBodyRot)`.
+  - `setupRotations` replaces the living one (no death flip): `translate(0, 0.5 | baby 0.25, 0)`, `YP(180 − bodyRot)`, `XP(xBodyRot)`, `YP(zBodyRot)`, `translate(0, −1.2 | baby −0.6, 0)`; `LivingEntityRenderer.submit` then scales `(−1, −1, 1)` and moves `−1.501`. `state.scale` is the entity's scale attribute (1): the baby is its own model, not a scaled adult.
+  - `LayerDefinitions`: `SQUID`/`GLOW_SQUID` bake `SquidModel.createBodyLayer` and `SQUID_BABY`/`GLOW_SQUID_BABY` `BabySquidModel.createBodyLayer`.
+  - `SquidModel` (64 x 32): `body` `texOffs(0,0)` box `(−6,−8,−6) 12×16×12` grown by 0.02, at `(0,8,0)`; eight `tentacle<i>` `texOffs(48,0)` box `(−1,0,−1) 2×18×2` at `(cos a·5, 15, sin a·5)` with `a = i·π·2/8` in double, turned `yRot = (float)(i·π·−2/8 + π/2)`; `setupAnim` sets every tentacle's `xRot` to `tentacleAngle`.
+  - `BabySquidModel` (32 x 32): `body` box `(−4,−5,−4) 8×10×8` at `(0,13,0)`, no growth; tentacles `texOffs(0,18)` box `(−1,−0.5,−1) 2×6×2` at `(cos a·3, 18.5, sin a·3)`.
+  - `GlowSquidRenderer.getBlockLightLevel`: `i = (int) Mth.clampedLerp(1 − darkTicks/10, 0, 15)`; 15 when `i` is 15, else `max(i, the normal block light)`. The sky light is the normal one.
+  - `AgeableMob.mobInteract`: the golden dandelion on a baby not in `#cannot_be_age_locked` (zombie and skeleton horses, villagers) toggles the lock, resets the age to the baby start and waits 40 ticks; `Squid` has no `mobInteract` of its own and no food.
+  - `AgeableMob.addAdditionalSaveData`: `Age`, `ForcedAge`, `AgeLocked`; `GlowSquid` adds `DarkTicksRemaining`.
+  - The squid and glow squid spawn eggs and `/summon` go through the generic `spawn_saved`; the spawner cage shows the display mob unticked (`SpawnerRenderer`: scale 0.53125, 30° tilt), so its tentacles hang below the cage.
+- **Changed (terrain crate):**
+  - New `families/water/squids.rs`, `impl TerrainFamily for Squid`:
+    - `TRACKING_RANGE` 8, with `tracking_range` 10 for the glow squid (squids-drawn 1); `SHADOW_RADIUS` 0.7; the 4 textures; `CAGE_MARGIN` 0.5 (the hanging tentacles); `VOLATILE` `AgeLocked` and `DarkTicksRemaining` (`Age` is in the base list).
+    - `read`: `Age` (the look tag's `Baby` gives the baby start), `ForcedAge`, `AgeLocked`, the glow squid's `DarkTicksRemaining`; `y_body_rot_o` takes the saved yaw; a baby gets its 0.5 box. `fields` writes the same keys.
+    - `show`: `FamilyShow { flags 0, values [tentacle angle, x body rot, z body rot, body yaw (f32 bits); ink spurts; dark ticks; 0; 0] }`. `show_on` shifts each angle into its old field, then stores the new ones, so the host and a friend lerp the same pairs.
+    - `draw`: the models into `out.culled`.
+    - `interact`: a golden dandelion on a living baby locks or unlocks its age through `animal::interact` (no food), with the lock sound at the squid; the generic lead arm handles leads.
+  - New `families/water/squids/render.rs`: the adult and baby models, `stance` (the four lerped values), `model_root` (the spawner cage's turn, then vanilla's `setupRotations`, then the living flip), the glow squid's `block_light`, the red hurt and death overlay without a death flip.
+  - `families/water.rs`: `mod squids;` and `squids::Squid` in `terrain_group!(water { .. })`.
+- **Added (terrain crate):** `families/water/squids.rs`, `families/water/squids/render.rs`, and their test files `families/water/squids/tests.rs` and `families/water/squids/render/tests.rs`.
+- **What changes in the game:** squids and glow squids are live: they spawn in their water, hatch from their eggs, answer `/summon`, swim, ink and flee as the entity world runs them, are saved, are seen by friends, and show in a spawner. The ink cloud and the glow squid's sparkles follow in commit 3. D0's terrain test `server_mobs::tests::every_registered_kind_is_simulated_and_summonable` passes again from this commit.
+- **Tests added:**
+  - `families::water::squids::tests`:
+    - `a_squid_saves_and_loads_with_its_age_and_a_glow_squid_with_its_dark_ticks`
+    - `a_friend_sees_a_squid_from_its_look_tag`
+    - `a_squid_tracks_at_eight_chunks_and_a_glow_squid_at_ten` (a squid 150 blocks away is not tracked, a glow squid is)
+    - `a_friend_sees_a_squid_pulse_tilt_and_roll_in_the_same_pose` (two ticks of shows; the same eight values and the same mesh at partials 0, 0.5 and 1)
+    - `a_golden_dandelion_locks_a_baby_squid_s_age` (lock, the 40-tick wait, unlock; not an adult, not food, not a dying baby)
+  - `families::water::squids::render::tests`:
+    - `an_adult_squid_has_a_body_and_eight_tentacles_on_64_by_32_and_a_baby_on_32_by_32`
+    - `every_squid_picks_its_texture_by_kind_and_age`
+    - `a_dying_squid_flashes_red_but_does_not_tip_over`
+    - `a_glow_squid_is_full_bright_and_dims_in_its_last_ten_dark_ticks`
+- **Decisions:**
+  - **The host computes the tentacles, tilt and roll** and sends them in `FamilyShow` (brief decision 3); vanilla's client runs its own `aiStep` with its own random speed, which two windows cannot match. The values travel as f32 bits, so both windows lerp identical pairs.
+  - **The drawn yaw is the squid's own pair** `y_body_rot_o`/`core.yaw` (brief decision 5), not `MobPose.body_rot`, which eases a still mob toward its head.
+  - **The old values are shifted in `show_on`**, as eight values hold no room for four more; a friend that misses a tick lerps from the last values it got.
+  - **The cage margin is 0.5**: vanilla draws the unticked display squid with its tentacles below the spawner, as here.
+  - **The golden dandelion** goes through the shared `animal::interact` with no food and a dummy love clock, as rabbits and polar bears do; its lock particles are dropped like theirs.
+- **Protocol:** none (`FamilyShow` is D0's field).
+- **Runs:** `test -p minecraft_terrain --locked --lib`: 1723 passed (3 ignored, as before), among them the 9 new tests, D0's `every_registered_kind_is_simulated_and_summonable` (green again), `every_registered_kind_is_shown_inside_its_cage` with both squids and the eggs survey `every_spawn_egg_of_a_mob_the_game_has_hatches_that_mob` with the game data present. `check -p launcher --locked`: green, with only the old skate warnings. The new files pass `rustfmt --check --edition 2021` with empty output.
+- **State doc changes:** `docs/MINECRAFT-SURVIVAL.md`: "Squids and glow squids are live: they spawn in oceans and rivers (glow squids in unlit water 33 blocks below sea level), hatch from their eggs, swim in pulses, squirt and flee when hit, dry out on land, grow up (a golden dandelion locks a baby) and are saved; a glow squid glows at full brightness and goes dark for five seconds after it squirts. Friends see the same strokes, tilts and rolls."
+- **Test steps.** Release build, survival, Normal, by day. `/locate biome minecraft:lukewarm_ocean`, `/tp` there, and stand on a 5 x 5 glass platform on the sea surface. Name each screenshot by its label.
+  1. Use the squid egg on the water 6 blocks away three times. Dark blue squids swim in pulses: the eight tentacles snap shut, the squid shoots forward, then it glides, slows and slowly rolls, tilted toward where it goes. **squid1_swim**
+  2. Hit one with the sword: it darts away fast with a squirt sound (the ink cloud comes in the next commit). Shoot one with the bow and one with the M4A1 from 8 blocks: each flees. **squid2_flee**
+  3. Kill one: it flashes red without tipping over, vanishes in a poof, and leaves 1-3 ink sacs and an orb.
+  4. Use an egg on the glass. The squid lies there with its tentacles beating and slowly tips flat. At about 16 s it flashes red, then once a second, and it dies at about 20 s. **squid4_land**
+  5. `/summon minecraft:squid ~ ~-2 ~4 {Age:-24000}` gives a small, round baby with short tentacles. Use a golden dandelion on it and listen for the lock sound. Kill a second baby: no drops and no orb. **squid5_baby**
+  6. Put a lead on a squid and walk along the platform: it is pulled after you. At 13 blocks the lead snaps.
+  7. `/time set midnight`. Use the glow squid egg on the water: a teal squid glows at full brightness. Hit it: it goes as dark as the water around it for 5 s, then brightens again within half a second. **squid7_glow** `/time set day`.
+  8. Leave two squids, the locked baby and a glow squid alive. Save, quit and load: all four are there and swimming, and the baby is still small.
+  9. `/gamemode creative`, place the spawner and use a squid egg on it: a small squid turns in the cage, its tentacles hanging below it. `/gamemode survival`. **squid9_cage**
+  10. Two windows (`scripts\mp-local.ps1`). The host hatches two squids and a glow squid. The friend sees the same pulses, tilts, rolls and tentacle beats at the same moments, the glow and the glow squid going dark when the friend hits it. **squid10-host**, **squid10-friend**
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:squid_spawn_egg*16,minecraft:glow_squid_spawn_egg*16,minecraft:iron_sword,minecraft:bow,minecraft:arrow*64,minecraft:lead*4,minecraft:golden_dandelion*4,minecraft:glass*64,minecraft:spawner,minecraft:cooked_beef*32
 ```
