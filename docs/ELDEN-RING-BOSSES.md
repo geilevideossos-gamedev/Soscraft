@@ -335,7 +335,7 @@ His **anchor** is where he appeared. The arena is a circle around it; there are 
 | Leash | 24 blocks | He never walks or leaps to a point farther than 24 from his anchor. A target outside gets daggers |
 | Reset | 40 blocks, 100 ticks | No eligible player within 40 of the anchor for 5 s: full health, phase 1, full stance, cooldowns and threat cleared, the bar goes, he walks back (or fades home if he gets no closer to it for 100 ticks) and sleeps |
 | Stuck | 100 ticks | His target is inside the leash, but no path reaches it and none of his hits landed on it for 5 s (a hole deeper than his swings reach, a nook walled in so he cannot get next to it): he fades and appears beside it, within 3 blocks across and 2 blocks up or down of its feet. If there is no room there (a player on a pillar), he keeps throwing daggers instead. Our own anti-cheese rule, not Elden Ring's |
-| Fog ring | 24 blocks | While he fights, golden particles mark the leash circle near each viewer. They stand in for Elden Ring's fog wall and block nothing |
+| Fog ring | 24 blocks | While he fights, golden particles mark the leash circle near each viewer: every 4 ticks, the part of it within 20 blocks of the viewer, on the ground there (`crates/minecraft_terrain/src/elden_effects.rs`). They stand in for Elden Ring's fog wall and block nothing |
 
 **Eligible** means alive, not a spectator, attackable (not creative) and in the same level. If every fighter dies, nobody is within 40 blocks for 5 s and the fight resets. A dead player respawns at their bed, anchor, spawn point or tactical insertion flare, which works well as a site of grace near an arena.
 

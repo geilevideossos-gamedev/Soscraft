@@ -1560,6 +1560,24 @@ mod tests {
     }
 
     #[test]
+    fn margits_fog_ring_shows_on_the_ground_near_the_viewer_while_he_fights() {
+        let mut view = EntityView::new(9);
+        let margit = view.world.spawn_family_kind("iw4l:margit", DVec3::new(0.5, 65.0, 0.5)).unwrap();
+        let mut scene = HandcraftedScene::default();
+        for x in -24..=24 {
+            for z in 0..=25 {
+                scene.set((x, 64, z), Some(Block::new("minecraft:stone")));
+            }
+        }
+        let feet = [0.5, 65.0, 22.5];
+        view.animate_tick(&scene, feet);
+        assert!(view.spell.is_empty(), "asleep, no ring");
+        view.world.elden_boss_mut(margit).unwrap().state.shown.awake = true;
+        view.animate_tick(&scene, feet);
+        assert!(view.spell.len() >= 10, "a ring of gold motes on the stone: {}", view.spell.len());
+    }
+
+    #[test]
     fn a_glowing_registered_mob_is_outlined() {
         use minecraftoss_entities::effects::{EffectInstance, MobEffect};
         let mut view = EntityView::new(5);

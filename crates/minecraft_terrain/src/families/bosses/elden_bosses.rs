@@ -1,7 +1,7 @@
 use crate::client_mobs::ClientMobs;
-use crate::elden_effects::Sparks;
+use crate::elden_effects::{RING_EVERY, Sparks};
 use crate::elden_show::EldenShow;
-use crate::families::{ClientFx, FamilyDraw, FamilyShow, TerrainFamily};
+use crate::families::{ClientFx, FamilyDraw, FamilyShow, TerrainFamily, ViewerFx};
 use crate::lighting::SkyLight;
 use crate::mesh::Atlas;
 use crate::mob_tracking::MobShow;
@@ -110,6 +110,24 @@ impl TerrainFamily for EldenBoss {
             let last = fx.seen.get(&id).copied();
             let now = sparks.show(mob.state.def, &mob.state.shown, &frame, last);
             fx.seen.insert(id, now);
+        }
+    }
+
+    fn viewer_effects(mobs: &[FamilyMob<Self>], _poses: &ClientMobs, fx: &mut ViewerFx<'_>) {
+        if !fx.tick.is_multiple_of(RING_EVERY) {
+            return;
+        }
+        let awake = mobs
+            .iter()
+            .filter(|mob| !mob.core.removed && mob.state.shown.awake);
+        for mob in awake {
+            let mut sparks = Sparks {
+                ambient: &mut *fx.ambient,
+                spell: &mut *fx.spell,
+                random: &mut *fx.random,
+            };
+            let leash = mob.state.def.arena.leash;
+            sparks.ring(mob.state.anchor, leash, fx.feet, fx.boxes);
         }
     }
 }
@@ -511,6 +529,27 @@ mod tests {
             let kinds = self.ambient.kinds_at();
             kinds.filter(|(seen, _)| *seen == kind).count()
         }
+
+        fn ring(&mut self, feet: DVec3, tick: u64) -> usize {
+            let before = self.spell.len();
+            let ground = |(_, y, _): (i32, i32, i32)| {
+                if y < 64 {
+                    vec![[0.0, 0.0, 0.0, 1.0, 1.0, 1.0]]
+                } else {
+                    Vec::new()
+                }
+            };
+            let mut fx = ViewerFx {
+                feet,
+                tick,
+                boxes: &ground,
+                ambient: &mut self.ambient,
+                spell: &mut self.spell,
+                random: &mut self.random,
+            };
+            crate::families::viewer_effects(&self.world, &self.poses, &mut fx);
+            self.spell.len() - before
+        }
     }
 
     #[test]
@@ -609,5 +648,58 @@ mod tests {
             ..second
         };
         assert_eq!(drips(dead), 0);
+    }
+
+    #[test]
+    fn the_fog_ring_shows_only_while_he_is_awake_and_near_the_viewer() {
+        let mut world = EntityWorld::default();
+        let at = DVec3::new(0.5, 64.0, 0.5);
+        let id = world.spawn_elden_boss(&MARGIT, at, 0.0, at, false);
+        let copy = friend_of(&world, id);
+        let mut host = View::of(world);
+        let mut friend = View::of(copy);
+        let near = DVec3::new(0.5, 64.0, 20.5);
+        assert_eq!(host.ring(near, 0), 0, "asleep");
+        let players = [player_at(1, near)];
+        for _ in 0..2 {
+            host.world.tick_with_players(&mut Field, &players);
+        }
+        mirror(&host.world, &mut friend.world);
+        let anchors = |view: &View| view.world.elden_bosses()[0].state.anchor;
+        assert_eq!((anchors(&host), anchors(&friend)), (at, at));
+        assert!(friend.world.elden_bosses()[0].state.shown.awake);
+        let shown = host.ring(near, 4);
+        assert_eq!(shown, 15, "one mote for each 3 blocks of the ring in view");
+        assert_eq!(
+            friend.ring(near, 4),
+            shown,
+            "the friend draws the same ring"
+        );
+        for tick in 5..8 {
+            assert_eq!(host.ring(near, tick), 0, "every 4 ticks");
+        }
+        assert_eq!(
+            host.ring(DVec3::new(0.5, 64.0, 60.5), 8),
+            0,
+            "36 blocks out"
+        );
+        assert_eq!(host.ring(at, 8), 0, "24 blocks in, at his spot");
+        assert_eq!(host.ring(DVec3::new(0.5, 90.0, 20.5), 8), 0, "high above");
+        let fighting = host.world.elden_bosses()[0].state.shown;
+        let mut shows = |clip: Clip| {
+            host.world.elden_boss_mut(id).unwrap().state.shown = clip;
+            host.ring(near, 12)
+        };
+        assert_eq!(shows(fighting), shown);
+        for state in [State::Return, State::Dead, State::Asleep] {
+            let done = Clip {
+                state,
+                awake: false,
+                ..fighting
+            };
+            assert_eq!(shows(done), 0, "{state:?}");
+        }
+        host.world.elden_boss_mut(id).unwrap().core.removed = true;
+        assert_eq!(host.ring(near, 16), 0, "gone");
     }
 }

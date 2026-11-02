@@ -19,6 +19,13 @@ pub const SLAM_AHEAD: f64 = 1.5;
 pub const CRITS: usize = 16;
 pub const CHEST: f64 = 0.6;
 pub const SHIMMER: usize = 2;
+pub const RING_EVERY: u64 = 4;
+pub const RING_NEAR: f64 = 20.0;
+pub const RING_SPACING: f64 = 3.0;
+pub const RING_RISE: i32 = 6;
+pub const RING_DROP: i32 = 10;
+pub const RING_LIFT: f64 = 0.1;
+pub const RING_HEIGHT: f64 = 0.4;
 
 const STATE_BITS: u32 = 4;
 const INDEX_BITS: u32 = 6;
@@ -124,6 +131,69 @@ fn unit(random: &mut LegacyRandom) -> f64 {
     random.next_double() * 2.0 - 1.0
 }
 
+pub fn ring_arc(centre: DVec3, radius: f64, viewer: DVec3, near: f64) -> Option<(f64, f64)> {
+    let (dx, dz) = (viewer.x - centre.x, viewer.z - centre.z);
+    let away = dx.hypot(dz);
+    if away + radius <= near {
+        return Some((0.0, std::f64::consts::PI));
+    }
+    if away <= f64::EPSILON {
+        return None;
+    }
+    let cos = (radius * radius + away * away - near * near) / (2.0 * radius * away);
+    if cos >= 1.0 {
+        return None;
+    }
+    Some((dz.atan2(dx), cos.max(-1.0).acos()))
+}
+
+pub fn ground_near(
+    boxes: &dyn Fn((i32, i32, i32)) -> Vec<[f64; 6]>,
+    x: f64,
+    z: f64,
+    level: f64,
+) -> Option<f64> {
+    let (bx, bz) = (x.floor() as i32, z.floor() as i32);
+    let (cx, cz) = (x - f64::from(bx), z - f64::from(bz));
+    let top = |y: i32| {
+        boxes((bx, y, bz))
+            .iter()
+            .filter(|b| b[0] <= cx && cx <= b[3] && b[2] <= cz && cz <= b[5])
+            .map(|b| f64::from(y) + b[4])
+            .reduce(f64::max)
+    };
+    let start = level.floor() as i32;
+    if top(start).is_none() {
+        return (1..=RING_DROP).find_map(|down| top(start - down));
+    }
+    (1..=RING_RISE)
+        .map(|up| start + up)
+        .find(|y| top(*y).is_none())
+        .and_then(|free| top(free - 1))
+}
+
+pub fn ring_points(
+    centre: DVec3,
+    radius: f64,
+    viewer: DVec3,
+    boxes: &dyn Fn((i32, i32, i32)) -> Vec<[f64; 6]>,
+    random: &mut LegacyRandom,
+) -> Vec<DVec3> {
+    let Some((middle, spread)) = ring_arc(centre, radius, viewer, RING_NEAR) else {
+        return Vec::new();
+    };
+    let count = (2.0 * spread * radius / RING_SPACING).ceil() as usize;
+    (0..count)
+        .filter_map(|_| {
+            let angle = middle + spread * unit(random);
+            let x = centre.x + radius * angle.cos();
+            let z = centre.z + radius * angle.sin();
+            let lift = RING_LIFT + random.next_double() * RING_HEIGHT;
+            ground_near(boxes, x, z, viewer.y).map(|ground| DVec3::new(x, ground + lift, z))
+        })
+        .collect()
+}
+
 fn within(def: &BossDef, feet: DVec3, random: &mut LegacyRandom) -> DVec3 {
     let half = def.width / 2.0;
     feet + DVec3::new(
@@ -198,6 +268,19 @@ impl Sparks<'_> {
     pub fn shimmer(&mut self, def: &BossDef, feet: DVec3) {
         for _ in 0..SHIMMER {
             let at = within(def, feet, self.random);
+            self.spell
+                .spawn(SpellKind::Effect, at, DVec3::ZERO, GOLD, 1.0);
+        }
+    }
+
+    pub fn ring(
+        &mut self,
+        centre: DVec3,
+        radius: f64,
+        viewer: DVec3,
+        boxes: &dyn Fn((i32, i32, i32)) -> Vec<[f64; 6]>,
+    ) {
+        for at in ring_points(centre, radius, viewer, boxes, self.random) {
             self.spell
                 .spawn(SpellKind::Effect, at, DVec3::ZERO, GOLD, 1.0);
         }
@@ -359,5 +442,84 @@ mod tests {
             let flat = DVec3::new(at.x - 10.0, 0.0, at.z - 12.0).length();
             assert!((flat - SLAM_RADIUS).abs() < 1e-9, "a ring: {flat}");
         }
+    }
+
+    const FULL: [f64; 6] = [0.0, 0.0, 0.0, 1.0, 1.0, 1.0];
+
+    fn flat_ground((_, y, _): (i32, i32, i32)) -> Vec<[f64; 6]> {
+        if y < 64 { vec![FULL] } else { Vec::new() }
+    }
+
+    fn across(a: DVec3, b: DVec3) -> f64 {
+        (a.x - b.x).hypot(a.z - b.z)
+    }
+
+    #[test]
+    fn the_ring_shows_only_the_part_within_20_blocks_of_the_viewer() {
+        let centre = DVec3::new(0.5, 64.0, 0.5);
+        let viewer = DVec3::new(0.5, 64.0, 20.5);
+        let mut random = LegacyRandom::new(5);
+        let points = ring_points(centre, 24.0, viewer, &flat_ground, &mut random);
+        assert_eq!(
+            points.len(),
+            15,
+            "one for each 3 of the 44.5 blocks in view"
+        );
+        for at in &points {
+            assert!((across(*at, centre) - 24.0).abs() < 1e-9, "{at}");
+            assert!(across(*at, viewer) <= RING_NEAR + 1e-9, "{at}");
+            assert!((64.1..=64.5).contains(&at.y), "on the ground: {at}");
+        }
+        assert!(
+            points.iter().any(|at| at.x < -5.0) && points.iter().any(|at| at.x > 6.0),
+            "both ways round from the viewer"
+        );
+        let (middle, spread) = ring_arc(centre, 24.0, viewer, RING_NEAR).unwrap();
+        assert!((middle - std::f64::consts::FRAC_PI_2).abs() < 1e-12);
+        for side in [-1.0, 1.0] {
+            let angle = middle + side * spread;
+            let edge = centre + DVec3::new(angle.cos(), 0.0, angle.sin()) * 24.0;
+            assert!((across(edge, viewer) - RING_NEAR).abs() < 1e-9);
+        }
+        let far = DVec3::new(0.5, 64.0, 60.5);
+        assert!(ring_points(centre, 24.0, far, &flat_ground, &mut random).is_empty());
+        assert!(
+            ring_points(centre, 24.0, centre, &flat_ground, &mut random).is_empty(),
+            "the ring is 24 blocks from his spot"
+        );
+        assert_eq!(
+            ring_arc(centre, 10.0, centre, RING_NEAR),
+            Some((0.0, std::f64::consts::PI)),
+            "a small ring is in view all round"
+        );
+    }
+
+    #[test]
+    fn the_ring_sits_on_the_ground_nearest_the_viewer() {
+        let slab = [0.0, 0.0, 0.0, 1.0, 0.5, 1.0];
+        let post = [0.375, 0.0, 0.375, 0.625, 1.5, 0.625];
+        let blocks = |(x, y, _): (i32, i32, i32)| match (x, y) {
+            (4, _) => Vec::new(),
+            (5, 64..=75) => vec![FULL],
+            (_, y) if y < 64 => vec![FULL],
+            (1, 64) => vec![slab],
+            (2, 64..=65) => vec![FULL],
+            (3, 69..=70) => vec![FULL],
+            (6, 64) => vec![post],
+            _ => Vec::new(),
+        };
+        let ground = |x: f64, level: f64| ground_near(&blocks, x, 0.5, level);
+        assert_eq!(ground(0.5, 64.0), Some(64.0), "flat");
+        assert_eq!(ground(1.5, 64.0), Some(64.5), "a slab");
+        assert_eq!(ground(1.5, 64.5), Some(64.5), "the viewer on a slab");
+        assert_eq!(ground(2.5, 64.0), Some(66.0), "on top of a step");
+        assert_eq!(ground(3.5, 64.0), Some(64.0), "under a canopy");
+        assert_eq!(ground(3.5, 70.2), Some(71.0), "on the canopy from above");
+        assert_eq!(ground(6.5, 64.0), Some(65.5), "on a post");
+        assert_eq!(ground(6.1, 64.0), Some(64.0), "beside it");
+        assert_eq!(ground(0.5, 73.0), Some(64.0), "9 blocks down");
+        assert_eq!(ground(0.5, 75.0), None, "too far down");
+        assert_eq!(ground(4.5, 64.0), None, "over a pit");
+        assert_eq!(ground(5.5, 64.0), None, "inside a tall wall");
     }
 }
