@@ -398,7 +398,7 @@ Every hit carries the player's id, friends included. Threat, the kill and the ex
 - When a player places the lantern (standing, not hanging), the three blocks vanish in golden mist and Margit rises where the pillar stood, facing the nearest player, who is the placer in practice: `Command::PlayerEdit` (`crates/minecraft_terrain/src/server.rs`) carries no player id, and adding one would change a shared command for every track. His anchor is that spot.
 - It works in every dimension, and not on Peaceful, like the wither.
 - It costs 18 gold ingots and a lantern (iron nuggets and a torch): reachable without the Nether, unlikely to happen by accident, and gold is his colour.
-- The check runs where the wither's skull check runs (`ServerSim::player_edit_block`), in our own module.
+- The check runs where the wither's skull check runs (`ServerSim::player_edit_block`), in our own module (`crates/minecraft_terrain/src/elden_altar.rs`).
 
 ### 11.3 Later: finding him
 - **A gate arena** generated in the world: a walled stone courtyard of about 24 x 32 with a gate and a fog wall, a nod to Stormveil's gate, with Margit asleep at its centre. It needs a fork structure set beside the vanilla ones, and it appears only in new chunks.

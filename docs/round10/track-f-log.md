@@ -902,3 +902,36 @@ The run stopped for the week on 2026-10-29 after 81da408f ("Unfinished: friends 
 ```
 IW4L_MINECRAFT_KIT=iw4l:m4,iw4l:rifle_ammo*64,iw4l:rifle_ammo*64,iw4l:rifle_ammo*64,minecraft:netherite_sword+sharpness=5,minecraft:shield,minecraft:golden_apple*16,minecraft:cooked_beef*32
 ```
+
+## Group er-altar
+
+Brief F7, commits F7.1 and F7.2, with design doc sections 8 and 11.2. It starts on 8f2a8074 (group er-bar-friend).
+
+### 26. Margit rises from golden mist when a lantern is set on two gold blocks
+
+After 8f2a8074.
+
+- **Changed (`minecraft_terrain`):**
+  - New `elden_altar.rs`, pure and tested without a level: `find(placed, block_at) -> Option<Altar>` is an altar when the placed block is a standing `minecraft:lantern` (its `hanging` is not `true`; a lantern's default state stands) and the two blocks straight under it are `minecraft:gold_block`. `Altar::blocks()` gives the lantern and the two gold blocks, `Altar::feet()` the centre of the lower gold block's bottom, where he stands. `facing(feet, players)` is the yaw toward the nearest player, 0 (south) with nobody there. `BOSS` is `iw4l:margit`. `lib.rs`: the module beside `elden_bar`.
+  - `server.rs`: `player_edit_block` calls the new `ServerSim::elden_altar_placed` right after `wither_skull_placed`, on every player placement. Not on Peaceful. On an altar it clears the three blocks without drops as the wither build does (set to air, then each block's break particles and sound through the level's destroyed list, and the neighbours updated) and summons him through `ServerSim::summon`, the same path as `/summon iw4l:margit` (`elden_save::summon`: his marker tag, a new UUID, asleep with his anchor at the pillar's base), facing the nearest living player of the level who is not a spectator. The placer stands within reach of the lantern, so within his 24 wake blocks, and he rises at once in the golden mist of his wake (commit 19), with his bar and music (commit 23).
+- **Tests:**
+  - `elden_altar::tests`: `a_standing_lantern_on_two_gold_blocks_is_an_altar` (its blocks and his feet; a lantern without its property; the top two of a taller gold pillar; under a roof), `a_hanging_lantern_or_one_gold_block_is_not` (a hanging lantern, one gold block over stone or over air, a soul lantern, iron blocks, a gold block placed under a lantern, a lantern beside the pillar), `margit_rises_facing_the_nearest_player` (south, east and west of three players, nobody, a player on his spot).
+  - `server::tests` (with the 26.3 data): `the_altar_summons_margit_and_clears_its_blocks` (two gold blocks summon nothing; the lantern clears all three, each with its break event, lantern first; one asleep Margit at full health with his anchor at the base, facing the nearer of two players, saved as his marker; with that player near he is in his wake by the second tick; nothing drops), `the_altar_does_nothing_on_peaceful` (on Peaceful the three blocks stay and nobody comes; on Normal a lantern hanging from a stone over the pillar does nothing, and a standing one summons him).
+- **Runs:** `test -p minecraft_terrain --locked --lib`: 1590 passed and 3 ignored, the five new tests among them (the two server tests load the 26.3 data and take about a second each). `check -p launcher --locked`: green. The new `elden_altar.rs` passes `rustfmt --check --edition 2021` with empty output on its staged content, and no added line holds a comment.
+- **Decisions:**
+  - **He faces the nearest living player who is not a spectator, creative included,** where brief F7 says the nearest eligible one. `Command::PlayerEdit` carries no player id (design doc 11.2) and only a living player who is no spectator can place a lantern, so this player is the placer in practice, in creative too (where he does not wake for them, as for any creative player). With nobody in the level he faces south. The positions are the level's `living_players`, which each tick fills from the level's own players.
+  - **The summon goes through `ServerSim::summon`,** so an altar's Margit is exactly a `/summon` one: the same tag, UUID and marker, and the same Peaceful rule, checked first here so the blocks stay on Peaceful, as the wither build leaves its blocks.
+  - **Only the placed lantern triggers it,** as only a placed skull triggers the wither: setting the gold blocks under a lantern does nothing, and the pillar is checked straight down from the lantern. A taller gold pillar gives up its top two; the rest stays under him.
+  - **Only `minecraft:lantern`,** not the soul lantern or the copper lanterns: the design names a lantern.
+  - **Cleared without drops, each block with its break particles and sound,** as vanilla's `CarvedPumpkinBlock.clearPatternBlocks` (`levelEvent` 2001 for each block) and our wither build do. The blocks go through the level's `remove_blocks`, which sets them to air for every client and then updates their neighbours, as `updatePatternBlocks` does after the spawn.
+- **Closes from release 3's known limits:** "There is no ... altar (only `/summon`)". The golden ring at the leash is the next commit.
+- **Owner's steps.** Release build, survival, Normal, by day, flat open ground in the Overworld. Name each screenshot by its label, `f7-26-1.png`.
+  1. Place two gold blocks on top of each other on the ground. Stand 2-3 blocks from them and put a lantern on top of the upper one. The lantern and both gold blocks break with their particles and sounds, and nothing drops. Margit kneels where the pillar stood, facing you, and at once rises from his knee in golden mist (green-gold sparkles and gold motes with the mirror sound); the red bar "Margit, the Fell Omen" shows and the boss music starts. **Screenshot f7-26-1** as he rises.
+  2. `/difficulty peaceful`: he vanishes. Build the same altar again: the lantern stays on the gold blocks and nothing happens. **Screenshot f7-26-2** of the altar on Peaceful. `/difficulty normal`, and break the lantern.
+  3. Build a column of 4 cobblestone right beside the pillar, then put one cobblestone against the side of its top block so it sits over the pillar, with one empty block between it and the upper gold block. Click the underside of that cobblestone with a lantern: it hangs over the gold blocks, and nothing happens. Break it.
+  4. Break the upper gold block with the iron pickaxe and put a lantern on the one that is left: nothing happens.
+  5. Optional, two windows (`scripts\mp-local.ps1`): the host stands 30 blocks away while the friend builds the altar: Margit rises facing the friend, and both windows see the three blocks break and the golden mist. **Screenshot f7-26-3**, both windows.
+
+```
+IW4L_MINECRAFT_KIT=minecraft:gold_block*16,minecraft:lantern*8,minecraft:cobblestone*64,minecraft:iron_pickaxe,minecraft:netherite_sword+sharpness=5,minecraft:golden_apple*8,minecraft:cooked_beef*32
+```

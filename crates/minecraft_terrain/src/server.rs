@@ -2459,7 +2459,25 @@ impl ServerSim {
         if matches!(edit, PlayerEdit::Place) {
             self.power_placed_opening(at, block);
             self.level.wither_skull_placed(at);
+            self.elden_altar_placed(pos);
         }
+    }
+
+    fn elden_altar_placed(&mut self, pos: BlockPos) {
+        if self.level.difficulty == 0 {
+            return;
+        }
+        let at = |(x, y, z): BlockPos| minecraftoss_core::BlockPos::new(x, y, z);
+        let Some(altar) = crate::elden_altar::find(pos, |cell| self.states.block(self.level.block(at(cell)))) else { return };
+        let cells: Vec<_> = altar.blocks().into_iter().map(at).collect();
+        let old: Vec<_> = cells.iter().map(|&cell| self.level.block(cell)).collect();
+        self.level.remove_blocks(&cells, BlockStateId::AIR);
+        if let Some(destroyed) = self.level.destroyed.as_mut() {
+            destroyed.extend(cells.into_iter().zip(old));
+        }
+        let players: Vec<glam::DVec3> = self.level.living_players.iter().map(|(feet, _)| glam::DVec3::from_array(*feet)).collect();
+        let feet = altar.feet();
+        let _ = self.summon(crate::elden_altar::BOSS, feet.to_array(), None, crate::elden_altar::facing(feet, &players));
     }
 
     fn may_place(&self, at: minecraftoss_core::BlockPos, target: BlockStateId) -> bool {
@@ -6924,6 +6942,73 @@ mod tests {
         server.level.difficulty = 2;
         assert_eq!(server.summon("iw4l:margit", [8.5, 200.0, 8.5], None, 0.0), Ok(()));
         assert_eq!(server.mobs.elden_bosses().len(), 1);
+    }
+
+    fn altar_lantern() -> Block {
+        Block::new(crate::elden_altar::LANTERN).with("hanging", "false")
+    }
+
+    #[test]
+    fn the_altar_summons_margit_and_clears_its_blocks() {
+        let Some((mut server, mut scene)) = door_world() else { return };
+        let near = [8.5, 200.0, 12.5];
+        server.level.living_players = vec![([30.5, 200.0, 8.5], 1.62), (near, 1.62)];
+        place(&mut server, &mut scene, (8, 200, 8), Block::new(crate::elden_altar::GOLD));
+        place(&mut server, &mut scene, (8, 201, 8), Block::new(crate::elden_altar::GOLD));
+        server.take_changes();
+        server.take_destroyed();
+        assert!(server.mobs.elden_bosses().is_empty(), "two gold blocks summon nothing");
+        place(&mut server, &mut scene, (8, 202, 8), altar_lantern());
+        let changes: std::collections::HashMap<_, _> = server.take_changes().into_iter().collect();
+        for pos in [(8, 200, 8), (8, 201, 8), (8, 202, 8)] {
+            assert_eq!(changes.get(&pos), Some(&None), "{pos:?} is cleared");
+        }
+        let destroyed: Vec<_> = server.take_destroyed().into_iter().map(|(pos, block)| (pos, block.id.key())).collect();
+        let gold = crate::elden_altar::GOLD.to_owned();
+        assert_eq!(destroyed, [((8, 202, 8), crate::elden_altar::LANTERN.to_owned()), ((8, 201, 8), gold.clone()), ((8, 200, 8), gold)], "each block breaks with its particles and sound");
+        let bosses = server.mobs.elden_bosses();
+        assert_eq!(bosses.len(), 1);
+        let mob = &bosses[0];
+        assert_eq!(mob.state.brain.state(), elden_boss::State::Asleep);
+        assert_eq!((mob.state.anchor, mob.core.yaw, mob.state.rest_yaw, mob.core.health), (glam::DVec3::new(8.5, 200.0, 8.5), 0.0, 0.0, 800.0), "at the pillar's base, facing the nearer player to the south");
+        assert!(crate::elden_save::claims(&server.mob_tags[&mob.core.id]), "saved as his marker");
+        server.set_simulation_area((0, 0), 1);
+        let mut woke = None;
+        for tick in 1..=5 {
+            server.tick();
+            server.tick_mobs(&[candidate(0, near)], false);
+            let state = server.mobs.elden_bosses()[0].state.brain.state();
+            if state != elden_boss::State::Asleep {
+                woke = Some((tick, state));
+                break;
+            }
+        }
+        assert!(matches!(woke, Some((tick, elden_boss::State::Wake)) if tick <= 2), "the placer stands near, so he rises at once: {woke:?}");
+        assert!(server.items().is_empty(), "the blocks drop nothing");
+    }
+
+    #[test]
+    fn the_altar_does_nothing_on_peaceful() {
+        let Some((mut server, mut scene)) = door_world() else { return };
+        server.level.living_players = vec![([8.5, 200.0, 12.5], 1.62)];
+        place(&mut server, &mut scene, (8, 200, 8), Block::new(crate::elden_altar::GOLD));
+        place(&mut server, &mut scene, (8, 201, 8), Block::new(crate::elden_altar::GOLD));
+        server.level.difficulty = 0;
+        place(&mut server, &mut scene, (8, 202, 8), altar_lantern());
+        assert!(server.mobs.elden_bosses().is_empty(), "no Margit on peaceful");
+        for (y, kept) in [(200, crate::elden_altar::GOLD), (201, crate::elden_altar::GOLD), (202, crate::elden_altar::LANTERN)] {
+            assert_eq!(block_id(&server, (8, y, 8)), kept, "the altar stays");
+        }
+        server.level.difficulty = 2;
+        take(&mut server, &mut scene, (8, 202, 8));
+        place(&mut server, &mut scene, (8, 203, 8), Block::new("minecraft:stone"));
+        let hanging = Block::new(crate::elden_altar::LANTERN).with("hanging", "true");
+        place(&mut server, &mut scene, (8, 202, 8), hanging);
+        assert_eq!(block_id(&server, (8, 202, 8)), crate::elden_altar::LANTERN, "it hangs from the stone");
+        assert!(server.mobs.elden_bosses().is_empty(), "a hanging lantern is no altar");
+        take(&mut server, &mut scene, (8, 202, 8));
+        place(&mut server, &mut scene, (8, 202, 8), altar_lantern());
+        assert_eq!(server.mobs.elden_bosses().len(), 1, "on Normal it summons him");
     }
 
     #[test]
