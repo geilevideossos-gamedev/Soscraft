@@ -23,6 +23,7 @@ Files under `third_party/minecraftoss` this track patched or added.
 - polar-bears-drawn: no vendored file (game code only).
 - Changed again, no new file (review fix 1): `entities/src/world/families/land/rabbits.rs` (the jump clock while the step does not run), `entities/src/world/families/land/rabbits/ai.rs` (`count_jump`), `entities/src/world/families/land/rabbits/tests.rs` (its test).
 - Added (pandas-live 1): `entities/src/world/families/land/pandas.rs`, `entities/src/world/families/land/pandas/ai.rs`, `entities/src/world/families/land/pandas/tests.rs` (test only). Changed again: `entities/src/world/families/land.rs` (registration).
+- Changed again (pandas-live 2): `world/src/natural_spawner/families/land.rs` (the panda row, `finalize_panda`, its test; the rows are named consts).
 
 ## Hooks
 
@@ -49,6 +50,8 @@ For the orchestrator to copy at the merge of segment m1a (rabbits done):
 - `docs/MINECRAFT-SURVIVAL.md:441`: drop "rabbit" from the eggs that spawn nothing: "Spawn eggs for unsimulated mobs (fox, goat, the wither and others; ...)".
 - `docs/MINECRAFT-SURVIVAL.md:451`: "The others (foxes, goats and the rest) stay dormant: ...", and under World simulation add: "Rabbits (round 10, track M1): hops with vanilla's jump control, fleeing players, wolves and monsters, panic, carrot temptation, breeding with the biome's colour one time in twenty, growth and the golden dandelion lock; saved, hatched from eggs, drawn with vanilla's adult and baby models and their 16 textures (Toast and the killer bunny's among them), hopping and tilting their heads with vanilla's keyframes, and seen by friends at the same moments. With `mob_griefing` they raid full-grown carrots, a stage a bite. The killer bunny (`RabbitType` 99) has armour 8, never flees, leaps at players and wolves within 4 blocks, bites for 8 before difficulty and calls the rabbits around it when hurt; its sounds are hostile. Wild cats hunt rabbits."
 - At the merge of segment m1a (polar bears done): under World simulation in `docs/MINECRAFT-SURVIVAL.md`: "Polar bears (round 10, track M1): wander, defend their cubs (a hit cub runs and calls the adults within 20 blocks; adults attack players within 10 blocks of a cub), rear up with a growl every two seconds and swipe for 6 before difficulty, hunt foxes, panic only from fire (cubs from any hit), stay angry 20 to 39 seconds (saved with `angry_at`), follow their mothers as cubs; spawn on grass in snowy plains and ice spikes and on sea ice in frozen oceans, an adult with cubs; saved, hatched from eggs, drawn with vanilla's adult model (1.2 times its size) and the cub's own model, rearing onto their hind legs before each swipe, and seen by friends in the same pose." Family creature rows now decide chunk-generation spawns with their own rules (`generation_rule`).
+
+- At the merge of segment m1b (pandas): `docs/MINECRAFT-SURVIVAL.md:134` gains pandas among the simulated mobs, and under World simulation a pandas paragraph; `pandas-thunder` writes its final wording here when the family is done. So far (pandas-live): "Pandas (round 10, track M1): genes and the seven variants (lazy, worried, playful, brown, weak, aggressive and normal, brown and weak only when both genes match), breeding next to a bamboo stalk with genes from the parents and one in 32 mutating, sulking with a sad sound without bamboo, biting back once (aggressive pandas keep biting and join a fight), worried pandas fleeing players and monsters, panic from fire and cactus, bamboo temptation and feeding, growth and the golden dandelion lock; weak pandas have 10 health and lazy ones walk at 0.07; spawn in bamboo jungles, a cub one time in five after the first; saved with their genes, held item and attributes, hatched from eggs and seen by friends."
 
 ## Left for later
 
@@ -629,3 +632,48 @@ After 7a1afdf7 (`r10-m1b-base`).
 - **Runs:** `test -p minecraftoss-entities --locked --lib` (572 passed; the first panda run failed two statistical tests that reseeded `LegacyRandom` with 0, 1, 2, ..., whose first draws are close together; they now draw from one stream), `check -p launcher --locked` (green; only the old render_frame and skate warnings; the tree also held commit 2's world-crate row, which nothing else uses). The new files pass `rustfmt --check --edition 2021` on their staged content.
 - **Test steps:** nothing new in-game yet (the terrain registers pandas in the next commit); the steps are those of commit 2.
 - **Kit:** none.
+
+#### 2. Minecraft pandas spawn in bamboo jungles and are saved, hatched and seen by friends
+
+After 58f52911.
+
+- **javap this round:** `Panda.finalizeSpawn` (main, then hidden gene from the level random; `setAttributes`; `AgeableMobGroupData(0.2)` when there is no group data; then `Animal.finalizeSpawn`), `setAttributes` (weak: `max_health` base 10, which clamps the health through `onAttributeUpdated`; lazy: `movement_speed` base `0.07000000029802322`), `addAdditionalSaveData`/`readAdditionalSaveData` (`MainGene` and `HiddenGene` by name, unknown or missing read as `normal`), the constructor (`CanPickUpLoot` true), `EntityTypes.PANDA` (`clientTrackingRange(10)`). The built-in size row (1.3 x 1.25, `NO_RESTRICTIONS`, `MOTION_BLOCKING_NO_LEAVES`, the animal rules) and the creature category match 26.3.
+- **Changed (vendored world crate, `natural_spawner/families/land.rs`):**
+  - The row `minecraft:panda`: today's size row (1.3 x 1.25, `NoRestrictions`, `MotionBlockingNoLeaves`, not fire immune, `Rules::Animal`, `Walk::Animal`, kept when far, cluster 4), `MobCategory::Creature`, follow range 16, `baby_chance: Some(0.2)`, no rule, `finalize: Some(panda_finalize)`. It overrides the built-in row, so pandas no longer reach the catch-all `note_unsupported("finalizeSpawn of minecraft:panda")` with a 0.05 baby chance.
+  - `finalize_panda`: two genes from the level random through `PANDA_GENES` (the 16-slot table); a weak variant gets a `max_health` base of 10 and `Health` 10, a lazy one a `movement_speed` base of 0.07 (`set_attribute_base`).
+  - The rows are named consts now (`ROWS = &[PANDA, POLAR_BEAR]`), so each later family adds one const and one name without moving the others' lines.
+- **Changed (game code, `minecraft_terrain`):**
+  - New `families/land/pandas.rs`: `impl TerrainFamily for Panda` with tracking range 10, `VOLATILE` `equipment`, `drop_chances` and `ForcedAge`, shadow 0.9, no textures yet and an empty `draw` (the models come with `pandas-drawn`).
+  - `read`: the saved yaw for its body and head; `MainGene` and `HiddenGene` (unknown or missing: normal); `Age`, `ForcedAge`, `AgeLocked`, `InLove` and a friend's `Baby`; `CanPickUpLoot` (true when missing, the constructor's); `equipment.mainhand` and `drop_chances.mainhand` (0.085 when missing); the `max_health` and `movement_speed` bases from `attributes` (20 and 0.15 when missing; the health clamped to the maximum).
+  - `fields`: the same keys; `equipment` and `drop_chances` always (empty when it holds nothing or its chance is the default, so a stack it no longer holds is not kept from the loaded tag); `attributes` (both bases) only for a bred cub.
+  - `show`/`show_on`: flag bits 0 sitting, 1 on its back, 2 rolling, 3 sneezing, 4 scared; `values[2]` the unhappy counter; `values[4]` the held item (0 none, 1 bamboo, 2 cake, 3 anything else, which friends do not draw). The sneeze, eat and roll counters (`values[0]`, `[1]`, `[3]`) and the amounts join with their groups.
+  - `interact`: the entity `pandas::interact`; a pass leaves the click unhandled, anything else changes the inventory, and the golden dandelion plays its use or unuse sound.
+  - `families/land.rs`: `mod pandas;` and `pandas::Panda` in `terrain_group!`, between the rabbits and the polar bears.
+- **Tests added:**
+  - World: `natural_spawner::families::land::tests::a_panda_spawns_with_two_genes_and_later_group_members_are_cubs_one_time_in_five` (the row; 3200 finalizes: the gene table, weak with `max_health` 10 and `Health` 10, lazy with speed 0.07, others with no `attributes`; 80 natural spawns in a bamboo jungle with no `note_unsupported`, every panda with two known genes, the first of each group an adult and 10-30% of the later ones cubs; a summoned panda an adult with genes).
+  - Terrain (`families::land::pandas::tests`): `a_panda_saves_and_loads_with_its_genes_held_item_love_and_attributes` (a weak cub with 10 health, speed 0.07, no loot pickup, three bamboo held and a guaranteed drop round trips with its `attributes` kept as loaded; missing and unknown genes; an empty paw writes no `mainhand`; a bred weak cub writes both bases and loads with 10 health), `a_summoned_weak_panda_keeps_twenty_health` (NBT skips the finalize), `a_friend_sees_a_panda_from_its_look_tag` (no volatile key in the look, its genes and `Baby` in it, range 10, every flag, the unhappy counter and the held item through `FamilyShow` and back), `bamboo_from_the_hand_brings_a_panda_into_love` (through D0's interact arm: wheat passes, one bamboo used, love 600, one event 18).
+- **Decisions:**
+  - Decision 3 as recommended: weak and lazy live in the saved `attributes`, set only by the finalize and by breeding, never derived from the genes at load; a `/summon` with genes keeps 20 health and 0.15 speed, as in vanilla.
+  - `fields` writes `attributes` only for a bred cub (`Panda.bred`), so a loaded panda keeps its whole list, including the follow-range spawn bonus.
+  - `VOLATILE` also holds `ForcedAge`, which counts down while a fed cub grows, as for rabbits and polar bears.
+  - The friend's mirror draws only bamboo and cake in the paw; anything else from a loaded tag is shown as nothing (`values[4]` 3).
+  - The row keeps `Rules::Animal` (the shared animal rules, which the built-in row used) rather than a family rule: vanilla's panda has no rule of its own.
+- **Protocol:** no message or codec change; the panda's state travels in `FamilyShow`'s existing flags and values.
+- **Runs:** `test -p minecraftoss-world --locked --lib` (136 passed; the first run reseeded `LegacyRandom` per draw like commit 1's first test run and missed a gene, so it now draws from one stream), `test -p minecraft_terrain --locked` (1700 passed, 3 ignored; D0's registry, eggs-survey and cage tests see the panda), `check -p launcher --locked` (green; only the old render_frame and skate warnings). The new terrain file passes `rustfmt --check --edition 2021` on its staged content; the world group file keeps `rustfmt --check` clean.
+- **Test steps** (pandas are live but not drawn yet, so each shows as its round shadow: a big one about a block and a half wide, a small one for a cub). Release build, survival, **Normal**, by day on flat grass. Name each screenshot by its label.
+  1. Use the panda egg three times on grass 8 blocks away: three big round shadows amble slowly and never run from you. **m1-pandas-live-1**
+  2. `/summon minecraft:panda ~ ~ ~3 {MainGene:"worried",HiddenGene:"worried"}`. Walk at its shadow: within about 8 blocks it runs away fast. Use the zombie egg 3 blocks from it: it runs from the zombie too. An egg panda never runs from you.
+  3. `/summon minecraft:panda ~2 ~ ~6 {MainGene:"aggressive",HiddenGene:"aggressive"}` twice, next to an egg panda. Punch the egg panda's shadow: it comes at you and bites once (about 3 hearts), then wanders off; the two aggressive shadows keep attacking. Right-click one attacker with bamboo: it stops attacking. **m1-pandas-live-2**
+  4. Put a bamboo shoot on grass 4 blocks from two egg pandas and bone-meal it until it is a stalk. Right-click both pandas with bamboo: they meet, experience orbs pop out and a small shadow appears beside them. **m1-pandas-live-3**
+  5. Right-click the small shadow with bamboo: one is used. Right-click it with the golden dandelion: it is used, with its sound.
+  6. Break the stalk, walk 20 blocks away, and right-click two other egg pandas with bamboo: each makes a sad sound twice, under a second apart, and no cub comes.
+  7. Set the grass next to a panda alight with flint and steel: its shadow runs. Punching a panda never makes it run.
+  8. Use the panda egg ten times more and hit each with the iron sword, not jumping: about one in ten dies after two hits, the rest take four. Each adult drops bamboo and experience; the small shadow drops nothing.
+  9. `/locate biome minecraft:bamboo_jungle`, `/tp` there and walk into new chunks: big shadows in ones and twos among the bamboo, now and then a small one. **m1-pandas-live-4**
+  10. Save, quit and load: the shadows are where they were, the small one still small.
+  11. Two windows (`scripts\mp-local.ps1`): the friend sees the same shadows. The friend feeds two pandas bamboo next to a bamboo stalk: the host sees them meet and a small shadow appear. The friend punches an aggressive panda: it goes for the friend in both windows. **m1-pandas-live-5-host**, **m1-pandas-live-5-friend**
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:panda_spawn_egg*16,minecraft:bamboo*64,minecraft:bone_meal*16,minecraft:golden_dandelion*2,minecraft:iron_sword,minecraft:flint_and_steel,minecraft:zombie_spawn_egg*2,minecraft:cooked_beef*16
+```
