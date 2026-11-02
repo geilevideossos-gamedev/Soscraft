@@ -36,6 +36,7 @@ For the orchestrator to copy at the merge of segment m3a:
 - Under World simulation in `docs/MINECRAFT-SURVIVAL.md`: "Lightning (round 10, track M3): `/summon minecraft:lightning_bolt` strikes like vanilla's bolt. On Normal and Hard it lights its block and up to four around it, each re-flash lights its own block on any difficulty, and fire in an empty obsidian frame lights the portal. Every lit tick it hits every living thing in its box (3 blocks around, 3 below, 9 above): 5 damage that armour softens and shields do not block, with no knockback, and one more fire tick (eight seconds of fire for a mob or player that had just stopped burning). Animals panic, fire-immune mobs are hurt too, dropped items and experience orbs burn. A struck lightning rod powers for 8 ticks and sends the electric spark event (3002) along its axis; struck copper is cleaned with a spark on each cleaned block. Lightning deaths read 'was struck by lightning'."
 - Under World simulation in `docs/MINECRAFT-SURVIVAL.md`, after the lightning-turns line (lightning-drawn): "Every player sees and hears a bolt as vanilla draws it: a jagged blue-white bolt 128 blocks tall from its seed, drawn within 64 blocks of the camera and changing shape at each re-flash, with the thunder roll and the impact crack once per bolt within 16 chunks. While a bolt is lit the sky turns pale blue and the world is lit as by day. Friends get the host's bolts within 16 chunks (their view distance at most)."
 - Under World simulation in `docs/MINECRAFT-SURVIVAL.md`, after the lightning line (lightning-turns): "Lightning turns a pig into a zombified piglin that never despawns, with a golden sword (one in twenty a golden spear; a baby pig gives a baby), and a villager into a witch that never despawns and can join raids, freeing its job site, bed and meeting point. Both keep their place, name, effects and lead, but not their saddle or held item. A struck creeper is charged (twice the blast, saved and seen by friends), and a mooshroom flips between red and brown once per bolt with its sound and takes no harm. On Peaceful pigs and villagers are only hurt."
+- Under World simulation in `docs/MINECRAFT-SURVIVAL.md`, after the lightning-drawn line (lightning-glow 1): "A charged creeper wears vanilla's energy swirl: the blue `creeper_armor` texture scrolling diagonally over a shell two pixels outside its body, unlit and added onto what lies behind it, turning, walking and swelling with the creeper. Friends see it too."
 
 ## Left for later
 
@@ -48,6 +49,7 @@ For the orchestrator to copy at the merge of segment m3a:
 - The villager's "Villager ... was struck by lightning ...." line goes to stderr (`eprintln!`), as the server's other messages do: `minecraft_terrain` has no `diag` dependency, and adding one would change `Cargo.lock` under every track.
 - A second bolt in the same tick does not hit a mob a first bolt just made (the new tags join the level after `strike`); vanilla adds it at once. It is hit from the next lit tick on.
 - Lightning drawn (lightning-drawn): vanilla's "Hide Lightning Flashes" accessibility option (`Options.hideLightningFlash`) and the entity distance option (`entityDistanceScaling`, which scales the 64-block draw range) have no setting in the fork yet; the flash always shows and the range is 64 blocks. A bolt never goes silent (`/summon` passes no tag to a bolt, so `Silent:1b` does nothing).
+- Charged creeper swirl (lightning-glow 1): a creeper shown turning inside a monster spawner's cage (`spawner_display.rs`) never wears the swirl, even when the spawner's `SpawnData` holds `powered:1b`; the cage has no additive mesh.
 
 ## Segment m3a
 
@@ -213,6 +215,43 @@ After 82a5cd0b ("Minecraft lightning turns pigs, villagers, creepers and mooshro
 
 ```
 IW4L_MINECRAFT_KIT=minecraft:light_blue_stained_glass*16,minecraft:water_bucket,minecraft:iron_shovel,minecraft:cooked_beef*32
+```
+
+### Group lightning-glow
+
+#### 1. Minecraft charged creepers glow with their energy swirl
+
+After b4b3e8db ("Minecraft lightning bolts flash and thunder for every player").
+
+- **javap (26.3 `client.jar`):**
+  - `CreeperPowerLayer`: a `CreeperModel` baked from `ModelLayers.CREEPER_ARMOR`, texture `textures/entity/creeper/creeper_armor.png`, `isPowered` from the render state, `xOffset(t) = t * 0.01`.
+  - `LayerDefinitions`: `CREEPER_ARMOR` is `CreeperModel.createBodyLayer(new CubeDeformation(2.0))`, the creeper's own boxes (head, body, four legs, texture 64 × 32) grown by 2 pixels on every side, their UVs unchanged.
+  - `EnergySwirlLayer.submit`: only when powered; `RenderTypes.energySwirl(texture, xOffset(ageInTicks) % 1, ageInTicks * 0.01 % 1)`, colour `-8355712` (`0xFF808080`), `NO_OVERLAY`, submitted after the body (`order(1)`) under the body's pose, so it turns, walks, swells and tips over with it.
+  - `RenderTypes.energySwirl`: `RenderPipelines.ENERGY_SWIRL` with `Sampler0` from the texture and `TextureTransform.OffsetTextureTransform(u, v)` (`Matrix4f.translation(u, v, 0)`: the UVs move by `+u, +v`). The texture's sampler is `AbstractTexture`'s default, REPEAT and NEAREST, so the scrolled texture wraps.
+  - `RenderPipelines.ENERGY_SWIRL`: `core/entity` with `ALPHA_CUTOUT 0.1`, `EMISSIVE` (no lightmap), `NO_OVERLAY`, `NO_CARDINAL_LIGHTING`, `APPLY_TEXTURE_MATRIX`; no culling, blend `ADDITIVE`, `DepthStencilState.DEFAULT`. The 26.3 `entity.fsh` then runs `apply_fog`.
+  - `creeper_armor.png` (26.3 jar): 64 × 32 with a palette whose index 0 is fully transparent (1404 of 2048 texels); every other texel is opaque.
+- **Changed (terrain):**
+  - `creeper_render.rs`: `POWER_TEXTURE` and `append_creeper_power(mesh, creepers, poses, atlas, partial)`: for each live powered creeper, its six boxes grown by 2 pixels with the body's UV sizes, under the body's rotation, swell scale and part poses, coloured 128/255 grey with alpha 1 and unshaded. The offset is `age_in_ticks * 0.01 % 1` on both axes. Each face is cut where its scrolled UVs pass 1 (at most four pieces), and each piece reads `creeper_armor` from the atlas at its wrapped coordinates, so the atlas draws what vanilla's repeating sampler draws. `swelling_of` and `posed_parts` are now shared by the body and the swirl. The module note "the charged creeper's energy layer is not drawn yet" is gone.
+  - `mesh.rs`: `creeper_armor` joins the atlas after the creeper skin.
+- **Changed (survival):** `entity_view.rs`: one line after `append_creepers` draws the swirl into `MobMeshes.additive`, the pass `lightning-drawn` added. Host and friends both draw it; friends know `powered` from the look tag (lightning-turns).
+- **Tests added:** terrain `creeper_render::tests::a_charged_creeper_wears_the_scrolling_energy_layer` (a plain creeper has no swirl and the charge leaves the body unchanged; at age 0 the swirl is 36 faces in `creeper_armor`, grey 128/255 with alpha 1, 2 pixels below the feet and above the head; at age 25 the faces are cut where the texture repeats, cover the same area and stay in the region) and `creeper_render::tests::a_swirl_face_wraps_where_its_scrolled_texture_repeats` (a face at offset 0 is unchanged; at 0.25 it splits where the shifted u passes 1, the far piece reading the texture's left edge; UVs land in the atlas region; a face crossing both wraps becomes four pieces of the same area).
+- **Decisions:**
+  - The scroll (brief: "a repeating scroll along the armour glint's path"): the wrap is cut into the mesh on the CPU and the swirl reads the atlas on the additive pass, instead of `creeper_armor` as a GPU texture of its own with the repeat sampler and a vertex flag, as the armour glint does. The picture is the same (vanilla samples it REPEAT and NEAREST; the additive pass samples the atlas NEAREST at level 0). This needs no new binding, frame field, image conversion or texture load in `render_gpu`'s `drawsurf/minecraft_world.rs`, `render`'s `extract.rs` and the host and friend views in `render_anim`. The 44-byte entity vertex has no spare field for a flag either. A charged creeper is at most 144 quads.
+  - Fog: vanilla's `apply_fog` mixes the swirl toward the fog colour before the additive blend, so a swirl deep in fog adds the fog colour. The shared additive pass fades it to nothing, as it does the bolt. Only a charged creeper at the far edge of the fog shows the difference.
+  - Depth: vanilla's swirl writes depth; the additive pass only tests it. The shell sits 2 pixels outside the body, which writes depth, so only rain falling right behind the shell is drawn differently.
+  - `docs/round10/mobs.md` is not changed: the creeper is not an M3 row and lightning has no row.
+- **Runs:** `test -p minecraft_terrain --locked --lib` (1750 passed, 3 ignored), `test -p minecraft_survival --locked --lib` (836 passed), `check -p launcher --locked` (green; only the old render_frame and skate warnings).
+- **Test steps:** release build, survival, Normal, flat plains, by day, `/weather clear`, the kit below, the host is op. Stand still and type every `/summon` from the same place, so `~ ~ ~8` is always the same block ("the spot"). Name each screenshot by its label.
+  1. Dig a pit 1 wide and 3 deep at the spot and lay a stone slab on its floor (fire cannot sit on a bottom slab). Run `/summon minecraft:creeper ~ ~-2.5 ~8` and `/summon minecraft:lightning_bolt ~ ~-2.5 ~8`. Walk to the pit's edge (not closer) and look down: a blue swirl a little larger than the creeper wraps it and slides slowly and steadily on a diagonal. The creeper's green skin shows through the swirl's gaps. **m3-glow-1**
+  2. `/time set midnight`: the creeper darkens with the night, the swirl stays as bright as by day. **m3-glow-2**
+  3. Save and quit, then load again: the creeper still wears the swirl. **m3-glow-3**
+  4. Dig a second pit the same way 5 blocks to the side and use a creeper egg in it: no swirl. **m3-glow-4**
+  5. Stand at the edge of the first pit until the creeper hisses: the swirl swells and wobbles with it. Back off at once to 6 blocks before it blows. **m3-glow-5**
+  6. Friend, two windows (`scripts\mp-local.ps1`): the host repeats step 1; the friend sees the same swirl on the creeper. **m3-glow-friend**
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:creeper_spawn_egg*2,minecraft:stone_slab*4,minecraft:iron_shovel,minecraft:water_bucket,minecraft:cooked_beef*16
 ```
 
 ## Combined kit

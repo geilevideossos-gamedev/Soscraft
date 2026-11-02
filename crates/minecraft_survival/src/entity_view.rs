@@ -1020,6 +1020,7 @@ impl EntityView {
             light,
             partial,
         );
+        creeper_render::append_creeper_power(&mut out.additive, w.creepers().iter(), poses, atlas, partial);
         spider_render::append_spiders(
             &mut out.models,
             w.spiders().iter(),
