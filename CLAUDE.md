@@ -58,7 +58,7 @@ The open survival limits and multiplayer leftovers (`docs/MINECRAFT-SURVIVAL.md`
     - Gentle mode while the owner plays on this PC: `%LOCALAPPDATA%\iw4l-cargo-slot.txt` with `slots=1`, `jobs=4` and `priority=low` runs one cargo at a time with `-j 4` below normal priority. For full speed when the owner is away, set `slots=2`, `jobs=4` and `priority=low`; never `jobs=8` with two slots and never delete the file (the PC crashed under two slots at `-j 8` on 2026-10-28).
     - `--release`, `--workspace`, `--profile` and `+exclusive` take both slots, so a release build or the full suite runs alone.
     - If its shell is killed, cargo and rustc die with it.
-    - PowerShell drops a bare `--` when calling a script, so quote it: `& scripts\cargo-slot.ps1 clippy -p x --locked '--' -A clippy::approx_constant`.
+    - PowerShell drops a bare `--` when calling a script, so quote it: `& scripts\cargo-slot.ps1 test -p minecraft_terrain --locked '--' darkness`.
   - One target dir per worktree. Two worktrees must never share one: cargo's mtime check would reuse the other worktree's build of a crate whose files are older there.
   - Builds link with rust-lld (`.cargo/config.toml`). Dev and test builds optimise dependencies at opt-level 1, skip debug info and are not incremental (`Cargo.toml`), so no `CARGO_INCREMENTAL` or `CARGO_PROFILE_DEV_DEBUG` variables are needed.
   - Use PowerShell, not Git Bash, for cargo.

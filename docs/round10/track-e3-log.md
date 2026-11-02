@@ -40,3 +40,24 @@ After 3a70396d. Gap code-3.
   5. `& scripts\clippy-vendored.ps1 +target=D:\iw4l-wt\track-e3` (all five): exit 0, cargo 16 s after 87 s waiting (entities replayed, the other four checked). Cargo's counts: core lib 25 and lib test 26 (25 duplicates); world lib 59 and lib test 61 (59 duplicates); generator lib 71 and lib test 72 (71 duplicates); player lib 20, lib test 31 (20 duplicates) and four bins 1 each; entities as in run 1. Distinct warning locations per crate: core 26, world 62, generator 76, player 46, entities 96 (306 in all; 85 of them `unwrap_or_default`, 60 `collapsible_if`). No `approx_constant` anywhere. The player lib test built with the stand-in files the script made; `third_party/scenarios` is gone afterwards, both variables are restored, and the lint folder holds 0.15 GB.
 - **Not run:** `check -p launcher` and Rust tests: the commit changes no Rust code.
 - **Owner's steps:** none in game (tooling only). No kit line.
+
+## Group tool-lints-terrain
+
+Before the group (at 17a138f2): `test -p minecraft_terrain --locked` passed 1818, failed 0, ignored 3 (lib; doc-tests 0), in 406 s.
+
+### 2. minecraft_terrain takes the workspace lints, so clippy needs no extra flag
+
+After 17a138f2. Gap code-2, part 1.
+
+- **Why:** `crates/minecraft_terrain/Cargo.toml` was the only workspace member without `[lints] workspace = true`, so it missed the root `approx_constant = "allow"` and `excessive_precision = "allow"`, and every clippy call carried `'--' -A clippy::approx_constant`.
+- **Changed:**
+  - `crates/minecraft_terrain/Cargo.toml`: `[lints]` with `workspace = true` at the end, as in `crates/minecraft_survival/Cargo.toml`.
+  - `docs/MINECRAFT-SURVIVAL.md` "Per track" step 1 (now `:505`): the clippy command loses ` '--' -A clippy::approx_constant`, and a new sub-bullet after the rule says: "Since round 10 E3, `minecraft_terrain`, `minecraft_survival` and the fork's `minecraft_*` files in `render_anim` and `hud` have no clippy warnings, so any warning there is new." The rule itself stays (no warnings on lines the track touched; older ones stay).
+  - `.claude/workflows/track-runner.js:37`, the verify prompt's clippy step: ` '--' -A clippy::approx_constant` dropped; nothing else in the template string changed, and the file still parses (its body compiled as an async function).
+  - `CLAUDE.md:61` keeps the point (quote the `--`) with an example that still needs it: `& scripts\cargo-slot.ps1 test -p minecraft_terrain --locked '--' darkness`.
+- **Decisions:**
+  - Inheriting `assertions_on_constants = "deny"` is safe: the crate has no constant assertions, and the clippy run below passes with the deny in place.
+  - The new sentence also names `minecraft_survival`, `render_anim` and `hud`, which tool-lints-fork cleans later in this segment. Segment e3a merges as a whole, so the sentence holds when it reaches `minecraft-survival`. A branch made before E3 still carries the old warnings.
+  - No other file named the flag outside the round logs and briefs (`git grep approx_constant`), which stay as written.
+- **Tests:** no new tests (nothing changes in behaviour). `clippy -p minecraft_terrain --locked --all-targets` with no extra flag: exit 0, lib 33 warnings, lib test 34 (33 duplicates), 34 distinct locations, none `approx_constant`, `excessive_precision` or `assertions_on_constants`. These are the older warnings the next commit fixes. `check -p launcher --locked`: green.
+- **Owner's steps:** none in game (lints and docs only). No kit line.
