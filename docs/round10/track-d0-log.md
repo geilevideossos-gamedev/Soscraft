@@ -877,6 +877,17 @@ Everything track D0 leaves open after segment d0b, gathered from the entries abo
   - `InfestedMobEffect.onMobHurt` (the infested potion lets silverfish out of a hurt mob or player).
 - **Optional:** moving the bat to `BatAnimation` (a round 9 leftover).
 
+## Final test run (segment d0b)
+
+Commit: "Track D0 log records the final test run of segment d0b", after 4238dec8. Log only.
+
+- **Touched crates** (`git diff --stat r10-d0b-base..HEAD`): `minecraftoss-entities`, `minecraftoss-world`, `minecraft_terrain`, `minecraft_survival`.
+- **Clippy:** `clippy -p minecraftoss-entities -p minecraftoss-world -p minecraft_terrain -p minecraft_survival --locked --all-targets -- -A clippy::approx_constant` exits 0. No warning points at a line the segment added: the only warnings in its touched files are three in `minecraft_terrain`'s `server.rs` (lines 692, 3906 and 14979), and `git blame` gives older commits for all three. The two vendored crates show none.
+- **Tests** on the code of 4238dec8, `test -p <crate> --locked` for each touched crate, all passed: `minecraftoss-entities` 568 (every `check_*` bin builds), `minecraftoss-world` 135, `minecraft_terrain` 1706 (3 ignored, with the 26.3 data), `minecraft_survival` 818 + 1.
+- **Checks:** the files the segment added (`infested.rs`, `flying.rs`) and the changed terrain `families/pests/endermites.rs` pass `rustfmt --check --edition 2021` with empty output on their committed content, and no added line holds a comment.
+- **Fixes:** none needed.
+- **Owner's test steps:** none new; the steps of 85917c3c (D0-14), 45de7c5d (D0-15), 73bacd48 (D0-16) and 4238dec8 (D0-17) stand, with the combined kit below.
+
 ## Combined kit (segment d0b)
 
 24 stacks. It holds what the steps of segment d0b need: D0-14 (85917c3c, silverfish in stone), D0-15 (45de7c5d, endermites from pearls, 96 pearls in six stacks), D0-16 (73bacd48, ground paths) and D0-17 (the review's merge puff). The whole silverfish and endermite run is the D0-10 kit above. The class loadout's M4A1 is used as well.
