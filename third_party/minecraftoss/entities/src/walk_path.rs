@@ -41,6 +41,8 @@ pub struct WalkProfile {
     /// (`floor(max(FOLLOW_RANGE, required) * 16)`).
     pub max_visited: Option<i32>,
     pub flying: Option<crate::flying::Flight>,
+    pub amphibious: Option<bool>,
+    pub sea_level: i32,
 }
 
 /// `PathfinderMob.getWalkTargetValue` families.
@@ -82,6 +84,8 @@ impl WalkProfile {
             walk_target: WalkTarget::Animal,
             max_visited: None,
             flying: None,
+            amphibious: None,
+            sea_level: 63,
         };
         profile.set_malus(PathType::FireInNeighbor, 16.0);
         profile.set_malus(PathType::Fire, -1.0);
@@ -331,6 +335,9 @@ impl<'a, W: World + ?Sized> Evaluator<'a, W> {
         if self.fly.is_some() {
             return self.fly_start();
         }
+        if self.profile.amphibious.is_some() && self.walker.in_floatable_fluid {
+            return self.start_node(self.swim_start());
+        }
         let p = self.walker.position;
         let (bx, _, bz) = self.block_pos();
         let mut start_y = p.y.floor() as i32;
@@ -420,6 +427,9 @@ impl<'a, W: World + ?Sized> Evaluator<'a, W> {
                 }
             }
         }
+        if self.profile.amphibious.is_some() {
+            self.amphibious_neighbors(current, &mut out);
+        }
         out
     }
 
@@ -478,7 +488,7 @@ impl<'a, W: World + ?Sized> Evaluator<'a, W> {
     /// `getFloorLevel`: half a block up in floatable fluid for a floating
     /// mob, else the top of the collision shape below.
     fn floor_level(&self, pos: NodePos) -> f64 {
-        if self.profile.can_float && self.world.floatable_fluid(pos) {
+        if (self.profile.can_float || self.profile.amphibious.is_some()) && self.world.floatable_fluid(pos) {
             return f64::from(pos.1) + 0.5;
         }
         static_floor_level(self.world, pos)
@@ -499,7 +509,7 @@ impl<'a, W: World + ?Sized> Evaluator<'a, W> {
         if Self::partial_collision(current) && best.is_some_and(|b| self.nodes[b].cost_malus >= 0.0) && !self.can_reach_without_collision(best.expect("checked")) {
             best = None;
         }
-        if path_type == PathType::Walkable {
+        if path_type == PathType::Walkable || (self.profile.amphibious.is_some() && path_type == PathType::Water) {
             return best;
         }
         if (best.is_none() || best.is_some_and(|b| self.nodes[b].cost_malus < 0.0))
@@ -624,7 +634,13 @@ impl<'a, W: World + ?Sized> Evaluator<'a, W> {
         if let Some(&path_type) = self.static_types.get(&pos) {
             return path_type;
         }
-        let path_type = if self.fly.is_some() { fly_path_type(self.world, pos, self.block_pos()) } else { path_type_static(self.world, pos) };
+        let path_type = if self.fly.is_some() {
+            fly_path_type(self.world, pos, self.block_pos())
+        } else if self.profile.amphibious.is_some() {
+            amphibious_path_type(self.world, pos)
+        } else {
+            path_type_static(self.world, pos)
+        };
         self.static_types.insert(pos, path_type);
         path_type
     }
@@ -817,7 +833,16 @@ fn java_hash_order<T: Copy>(order: &[T], hash: impl Fn(T) -> i32, size: usize) -
 /// reached, to the nearest node of the target it ends closest to. Each
 /// target keeps the node nearest it by raw distance (`Target.updateBest`).
 pub fn find_walk_path_to_any<W: World + ?Sized>(world: &W, profile: &WalkProfile, walker: Walker, targets: &[NodePos], reach_range: i32) -> Option<FoundPath> {
+    if profile.amphibious.is_some() {
+        let prepared = amphibious_prepared(profile);
+        return find_path_to_any(Evaluator::new(world, &prepared, walker), targets, reach_range);
+    }
     find_path_to_any(Evaluator::new(world, profile, walker), targets, reach_range)
+}
+
+pub fn find_swim_path_to_any<W: World + ?Sized>(world: &W, profile: &WalkProfile, walker: Walker, targets: &[NodePos], reach_range: i32, breaching: bool) -> Option<FoundPath> {
+    let walk = Evaluator::new(world, profile, walker);
+    find_path_to_any(SwimEvaluator { walk, breaching }, targets, reach_range)
 }
 
 pub fn find_fly_path_to_any<W: World + ?Sized>(world: &W, profile: &WalkProfile, walker: Walker, targets: &[NodePos], reach_range: i32, random: &mut LegacyRandom) -> Option<FoundPath> {
@@ -1091,6 +1116,185 @@ pub fn fly_path_type<W: World + ?Sized>(world: &W, (x, y, z): NodePos, mob: Node
         path_type = check_neighbour_blocks(world, (x, y, z), path_type);
     }
     path_type
+}
+
+const DIRECTIONS: [NodePos; 6] = [(0, -1, 0), (0, 1, 0), (0, 0, -1), (0, 0, 1), (-1, 0, 0), (1, 0, 0)];
+
+const HORIZONTAL_SIDES: [usize; 4] = [2, 5, 3, 4];
+
+impl<W: World + ?Sized> Evaluator<'_, W> {
+    fn swim_start(&self) -> NodePos {
+        let bb = self.bounding_box();
+        (bb.min.x.floor() as i32, (bb.min.y + 0.5).floor() as i32, bb.min.z.floor() as i32)
+    }
+
+    fn amphibious_neighbors(&mut self, current: usize, out: &mut Vec<usize>) {
+        let pos = self.nodes[current].pos;
+        let above = self.cached_path_type((pos.0, pos.1 + 1, pos.2));
+        let here = self.cached_path_type(pos);
+        let mut jump_size = 0;
+        if self.profile.malus(above) >= 0.0 && here != PathType::StickyHoney {
+            jump_size = (1.0f32.max(self.profile.max_up_step)).floor() as i32;
+        }
+        let height = self.floor_level(pos);
+        let up = self.find_accepted_node((pos.0, pos.1 + 1, pos.2), (jump_size - 1).max(0), height, (0, 0), here);
+        let down = self.find_accepted_node((pos.0, pos.1 - 1, pos.2), jump_size, height, (0, 0), here);
+        if self.vertical_valid(up, current) {
+            out.push(up.expect("valid"));
+        }
+        if self.vertical_valid(down, current) && here != PathType::Trapdoor {
+            out.push(down.expect("valid"));
+        }
+        if self.profile.amphibious == Some(true) {
+            for &node in out.iter() {
+                if self.nodes[node].path_type == Some(PathType::Water) && self.nodes[node].pos.1 < self.profile.sea_level - 10 {
+                    self.nodes[node].cost_malus += 1.0;
+                }
+            }
+        }
+    }
+
+    fn vertical_valid(&self, neighbor: Option<usize>, current: usize) -> bool {
+        self.neighbor_valid(neighbor, current) && neighbor.is_some_and(|n| self.nodes[n].path_type == Some(PathType::Water))
+    }
+}
+
+fn amphibious_prepared(profile: &WalkProfile) -> WalkProfile {
+    let mut prepared = profile.clone();
+    prepared.set_malus(PathType::Water, 0.0);
+    prepared.set_malus(PathType::Walkable, 6.0);
+    prepared.set_malus(PathType::WaterBorder, 4.0);
+    prepared
+}
+
+fn amphibious_path_type<W: World + ?Sized>(world: &W, (x, y, z): NodePos) -> PathType {
+    if world.path_type_from_state((x, y, z)) != PathType::Water {
+        return path_type_static(world, (x, y, z));
+    }
+    if DIRECTIONS.iter().any(|&(dx, dy, dz)| world.path_type_from_state((x + dx, y + dy, z + dz)) == PathType::Blocked) {
+        PathType::WaterBorder
+    } else {
+        PathType::Water
+    }
+}
+
+struct SwimEvaluator<'a, W: World + ?Sized> {
+    walk: Evaluator<'a, W>,
+    breaching: bool,
+}
+
+impl<W: World + ?Sized> SwimEvaluator<'_, W> {
+    fn path_type(&mut self, pos: NodePos) -> PathType {
+        if let Some(&path_type) = self.walk.path_types.get(&pos) {
+            return path_type;
+        }
+        let size = (self.walk.entity_width, self.walk.entity_height, self.walk.entity_depth);
+        let path_type = swim_path_type(self.walk.world, pos, size);
+        self.walk.path_types.insert(pos, path_type);
+        path_type
+    }
+
+    fn accepted(&mut self, pos: NodePos) -> Option<usize> {
+        let path_type = self.path_type(pos);
+        if path_type != PathType::Water && !(self.breaching && path_type == PathType::Breach) {
+            return None;
+        }
+        let malus = self.walk.profile.malus(path_type);
+        if malus < 0.0 {
+            return None;
+        }
+        let node = self.walk.node_with_cost(pos, path_type, malus);
+        if !self.walk.world.floatable_fluid(pos) && !self.walk.world.fluid_is_lava(pos) {
+            self.walk.nodes[node].cost_malus += 8.0;
+        }
+        Some(node)
+    }
+
+    fn open(&self, node: Option<usize>) -> Option<usize> {
+        node.filter(|&n| !self.walk.nodes[n].closed)
+    }
+
+    fn usable(&self, node: Option<usize>) -> bool {
+        node.is_some_and(|n| self.walk.nodes[n].cost_malus >= 0.0)
+    }
+}
+
+impl<W: World + ?Sized> NodeSource for SwimEvaluator<'_, W> {
+    fn profile(&self) -> &WalkProfile {
+        self.walk.profile
+    }
+
+    fn nodes(&mut self) -> &mut [Node] {
+        &mut self.walk.nodes
+    }
+
+    fn node(&mut self, pos: NodePos) -> usize {
+        self.walk.node(pos)
+    }
+
+    fn start(&mut self) -> usize {
+        let pos = self.walk.swim_start();
+        self.walk.node(pos)
+    }
+
+    fn neighbors(&mut self, current: usize) -> Vec<usize> {
+        let (x, y, z) = self.walk.nodes[current].pos;
+        let mut out = Vec::with_capacity(10);
+        let mut sides = [None; 6];
+        for (i, (dx, dy, dz)) in DIRECTIONS.into_iter().enumerate() {
+            sides[i] = self.accepted((x + dx, y + dy, z + dz));
+            out.extend(self.open(sides[i]));
+        }
+        for (i, (dx, dz)) in HORIZONTAL.into_iter().enumerate() {
+            let clockwise = (i + 1) % 4;
+            if self.usable(sides[HORIZONTAL_SIDES[i]]) && self.usable(sides[HORIZONTAL_SIDES[clockwise]]) {
+                let (cx, cz) = HORIZONTAL[clockwise];
+                let diagonal = self.accepted((x + dx + cx, y, z + dz + cz));
+                out.extend(self.open(diagonal));
+            }
+        }
+        out
+    }
+}
+
+fn swim_path_type<W: World + ?Sized>(world: &W, (x, y, z): NodePos, (width, height, depth): NodePos) -> PathType {
+    let mut last = (x, y, z);
+    for i in x..x + width {
+        for j in y..y + height {
+            for k in z..z + depth {
+                last = (i, j, k);
+                if is_air(world, last) && pathfindable_in_water(world, (i, j - 1, k)) {
+                    return PathType::Breach;
+                }
+                if !world.floatable_fluid(last) {
+                    return PathType::Blocked;
+                }
+            }
+        }
+    }
+    if pathfindable_in_water(world, last) {
+        PathType::Water
+    } else {
+        PathType::Blocked
+    }
+}
+
+fn is_air<W: World + ?Sized>(world: &W, pos: NodePos) -> bool {
+    world.block(pos).is_none_or(|b| matches!(b.id.as_str(), "minecraft:air" | "minecraft:cave_air" | "minecraft:void_air"))
+}
+
+pub fn pathfindable_in_water<W: World + ?Sized>(world: &W, pos: NodePos) -> bool {
+    let Some(block) = world.block(pos) else { return false };
+    let id = block.id.strip_prefix("minecraft:").unwrap_or(&block.id);
+    if id == "powder_snow" {
+        return true;
+    }
+    world.floatable_fluid(pos) && !refuses_water_paths(id)
+}
+
+fn refuses_water_paths(id: &str) -> bool {
+    const ENDINGS: [&str; 12] = ["_stairs", "_fence", "_wall", "_wall_hanging_sign", "_pane", "_bars", "chain", "lantern", "chest", "campfire", "sculk_sensor", "lightning_rod"];
+    ENDINGS.iter().any(|ending| id.ends_with(ending)) || matches!(id, "sea_pickle" | "conduit" | "decorated_pot" | "heavy_core" | "pointed_dripstone" | "sulfur_spike" | "dried_ghast")
 }
 
 #[cfg(test)]

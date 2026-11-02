@@ -15,10 +15,12 @@ Files under `third_party/minecraftoss` this track patched or added.
 - Patched (water-hooks 2): `entities/src/world/emissions.rs` (the own step at zero volume and an empty swim sound stay silent). Changed again: `entities/src/world/families.rs` (`swim_sounds`, `quiet_steps`, `movement_sounds`), the probe and the water tests.
 - Patched (water-paths 1): `entities/src/walk_path.rs` (the A* loop over the private `NodeSource`, and `#[cfg(test)] mod tests;`).
 - Added (water-paths 1): `entities/src/walk_path/tests.rs` (test only).
+- Patched (water-paths 2): `entities/src/navigation.rs` (`WaterNav`, `plan_water_path`, `can_update_path`, `tick_water`, `#[cfg(test)] mod tests;`), `entities/src/stroll.rs` (`water_bound_random_position`, `#[cfg(test)] mod tests;`). Changed again: `entities/src/walk_path.rs` (the amphibious mode, `SwimEvaluator`) and its test file.
+- Added (water-paths 2): `entities/src/navigation/tests.rs`, `entities/src/stroll/tests.rs` (both test only).
 
 ## Hooks
 
-Root hooks this track added (M20, "Owners of shared pieces").
+Root hooks this track added (M20, "Owners of shared pieces"). The shared path pieces of `water-paths` (M20's "Shared files outside the registry") are not registry hooks; they are under "Group water-paths" below, with how a family uses them.
 
 - **"Registered Minecraft mobs breathe like vanilla water animals"** (water-hooks 1): `Family::breath(mob) -> Breath` in `entities/src/world/families.rs`, with `pub enum Breath { Lungs { max, refill }, Gills, Own }`. The default is `Lungs { max: 300, refill: 4 }`, today's `living::breathe`.
   - `Lungs` runs `living::breathe_up_to(body, world, eye_height, breathes_water, max, refill)` where the base tick ran `breathe` before; `breathe` is now `breathe_up_to(.., MAX_AIR, 4)`. A refill of at least `max` fills the air at once (vanilla's dolphin returns `getMaxAirSupply` from `increaseAirSupply`, even from negative air), so the dolphin is `Lungs { max: 4800, refill: 4800 }`.
@@ -40,7 +42,7 @@ None yet.
 
 ## Left for later
 
-Nothing yet.
+- **Water paths (water-paths 2):** the 26.3 shelf mushroom (`ShelfMushroomBlock`) refuses every path, water ones too, but its block ids are not known here, so `refuses_water_paths` leaves it out.
 
 ## Combined kit
 
@@ -146,4 +148,83 @@ After 287abc2f.
 
 ```
 IW4L_MINECRAFT_KIT=minecraft:zombie_spawn_egg*2,minecraft:drowned_spawn_egg*2,minecraft:cow_spawn_egg*2,minecraft:stone*64,minecraft:water_bucket,minecraft:iron_shovel,minecraft:iron_sword
+```
+
+#### 2. Minecraft mobs find paths through water like vanilla swimmers and amphibians
+
+After d0c0cd7b.
+
+- **javap (26.3 `client.jar`):**
+  - `SwimNodeEvaluator(allowBreaching)`:
+    - `getStart` is `getNode(floor(minX), floor(minY + 0.5), floor(minZ))` of the bounding box (no path type, no cost); `getTarget` the floored point.
+    - `getNeighbors`: `findAcceptedNode` for the six `Direction.values()` (down, up, north, south, west, east), each kept when not closed; then for north, east, south and west with their clockwise neighbour, the diagonal at the same height when both sides are nodes with a cost of at least 0.
+    - `findAcceptedNode`: only `WATER`, or `BREACH` when breaching, with a malus of at least 0; the cost becomes `max(cost, malus)`, then 8 more where the block holds no fluid. The 8 is added again each time the node is looked at.
+    - `getPathTypeOfMob` over the box cells, x then y then z: an air cell over a block that is `isPathfindable(WATER)` is `BREACH`; a cell whose fluid is not water is `BLOCKED`; after the loop the last cell is `WATER` when it is `isPathfindable(WATER)`, else `BLOCKED`. The types are cached per search.
+  - `AmphibiousNodeEvaluator(prefersShallowSwimming)` extends `WalkNodeEvaluator`:
+    - `prepare` sets the mob's `WATER` malus to 0 for good, and `WALKABLE` 6 and `WATER_BORDER` 4 for the search (`done` puts those two back).
+    - `getStart`: in water (`isInWater`) the swim start through `getStartNode`, else the walk start. `getTarget` floors `y + 0.5`, which a block target leaves as it is.
+    - `getNeighbors`: the walk ones, then up (`jump - 1`, at least 0) and down (`jump`) through the walk `findAcceptedNode` with the node's floor height, each kept only when valid and `WATER`, and down not from a `TRAPDOOR` node; `jump` is `floor(max(1, maxUpStep))`, or 0 when the type above has a negative malus or the node is sticky honey. With the shallow preference every `WATER` neighbour below `seaLevel - 10` costs 1 more.
+    - `getPathType`: a `WATER` block with a `BLOCKED` block on any of its six faces (`getPathTypeFromState`) is `WATER_BORDER`; other blocks as the walk evaluator.
+    - `WalkNodeEvaluator.isAmphibious` is read in `getFloorLevel` (`y + 0.5` in floatable water for a mob that floats or is amphibious) and `findAcceptedNode` (a `WATER` node returns at once, like `WALKABLE`; the search below the water is for non-amphibious walkers only).
+  - `WaterBoundPathNavigation`: `SwimNodeEvaluator(mob is DOLPHIN)`, no doors; `canUpdatePath` is breaching or `isInLiquid`; `getTempMobPos` `(x, y + 0.5 * height, z)`; `getGroundY` the waypoint's own y; `canMoveDirectly` `isClearForMovementBetween(.., false)` (collider clip, no fluids); `isStableDestination` is `!isSolidRender` of the block itself; `getMaxVerticalDistanceToWaypoint` 0.5.
+  - `AmphibiousPathNavigation`: `AmphibiousNodeEvaluator(false)`; `canUpdatePath` always; the same temp position and ground y; `canMoveDirectly` only in a liquid; `isStableDestination` is the block below not being air; the vertical distance stays `PathNavigation`'s 1.0.
+  - `PathNavigation`: `createPath` gives up on no targets, below the world or when it cannot update its path, and keeps a path under way to one of the targets; `tick` follows the path when it can update it, otherwise advances only when the temp position is above the next node, off the ground and in its column; `followThePath` reaches a node within `maxDistanceToWaypoint` across and the vertical distance up or down, and cuts to the next one through `shouldTargetNextNodeInDirection` (within 2 blocks, and a direct move or the angle rule).
+  - `isPathfindable(WATER)`: `BlockBehaviour` answers whether the state's fluid is water, `LiquidBlock` whether it is not lava, `PowderSnowBlock` always. `DoorBlock` and `FenceGateBlock` answer false for water and `TrapDoorBlock` whether it is waterlogged, which is the fluid rule for them. These classes answer false for every type, and those that can hold water matter here: stairs, fences, walls, glass panes and bars (`CrossCollisionBlock`), chains, lanterns, chests and ender chests, campfires, sculk sensors, sea pickles, conduits, decorated pots, heavy cores, lightning rods (`RodBlock`), pointed dripstone and sulfur spikes (`SpeleothemBlock`), wall hanging signs and dried ghasts.
+  - `DefaultRandomPos.getPos` with a home: `GoalUtils.mobRestricted` (home set and its centre within radius + horizontal + 1 of the mob), `RandomPos.generateRandomPosTowardDirection` (with a home and a horizontal range above 1, x and z move by `nextDouble * horizontal / 2` towards the home, x first), then not outside the build height, not outside the home (`isWithinHome`: `distSqr < radius²`), stable and without a malus. `Mob.hasHome` is a radius other than -1.
+- **Changed (vendored entities crate):**
+  - `walk_path.rs`:
+    - `WalkProfile.amphibious: Option<bool>` (the shallow preference; `None` for every existing mob) and `WalkProfile.sea_level` (63, as `EntityWorld` starts).
+    - The amphibious branches of the walk evaluator: the swim start in water, the vertical neighbours and the shallow cost (a new `amphibious_neighbors` called at the end of `neighbors`), the water floor in `floor_level`, the early `WATER` return in `find_accepted_node`, and `WATER_BORDER` through `static_type`, which every box type reads. `find_walk_path_to_any` searches an amphibious profile with the prepared maluses (`WATER` 0, `WALKABLE` 6, `WATER_BORDER` 4).
+    - `SwimEvaluator`, a second `NodeSource` beside the walk evaluator, with the walk evaluator's node store, box size and type cache inside it, and `find_swim_path_to_any(.., breaching)`.
+    - `pathfindable_in_water(world, pos)`, public for the swimming goals of `water-swimming` (`RandomSwimmingGoal` retries until the spot is `isPathfindable(WATER)`).
+  - `navigation.rs`:
+    - `WaterNav { Ground, Bound { breaching }, Amphibious { shallow } }` and `GroundNavigation.water` (after the climber's fields; `Ground` by default).
+    - `plan_walk_path` and `plan_walk_path_to_any` hand a water navigation to a new `plan_water_path` (after the flying branch): no surface search, the navigation's own `canUpdatePath`, the swim search or the amphibious walk search, and the path adopted as d0b's flyers do.
+    - `can_update_path(body, fluid)` for the three navigations; `recompute` asks it (one changed line).
+    - `tick_water(world, body, fluid, speed)` after `tick_amphibious`: the temp position half the height up, half a block of vertical reach for a water-bound mob, the direct-move cut by a collider clip (an amphibious mob only in a liquid), the stuck check from the temp position, the advance rule when it cannot update, and the next node's own height as the wanted height.
+  - `stroll.rs`: `water_bound_random_position(world, profile, position, horizontal, vertical, home, random)` after the amphibious positions, with `home: Option<(BlockPos, i32)>` (centre, radius) and `within_home`.
+  - New test files `walk_path/tests.rs` (grown), `navigation/tests.rs` and `stroll/tests.rs`, with `#[cfg(test)] mod tests;` at the end of `navigation.rs` and `stroll.rs`.
+- **How a family uses it** (M2's swimmers and M1's turtles):
+  - Set `navigation.water` on the mob's own `GroundNavigation` right after building it in `spawn` (a loaded mob goes through `spawn` too): `WaterNav::Bound { breaching: false }` for fish, tadpoles, guardians and nautiluses, `Bound { breaching: true }` for dolphins, `Amphibious { shallow: false }` for axolotls and `Amphibious { shallow: true }` for frogs and turtles. Every `plan_walk_path` and `plan_walk_path_to_any` (the shared goals, `navigate_walk_to`, `MoveSink`, `recompute`) then plans the water way.
+  - Give the profile vanilla's water malus 0 (`WaterAnimal`, `AgeableWaterCreature` and the amphibious evaluator's `prepare` all leave it there); `water-swimming`'s `water_walk` does it.
+  - A shallow family copies `EntityWorld.sea_level` into its profile's `sea_level` each tick, as the drowned's goals copy it.
+  - The family's step ticks the path with `navigation.tick_water(..)` instead of `tick_in`, after `delayed_recompute` as before.
+  - Wandering: `water_bound_random_position(.., home)` for water-bound mobs (the elder guardian and the tame nautilus pass their home), `amphibious_random_position` for amphibious ones.
+- **Tests added:**
+  - `walk_path::tests::a_swim_path_goes_around_a_glass_wall_through_water_only` (every node is water, the wall is passed only through its opening, steps are faces or level diagonals and some are diagonal; a sealed wall or one of waterlogged fences stops the fish; waterlogged slabs and trapdoors and powder snow are pathfindable in water, air is not).
+  - `walk_path::tests::a_swim_path_breaches_only_for_a_dolphin` (a spot in the air above a channel is reached by the breacher only, through water until the last node; the box types `BREACH`, `BLOCKED` over glass and in the air, `WATER`; an air node costs its malus 4 plus 8, and 8 more on the next look; a water node 0; an open-water node's ten neighbours in vanilla's order, the six faces and then the four level diagonals).
+  - `walk_path::tests::a_two_block_swimmer_does_not_fit_a_one_block_tunnel` (a fish swims the 1 x 1 tunnel; a mob 1.2 high or 1.2 wide stays in the first pool).
+  - `walk_path::tests::the_swim_start_is_half_a_block_above_the_feet` (the box's low corner, `floor(minY + 0.5)`).
+  - `walk_path::tests::an_amphibious_path_swims_across_a_pond_and_walks_out` (the prepared maluses 6, 4 and 0 while the profile keeps its own; the swim start; the path stays in water until it climbs out onto land; a mob that cannot float starts at the pond's floor instead; the water floor `y + 0.5`; `WATER_BORDER` at the floor and the sides; up and down neighbours only into `WATER`; the shallow +1 below `sea_level - 10` and none above).
+  - `navigation::tests::a_water_bound_mob_reaches_a_node_within_half_a_block_up_or_down` (and within 1.0 for an amphibious mob; the wanted height is the node's own, where the ground navigation would take the floor).
+  - `navigation::tests::a_stranded_swimmer_makes_no_path_unless_it_breaches` (no path and no move for a stranded fish, a path for a breacher, a path in water; the advance rule off the ground above the node's column only).
+  - `navigation::tests::it_cuts_a_corner_only_with_a_clear_line` (stone or glass in the line stops the cut; an amphibious mob cuts only in a liquid).
+  - `navigation::tests::a_water_navigation_follows_its_own_rules_to_update_its_path` (the ground navigation refuses to plan in the air, the amphibious one plans anywhere; a fish's path is re-planned after 20 ticks in water and waits out of it, a breacher's is not).
+  - `stroll::tests::a_water_bound_spot_needs_no_floor_but_no_solid_block` (mid-water spots with no floor are taken, solid blocks never, even with no malus for them; spots above the surface are taken too; the ground rule finds none in open water).
+  - `stroll::tests::a_water_bound_spot_stays_inside_its_home` (inside the radius when the home is near; when it is far the spots lean towards it, beyond the plain range, and without a home they stay within it).
+- **Unchanged:** the walk and flying paths (the pinned `the_walk_search_is_unchanged_behind_the_evaluator_split` still passes), the drowned's measured amphibious search (`navigate_amphibious_to_with_accuracy`, `tick_amphibious`), every existing navigation and stroll caller.
+- **Decisions:**
+  - **`WaterNav` is the switch**, kept in the navigation as vanilla's `createNavigation` is; `WalkProfile.amphibious` is the evaluator's mode, which `plan_water_path` sets on a clone of the profile. A profile that sets it itself gets the same search (the prepared maluses are applied whenever it is set).
+  - **The sea level for the shallow preference** travels in `WalkProfile.sea_level`, which a shallow family refreshes from `EntityWorld.sea_level` (M1's brief, decision 4: no `World::sea_level`). Until it does, 63 holds, the overworld's.
+  - **The swim evaluator reuses the walk evaluator's store** (nodes, hash, box size, type cache) instead of a copy of them; its own path types go into the same per-search cache, which the walk rules never read in a swim search.
+  - **The walked distance** is written before the neighbour is checked, as vanilla's `PathFinder.findPath` does (javap: the `putfield walkedDistance` comes ahead of the `maxPathLength` test), so a node looked at again from a worse side keeps the longer distance. With the 16-block follow range a fish then gives up on detours that look short: a first test layout (a wall 5 blocks out with its opening 4 to the side, the target 10 away, a 13.3-block path) was not reached, as a Python model of the same loop confirmed, while moving the length check after the update reached it. The loop is the shared one and stays vanilla's; the tests use layouts within that reach.
+  - **The +8 for a node without fluid** is added on every look, as vanilla's `findAcceptedNode` does, so a much-visited air spot grows dearer.
+  - **`isPathfindable(WATER)`** is the water fluid (`floatable_fluid`, which the server answers from the catalog, kelp and seagrass included) less the block classes that refuse every path and can hold water (listed by id endings and names), plus powder snow. The 26.3 shelf mushroom (`ShelfMushroomBlock`) refuses too, but its ids are not known here; it is left out.
+  - **The amphibious start** in water uses the box's low corner, as vanilla's `getStart`, not the block position the walk start uses.
+  - **`tick_water` does not run the delayed recomputation** itself: as with the ground navigation, the step calls `delayed_recompute` first.
+  - **Corners:** as d0b's flyers, the navigation keeps no node types, so `canCutCorner` holds at every node.
+  - **The home test** (`a_water_bound_spot_stays_inside_its_home`) is in `water-swimming`'s list in the brief; the home is built here, so its test came with it.
+  - **Test files** sit beside the three shared files (`walk_path/tests.rs`, `navigation/tests.rs`, `stroll/tests.rs`), so the shared files only gain one module line each.
+- **Protocol:** no message or codec change.
+- **Game events still to add:** none (paths post none).
+- **What changes in the game:** nothing yet. No mob uses a water navigation until `water-swimming` and the fish (segment m2b); every ground, flying and drowned path is as before.
+- **Runs:** `test -p minecraftoss-entities --locked` (586 lib tests passed, among them the pinned walk split test and `flying::tests`; every `check_*` binary builds), `check -p launcher --locked` (green; only the old render_frame and skate warnings). The three new test files pass `rustfmt --check --edition 2021` with empty output on their staged content, and no added line holds a comment.
+- **Test steps** (regression; nothing new to see). Release build, survival, Normal, by day. Name each screenshot by its label.
+  1. Dig a pool 6 x 6 and 3 deep, fill it from the water bucket, and use a drowned egg in it. Stand at the edge: the drowned swims to you and climbs out after you. **m2-paths-2**
+  2. Use two cow eggs beside the pool and push one in: it swims to the edge and climbs out. The other wanders on the grass.
+  3. Use a zombie egg on the far side of the pool: it comes to you, as before.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:drowned_spawn_egg*2,minecraft:cow_spawn_egg*2,minecraft:zombie_spawn_egg*2,minecraft:water_bucket,minecraft:iron_shovel,minecraft:iron_sword
 ```

@@ -229,6 +229,31 @@ pub fn amphibious_random_position_towards(world: &dyn World, profile: &WalkProfi
     })
 }
 
+pub fn water_bound_random_position(world: &dyn World, profile: &WalkProfile, position: DVec3, horizontal: u32, vertical: u32, home: Option<(BlockPos, i32)>, random: &mut LegacyRandom) -> Option<DVec3> {
+    let restrict = home.is_some_and(|((x, y, z), radius)| {
+        let reach = f64::from(radius) + f64::from(horizontal) + 1.0;
+        DVec3::new(f64::from(x) + 0.5, f64::from(y) + 0.5, f64::from(z) + 0.5).distance_squared(position) < reach * reach
+    });
+    best_of(world, profile, || {
+        let (dx, dy, dz) = random_direction(random, horizontal, vertical);
+        let (mut x, mut z) = (f64::from(dx), f64::from(dz));
+        if let Some(((home_x, _, home_z), _)) = home.filter(|_| horizontal > 1) {
+            let half = f64::from(horizontal);
+            x = if position.x > f64::from(home_x) { x - random.next_double() * half / 2.0 } else { x + random.next_double() * half / 2.0 };
+            z = if position.z > f64::from(home_z) { z - random.next_double() * half / 2.0 } else { z + random.next_double() * half / 2.0 };
+        }
+        let pos = ((x + position.x).floor() as i32, (f64::from(dy) + position.y).floor() as i32, (z + position.z).floor() as i32);
+        let outside = pos.1 < world.min_y() || pos.1 > world.max_y();
+        let restricted = restrict && home.is_some_and(|(center, radius)| !within_home(center, radius, pos));
+        (!outside && !restricted && !world.solid_render(pos) && !has_malus(world, profile, pos)).then_some(pos)
+    })
+}
+
+fn within_home((x, y, z): BlockPos, radius: i32, pos: BlockPos) -> bool {
+    let d = DVec3::new(f64::from(x - pos.0), f64::from(y - pos.1), f64::from(z - pos.2));
+    d.length_squared() < f64::from(radius * radius)
+}
+
 /// `DefaultRandomPos.getPosAway`: a stable, free spot within a quarter turn
 /// of straight away from `avoid` (`mob.position().subtract(avoidPos)`).
 pub fn default_random_position_away(world: &dyn World, profile: &WalkProfile, position: DVec3, horizontal: u32, vertical: u32, avoid: DVec3, random: &mut LegacyRandom) -> Option<DVec3> {
@@ -333,3 +358,6 @@ pub fn air_and_water_random_position(world: &dyn World, profile: &WalkProfile, p
         (!has_malus(world, profile, pos)).then_some(pos)
     })
 }
+
+#[cfg(test)]
+mod tests;

@@ -129,6 +129,10 @@ pub fn plan_walk_path<W: World + ?Sized>(
         let block = (target.x.floor() as i32, target.y.floor() as i32, target.z.floor() as i32);
         return crate::flying::plan_path(body, navigation, world, profile, fluid, &[block], reach_range);
     }
+    if navigation.water != WaterNav::Ground {
+        let block = (target.x.floor() as i32, target.y.floor() as i32, target.z.floor() as i32);
+        return plan_water_path(body, navigation, world, profile, fluid, &[block], reach_range);
+    }
     if navigation.wall_climber {
         navigation.path_to_position = Some((target.x.floor() as i32, target.y.floor() as i32, target.z.floor() as i32));
     }
@@ -165,6 +169,9 @@ pub fn plan_walk_path_to_any<W: World + ?Sized>(
     if profile.flying.is_some() {
         return crate::flying::plan_path(body, navigation, world, profile, fluid, targets, reach_range);
     }
+    if navigation.water != WaterNav::Ground {
+        return plan_water_path(body, navigation, world, profile, fluid, targets, reach_range);
+    }
     if targets.is_empty() || body.position.y < f64::from(world.min_y()) || !(body.on_ground || fluid.in_water() || fluid.in_lava()) {
         return None;
     }
@@ -177,6 +184,34 @@ pub fn plan_walk_path_to_any<W: World + ?Sized>(
     navigation.reach_range = reach_range;
     navigation.reset_stuck_timeout();
     Some(PlannedPath { nodes: path.nodes, next: 0, reached: path.reached, target: Some(path.target) })
+}
+
+fn plan_water_path<W: World + ?Sized>(
+    body: &Body,
+    navigation: &mut GroundNavigation,
+    world: &W,
+    profile: &WalkProfile,
+    fluid: FluidFrame,
+    targets: &[(i32, i32, i32)],
+    reach_range: i32,
+) -> Option<PlannedPath> {
+    if targets.is_empty() || body.position.y < f64::from(world.min_y()) || !navigation.can_update_path(body, fluid) {
+        return None;
+    }
+    if !navigation.is_done() && navigation.target_pos.is_some_and(|t| targets.contains(&t)) {
+        return Some(PlannedPath::of(navigation));
+    }
+    let walker = Walker { position: body.position, on_ground: body.on_ground, in_floatable_fluid: fluid.in_water() };
+    let path = match navigation.water {
+        WaterNav::Ground => find_walk_path_to_any(world, profile, walker, targets, reach_range),
+        WaterNav::Bound { breaching } => crate::walk_path::find_swim_path_to_any(world, profile, walker, targets, reach_range, breaching),
+        WaterNav::Amphibious { shallow } => {
+            let mut amphibious = profile.clone();
+            amphibious.amphibious = Some(shallow);
+            find_walk_path_to_any(world, &amphibious, walker, targets, reach_range)
+        }
+    }?;
+    Some(adopt_path(navigation, path, reach_range))
 }
 
 /// Request a ground path for an animal with the pinned common navigation rules.
@@ -258,6 +293,18 @@ fn navigate_body_to_mode(
     Some(accepted)
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum WaterNav {
+    #[default]
+    Ground,
+    Bound {
+        breaching: bool,
+    },
+    Amphibious {
+        shallow: bool,
+    },
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct GroundNavigation {
     /// `GroundPathNavigation.setAvoidSun` (`RestrictSunGoal`): out of the
@@ -284,6 +331,7 @@ pub struct GroundNavigation {
     /// could be made; stopping keeps it.
     pub wall_climber: bool,
     pub path_to_position: Option<(i32, i32, i32)>,
+    pub water: WaterNav,
     /// The water surface a floating mob measures its height at, for the
     /// tick in hand.
     surface: Option<i32>,
@@ -318,7 +366,7 @@ impl GroundNavigation {
     /// target replaces the old (no path at all when none is found).
     /// Returns whether a new path was made.
     pub fn recompute<W: World + ?Sized>(&mut self, world: &W, body: &Body, profile: &WalkProfile, fluid: FluidFrame, time: i64) -> bool {
-        let can_update = body.on_ground || fluid.in_water() || fluid.in_lava();
+        let can_update = self.can_update_path(body, fluid);
         if time - self.time_last_recompute <= 20 || !can_update {
             self.delayed_recompute = true;
             return false;
@@ -556,6 +604,50 @@ impl GroundNavigation {
         })
     }
 
+    pub fn can_update_path(&self, body: &Body, fluid: FluidFrame) -> bool {
+        let in_liquid = fluid.in_water() || fluid.in_lava();
+        match self.water {
+            WaterNav::Ground => body.on_ground || in_liquid,
+            WaterNav::Bound { breaching } => breaching || in_liquid,
+            WaterNav::Amphibious { .. } => true,
+        }
+    }
+
+    pub fn tick_water(&mut self, world: &dyn World, body: &Body, fluid: FluidFrame, speed: f32) -> Option<(DVec3, f64)> {
+        self.tick += 1;
+        if self.is_done() {
+            return None;
+        }
+        let (position, width, height) = (body.position, body.width, body.height);
+        let mob_position = DVec3::new(position.x, position.y + f64::from(height) * 0.5, position.z);
+        if self.can_update_path(body, fluid) {
+            let in_liquid = fluid.in_water() || fluid.in_lava();
+            let (direct, vertical) = match self.water {
+                WaterNav::Bound { .. } => (true, 0.5),
+                _ => (in_liquid, 1.0),
+            };
+            let node = self.nodes[self.next];
+            let max_distance = if width > 0.75 { width / 2.0 } else { 0.75 - width / 2.0 };
+            let close = (position.x - (f64::from(node.0) + 0.5)).abs() < f64::from(max_distance)
+                && (position.z - (f64::from(node.2) + 0.5)).abs() < f64::from(max_distance)
+                && (position.y - f64::from(node.1)).abs() < vertical;
+            let can_move_directly = |to: DVec3| direct && crate::flying::is_clear_for_movement_between(world, mob_position, to, height, false);
+            if close || self.should_skip_node(mob_position, width, &can_move_directly) {
+                self.next += 1;
+            }
+            self.detect_stuck(mob_position, speed);
+        } else {
+            let target = self.entity_pos(self.nodes[self.next], width);
+            if mob_position.y > target.y && !body.on_ground && position.x.floor() == target.x.floor() && position.z.floor() == target.z.floor() {
+                self.next += 1;
+            }
+        }
+        if self.is_done() {
+            return None;
+        }
+        Some((self.entity_pos(self.nodes[self.next], width), self.speed_modifier))
+    }
+
     fn tick_mode(
         &mut self,
         position: DVec3,
@@ -752,3 +844,6 @@ impl GroundNavigation {
         Some((self.entity_pos(self.nodes[self.next], width), self.speed_modifier))
     }
 }
+
+#[cfg(test)]
+mod tests;
