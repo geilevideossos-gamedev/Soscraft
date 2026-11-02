@@ -920,7 +920,7 @@ mod tests {
 
     #[test]
     fn a_held_potion_colour_round_trips_on_protocol_6() {
-        assert_eq!(crate::PROTOCOL, 10);
+        assert_eq!(crate::PROTOCOL, 11);
         let potion = GearItem {
             id: "minecraft:splash_potion".to_string(),
             glint: false,
@@ -1000,7 +1000,7 @@ mod tests {
 
     #[test]
     fn a_swing_takes_the_next_free_index_on_protocol_6() {
-        assert_eq!(crate::PROTOCOL, 10);
+        assert_eq!(crate::PROTOCOL, 11);
         let main = ToClient::Animate {
             client: 2,
             offhand: false,
@@ -1018,7 +1018,7 @@ mod tests {
 
     #[test]
     fn a_player_view_says_what_kind_of_use_its_hand_is_in() {
-        assert_eq!(crate::PROTOCOL, 10);
+        assert_eq!(crate::PROTOCOL, 11);
         let kinds = [
             UseKind::Eat { duration: 32 },
             UseKind::Eat { duration: 16 },
@@ -1092,7 +1092,7 @@ mod tests {
 
     #[test]
     fn a_skate_report_rides_the_state_lane_beside_the_hand_on_protocol_6() {
-        assert_eq!(crate::PROTOCOL, 10);
+        assert_eq!(crate::PROTOCOL, 11);
         let hand = StateUp::Hand(HandState {
             tick: 7,
             attack: false,
