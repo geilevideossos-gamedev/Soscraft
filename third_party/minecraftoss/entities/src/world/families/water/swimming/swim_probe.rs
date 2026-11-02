@@ -24,6 +24,7 @@ pub struct SwimProbe {
 impl Family for SwimProbe {
     const KEY: u8 = 79;
     const KINDS: &'static [&'static str] = &[KIND, SILENT];
+    const OWN_DYING_TRAVEL: bool = true;
 
     fn spawn(kind: &'static str, position: DVec3) -> Option<FamilyMob<Self>> {
         let core = MobCore::new(kind, position, WIDTH, HEIGHT, EYE_HEIGHT, MAX_HEALTH);

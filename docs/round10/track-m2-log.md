@@ -21,6 +21,7 @@ Files under `third_party/minecraftoss` this track patched or added.
 - Added (water-buckets 1): `world/src/level/mob_bucket.rs` (the seven bucket rows, `entity_data`, `Level::empty_mob_bucket`), `world/src/level/mob_bucket/tests.rs` (test only).
 - Changed again (water-buckets 2): `world/src/level/mob_bucket.rs` (`bucket_of`, `bucket_entity_data`).
 - Patched (water-buckets 3): `world/src/level/dispenser.rs` (the arm for the six water mob buckets after `"water_bucket" | "lava_bucket"`). Changed again: `world/src/level/mob_bucket.rs` (`dispense_mob_bucket`) and its test file.
+- Patched (squids-live 1): `entities/src/world/families.rs` (`Family::OWN_DYING_TRAVEL` and its test in `family_base_tick`). Changed again: the probe and the water tests.
 
 ## Hooks
 
@@ -31,6 +32,7 @@ Root hooks this track added (M20, "Owners of shared pieces"). The shared path pi
   - `Gills` is vanilla's `WaterAnimal.handleAirSupply` through `living::breathe_with_gills(body, alive)`, run after the ambient roll, where vanilla runs it after `Mob.baseTick`. The lungs do not run for it.
   - `Own` leaves the air alone: axolotls and nautiluses dry out in their own ticks.
 - **"Registered Minecraft mobs make their own swim and step sounds"** (water-hooks 2): `Family::swim_sounds(kind) -> Option<(&'static str, &'static str)>` (swim, splash; `None` keeps the category's, an empty swim sound means none) and `Family::quiet_steps(kind) -> bool` (false by default), after `emits_sounds` in `entities/src/world/families.rs`. D0's `movement_sounds::<S>` puts the pair into its `MovementSounds` and turns quiet steps into `step: Some("")` at `with_step_volume(0.0)`. In `world/emissions.rs` the own-step arm plays only above zero volume, and the swim arm plays only a sound that is not empty; the step itself (its next-step distance, the amethyst chime and W's `step` game event) and the swim's `swim` game event still happen.
+- **"Registered Minecraft mobs can move by their own rules while dying"** (squids-live 1): `const OWN_DYING_TRAVEL: bool = false` after `MOUNT` in `Family` (`entities/src/world/families.rs`). `family_base_tick` runs the shared `living::dying_travel` (no input, falling or sinking with the plain drag, the swim and step sounds) only for a dead mob with AI whose family leaves it false. A family that sets it moves its dead mobs in its own tick, as vanilla's `LivingEntity.aiStep` calls the class's own `travel` while it dies. Squids set it (`Squid.travel` is a bare `move`), and dolphins and axolotls will.
 
 ## Protocol
 
@@ -413,4 +415,31 @@ After 6c0c1ea0.
 
 ```
 IW4L_MINECRAFT_KIT=minecraft:pufferfish_bucket,minecraft:sulfur_cube_bucket,minecraft:dispenser*2,minecraft:lever*2,minecraft:stone*64
+```
+
+### Group squids-live
+
+#### 1. Registered Minecraft mobs can move by their own rules while dying
+
+After 48f5c4bb.
+
+- **javap (26.3 `client.jar`):**
+  - `LivingEntity.aiStep`: a dying mob (`isImmobile`) runs no `serverAiStep`, but `travel(input)` still runs whenever `canSimulateMovement` and `isEffectiveAi` hold, dead or alive; the fall-distance reset under Slow Falling or Levitation comes just before it.
+  - `Squid.travel` is only `move(SELF, getDeltaMovement())`, and `Squid.aiStep`'s own tail runs after it while the squid dies. So a dying squid keeps its last pulse and neither sinks nor slows by the shared water drag.
+- **Changed (vendored entities crate):**
+  - `world/families.rs`: `Family::OWN_DYING_TRAVEL` (false) after `MOUNT`, and `family_base_tick` runs `dying_travel` only when it is false (one changed line).
+  - The test probe `SwimProbe` sets it (its tick never moves a dead probe), so the hook has a user before any squid exists.
+- **Tests added** (`world::families::water::tests`):
+  - `a_family_that_moves_its_own_way_while_dying_skips_the_shared_dying_travel`: a dead swim probe in water and in the air keeps its place and its push for a tick; D0's dead probe slides on, slows and sinks in water and falls in the air, as before.
+- **Decisions:**
+  - A const, not a method: whether a family moves its own way while dying is a class fact (`travel` overridden), the same for every mob of the family.
+  - The hook test lives in M2's `water/tests.rs` (water-hooks 1's decision), not in D0's `families/tests.rs`.
+- **Protocol:** none.
+- **Test steps** (regression; nothing new to see). Release build, survival, Normal, by day. Name each screenshot by its label.
+  1. Dig a hole 3 x 3 and 3 deep, pour the water bucket into it and use a rabbit egg on the water. Kill the rabbit with the sword: it flashes red and sinks slowly, as before. **m2-squids-1**
+  2. Use the polar bear egg on the grass and kill the bear: it tips over where it stands, as before.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:rabbit_spawn_egg*2,minecraft:polar_bear_spawn_egg*2,minecraft:water_bucket,minecraft:iron_shovel,minecraft:iron_sword
 ```

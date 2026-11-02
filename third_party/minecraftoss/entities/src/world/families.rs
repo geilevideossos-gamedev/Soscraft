@@ -560,6 +560,7 @@ pub trait Family: Clone + Send + Sized + 'static {
     const KEY: u8;
     const KINDS: &'static [&'static str];
     const MOUNT: bool = false;
+    const OWN_DYING_TRAVEL: bool = false;
 
     fn spawn(kind: &'static str, position: DVec3) -> Option<FamilyMob<Self>>;
 
@@ -1481,7 +1482,7 @@ impl EntityWorld {
             return None;
         }
         let alive = core.health > 0.0;
-        if !alive && !core.no_ai {
+        if !alive && !core.no_ai && !S::OWN_DYING_TRAVEL {
             let _ = dying_travel(
                 &mut core.body,
                 level,

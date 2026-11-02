@@ -1,7 +1,7 @@
 use super::swimming::swim_probe::{self, KIND, SILENT, SILENT_SPLASH, SWIM, SwimProbe};
 use crate::world::families::pests::probe::{self, Probe};
-use crate::world::families::{Breath, Family, FamilyMob};
-use crate::world::{EntityWorld, MobSound};
+use crate::world::families::{Breath, Family, FamilyMob, Hurt};
+use crate::world::{DamageSourceKind, EntityWorld, MobSound};
 use glam::DVec3;
 use minecraftoss_player::{Block, Pos, World};
 use std::collections::HashSet;
@@ -252,5 +252,36 @@ fn an_empty_swim_sound_is_silent_but_the_splash_plays() {
     for sound in heard.iter().filter(|sound| sound.position.x > 4.0) {
         let swim = sound.event.is_empty() || sound.event.ends_with(".swim");
         assert!(!swim, "{sound:?}");
+    }
+}
+
+#[test]
+fn a_family_that_moves_its_own_way_while_dying_skips_the_shared_dying_travel() {
+    assert!(SwimProbe::OWN_DYING_TRAVEL);
+    assert!(!Probe::OWN_DYING_TRAVEL, "the shared dying travel by default");
+    let mut world = EntityWorld::default();
+    let mut pool = Pool::lanes(&[0, 4], 70);
+    let push = DVec3::new(0.0, 0.0, 0.2);
+    let kill = Hurt::new(100.0, "minecraft:generic", DamageSourceKind::Generic);
+    let mut dying = Vec::new();
+    for (kind, x) in [(KIND, 0.5), (probe::KIND, 4.5)] {
+        for y in [67.0, 90.0] {
+            let start = DVec3::new(x, y, 0.5);
+            let id = world.spawn_family_kind(kind, start).unwrap();
+            assert!(world.hurt_family(id, &kill).unwrap().died);
+            world.body_mut(id).unwrap().velocity = push;
+            dying.push((kind, id, start));
+        }
+    }
+    world.tick(&mut pool);
+    for (kind, id, start) in dying {
+        let body = world.body_of(id).unwrap();
+        if kind == KIND {
+            assert_eq!((body.position, body.velocity), (start, push), "{start}");
+        } else {
+            assert!(body.position.z > start.z + 0.1, "{start}: it slides on");
+            let slowed = body.velocity.z < push.z;
+            assert!(slowed && body.velocity.y < 0.0, "{start}: drag and sinking");
+        }
     }
 }
