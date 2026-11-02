@@ -284,4 +284,38 @@ mod tests {
             "redstone opens it without a source, even inside a player's action: {opened:?}"
         );
     }
+
+    #[test]
+    fn an_ominous_item_spawner_places_its_item_and_dies_where_it_floats() {
+        use super::super::entity::Entity;
+        use minecraftoss_core::item::ItemStack;
+        let Some(lib) = library() else { return };
+        let mut level = level(&lib);
+        let (full_at, empty_at) = ([0.5, 70.25, 0.5], [4.5, 70.25, 0.5]);
+        let stack = ItemStack::new("minecraft:wind_charge", 1);
+        let full = level.add_entity(Entity::ominous_item_spawner(full_at, stack, 3));
+        let nothing = ItemStack::empty();
+        let empty = level.add_entity(Entity::ominous_item_spawner(empty_at, nothing, 3));
+        level.take_game_events();
+        level.tick();
+        level.tick();
+        assert!(level.take_game_events().is_empty(), "it waits");
+        level.tick();
+        let posted: Vec<_> = level
+            .take_game_events()
+            .into_iter()
+            .map(|event| (event.event, event.pos, event.source))
+            .collect();
+        let (full, empty) = (EventSource::Entity(full), EventSource::Entity(empty));
+        assert_eq!(
+            posted,
+            [
+                ("minecraft:entity_place", full_at, None),
+                ("minecraft:entity_die", full_at, Some(full)),
+                ("minecraft:entity_die", empty_at, Some(empty)),
+            ],
+            "the item is placed where the spawner floats, then the spawner is killed; an empty one only dies"
+        );
+        assert_eq!(level.ominous_drops.len(), 1);
+    }
 }

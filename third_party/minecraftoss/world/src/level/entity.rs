@@ -644,8 +644,10 @@ impl Level<'_> {
         if !stack.is_empty() {
             self.ominous_drops.push((e.pos, stack));
             self.level_events.push((SPAWN_ITEM_EVENT, block, 1));
+            self.game_event_from("minecraft:entity_place", e.pos, None, None);
         }
         e.removed = true;
+        self.game_event_from("minecraft:entity_die", e.pos, Some(super::game_event::EventSource::Entity(e.id)), None);
     }
 
     /// `summon minecraft:lightning_bolt`: `LightningBolt(type, level)`
