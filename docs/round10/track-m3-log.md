@@ -14,6 +14,7 @@ Files under `third_party/minecraftoss` this track patched or added.
 - Patched (lightning-turns 1): `world/src/natural_spawner/spawning.rs` (the witch's arm in `finalize_conversion`, after the villager's). Changed again: `entities/src/world/lightning.rs` (the turns, the creeper's charge, the mooshroom's flip and their tests).
 - Added (phantoms-live 1): `entities/src/world/families/night/phantoms.rs`, `entities/src/world/families/night/phantoms/goals.rs`, `entities/src/world/families/night/phantoms/tests.rs`.
 - Patched (phantoms-live 1): `entities/src/world/families/night.rs` (`pub mod phantoms;` and the `family_group!` entry), `world/src/natural_spawner/families/night.rs` (the phantom row, its rule, its finalize and its test).
+- Changed again (phantoms-live 2): `entities/src/world/families/night/phantoms.rs`, `night/phantoms/goals.rs` and `night/phantoms/tests.rs` (burning, the cat search and their tests).
 
 ## Hooks
 
@@ -41,6 +42,7 @@ For the orchestrator to copy at the merge of segment m3a:
 - Under World simulation in `docs/MINECRAFT-SURVIVAL.md`, after the lightning-drawn line (lightning-glow 1): "A charged creeper wears vanilla's energy swirl: the blue `creeper_armor` texture scrolling diagonally over a shell two pixels outside its body, unlit and added onto what lies behind it, turning, walking and swelling with the creeper. Friends see it too."
 - Under World simulation in `docs/MINECRAFT-SURVIVAL.md`, after the swirl line (lightning-glow 2): "A struck lightning rod sends 10 to 19 short white-violet sparks darting along its length, and every copper block a bolt cleans sparks on all six faces; friends within 64 blocks see them too."
 - Under Mobs in `docs/MINECRAFT-SURVIVAL.md` (phantoms-live 1): "Phantoms (round 10, track M3) hatch from their egg and `/summon minecraft:phantom`, are saved with their size and anchor, and fly as vanilla's: they circle 5 to 15 blocks around a point five blocks above where they hatched, turning 4 degrees a tick and speeding up to 1.8 on the straight. Every 3 seconds (the first time after 1) they look for the highest player in sight within 16 blocks around and 64 up or down, climb 20 to 39 blocks above that player (never below sea level), and 10 ticks later dive with a screech and bite for 1 heart (a `size` set by command or save bites for 6 plus the size and grows 15 percent a size). A bite, a wall or any hit breaks the dive off: the phantom forgets the player and climbs 10 to 29 blocks above the ground before it looks again. Creative and spectator players and players under a roof are left alone. Friends see the size and the dive's pitch." (phantoms-drawn adds the model.)
+- Under Mobs in `docs/MINECRAFT-SURVIVAL.md`, after the phantom line (phantoms-live 2): "Phantoms catch fire under the open day sky (not in rain or water), with or without AI. While a phantom dives it looks for cats every second: every cat within 16 blocks of it hisses, and the dive breaks off as if it had bitten. Ocelots do not count."
 
 ## Left for later
 
@@ -345,6 +347,37 @@ After 32b231ee ("Minecraft lightning rods spark when struck").
 
 ```
 IW4L_MINECRAFT_KIT=minecraft:phantom_spawn_egg*16,minecraft:cobblestone*64,minecraft:diamond_sword+looting=3,minecraft:golden_apple*8,minecraft:cooked_beef*32,minecraft:water_bucket
+```
+
+#### 2. Minecraft phantoms burn by day and shy away from cats
+
+After 7a93ae34 ("Minecraft phantoms circle, swoop and bite like vanilla").
+
+- **javap (26.3 `client.jar`):**
+  - `Mob.aiStep` calls `burnUndead` after `LivingEntity.aiStep` when the type is in `#burn_in_daylight` (the phantom is). `burnUndead` needs `isAlive()` and `isSunBurnTick()` (the `monsters_burn` environment attribute, the light roll, out of water and rain, the sky in view), then the head slot takes the sun or `igniteForSeconds(8)`. A NoAI mob still runs `aiStep`, so it burns too.
+  - `PhantomSweepAttackGoal.canContinueToUse`, after the target checks and `canUse()`: when `tickCount > catSearchTick`, `catSearchTick = tickCount + 20`, `getEntitiesOfClass(Cat, getBoundingBox().inflate(16), ENTITY_STILL_ALIVE)`, every cat found `hiss()`es, and `isScaredOfCat = !cats.isEmpty()`. It returns `!isScaredOfCat`, so between searches the last answer stands. The search runs only while the phantom swoops.
+  - `Cat.hiss()` is `makeSound(getSoundSet().hissSound())`: `Mob.makeSound` plays it at `getSoundVolume()` (1.0; `Cat` does not override it) and `getVoicePitch()` from the cat's random (`(r - r) * 0.2 + 1`, `+ 1.5` for a kitten). Ocelots are not `Cat`s.
+- **Changed (entities crate):**
+  - `night/phantoms/goals.rs`: `CatSeen { id, low, high }`, `PhantomGoals.cats` and `hiss`, `SweepAttackGoal { scared_of_cat, cat_search_tick }` and the search in its `can_continue` (every cat whose box meets the phantom's box grown by 16 goes into `hiss`).
+  - `night/phantoms.rs`: `cats_of(world)` (the living cats of `felines()`, not ocelots, with their boxes), filled into the goals before they tick and cleared after. Each cat in `hiss` gets its sound set's hiss as a voice at its feet with its own voice pitch, through `feline_mut`; the cat code is unchanged. After `family_after_move`, `burn_undead` while the phantom is alive, with or without AI, from `EntityWorld.monsters_burn`, with no head item.
+- **Tests added** (`world::families::night::phantoms::tests`):
+  - `a_phantom_catches_fire_under_the_day_sky_but_not_in_rain_or_at_night`: under an open day sky it catches fire and is hurt within 300 ticks, without AI too; never in rain or at night.
+  - `a_cat_within_sixteen_blocks_breaks_off_a_swoop_and_hisses`: the sweep goal alone: two cats in reach (one at the edge of the 16-block box) both hiss and it stops; no search for the next 20 ticks while it stays scared; a cat 20 blocks off does nothing. `cats_of` leaves out an ocelot and a dead cat. In the world (600 ticks): with a cat beside the player the cat hisses before any bite; with no cat, a cat 40 blocks off or an ocelot beside the player nothing hisses and the phantom bites.
+- **Decisions:**
+  - Cats need no `Prey::Kinds` (M30, correction 9): the phantom's own sweep goal looks for cats; `feline.rs`, `feline_ai.rs` and `world/felines.rs` are not edited.
+  - The cat list is rebuilt from `felines()` each tick before the goals run, because goals only see `&dyn World`; it is cleared after, so a copied entity world carries no stale cats.
+  - Burning runs after `family_after_move`, as vanilla's `Mob.aiStep` calls `burnUndead` after `LivingEntity.aiStep` (which moves the mob, applies the blocks and pushes), and only while alive.
+- **Runs:** `test -p minecraftoss-entities --locked --lib` (585 passed), `check -p launcher --locked` (green; only the old render_frame and skate warnings). The terrain and world crates are unchanged by this commit.
+- **Test steps:** release build, survival, Normal, flat open ground above y 63, no roof, the kit below, the host is op. The phantom is not drawn yet (phantoms-drawn), so follow it by its sounds. Name each screenshot by its label.
+  1. `/weather clear`, `/time set midnight`, `/summon minecraft:phantom ~ ~2 ~4 {NoAI:1b}`, then `/time set noon`: within a few seconds the phantom's hurt sound comes about once a second, and soon its death sound (it drops no experience or membrane: no player killed it). **m3p-burn-1**
+  2. `/weather rain` and step 1 again: no hurt sounds for 30 seconds. `/weather clear`. **m3p-burn-2**
+  3. `/time set midnight`. Use a cat egg right beside you and stand next to the cat, then use a phantom egg 5 blocks away: the swoop screeches come, but most dives break off with a cat's hiss instead of a bite. **m3p-cat-1**
+  4. Walk 40 blocks away from the cat with the phantom following: the bites come back. **m3p-cat-2**
+  5. Use an ocelot egg beside you instead of a cat: the ocelot does not scare it, and it bites. **m3p-cat-3**
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:phantom_spawn_egg*8,minecraft:cat_spawn_egg*4,minecraft:ocelot_spawn_egg*2,minecraft:golden_apple*8,minecraft:cooked_beef*32
 ```
 
 ## Combined kit

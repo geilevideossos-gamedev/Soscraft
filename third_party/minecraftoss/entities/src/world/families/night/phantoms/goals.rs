@@ -19,6 +19,8 @@ pub const SCAN_REACH: DVec3 = DVec3::new(16.0, 64.0, 16.0);
 pub const SCAN_RANGE: f64 = 64.0;
 pub const BITE_REACH: f64 = 0.20000000298023224;
 pub const TOUCHING: f64 = 4.0;
+pub const CAT_SEARCH_TICKS: i32 = 20;
+pub const CAT_REACH: f64 = 16.0;
 
 pub(super) static SPEC: MonsterSpec = MonsterSpec {
     goal_names: &GOAL_NAMES,
@@ -53,6 +55,13 @@ pub enum AttackPhase {
     Swoop,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CatSeen {
+    pub id: u64,
+    pub low: DVec3,
+    pub high: DVec3,
+}
+
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct PhantomGoals {
     pub phase: AttackPhase,
@@ -62,6 +71,8 @@ pub struct PhantomGoals {
     pub hurt_recently: bool,
     pub swoop: Option<f32>,
     pub bit: bool,
+    pub cats: Vec<CatSeen>,
+    pub hiss: Vec<u64>,
 }
 
 pub fn shared(extra: &mut GoalExtra) -> &mut PhantomGoals {
@@ -263,7 +274,10 @@ impl Goal<MonsterGoalContext> for AttackStrategyGoal {
 }
 
 #[derive(Clone, Default)]
-pub(super) struct SweepAttackGoal;
+pub(super) struct SweepAttackGoal {
+    pub(super) scared_of_cat: bool,
+    pub(super) cat_search_tick: i32,
+}
 
 impl Goal<MonsterGoalContext> for SweepAttackGoal {
     fn controls(&self) -> Controls {
@@ -287,7 +301,25 @@ impl Goal<MonsterGoalContext> for SweepAttackGoal {
                 return false;
             }
         }
-        self.can_start(ctx, world)
+        if !self.can_start(ctx, world) {
+            return false;
+        }
+        if ctx.tick_count > self.cat_search_tick {
+            self.cat_search_tick = ctx.tick_count + CAT_SEARCH_TICKS;
+            let (low, high) = bounds(&ctx.body);
+            let reach = DVec3::splat(CAT_REACH);
+            let around = (low - reach, high + reach);
+            let goals = shared(&mut ctx.extra);
+            let near: Vec<u64> = goals
+                .cats
+                .iter()
+                .filter(|cat| boxes_meet(around, (cat.low, cat.high)))
+                .map(|cat| cat.id)
+                .collect();
+            self.scared_of_cat = !near.is_empty();
+            goals.hiss.extend(near);
+        }
+        !self.scared_of_cat
     }
 
     fn stop(&mut self, ctx: &mut MonsterGoalContext) {

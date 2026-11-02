@@ -2,6 +2,7 @@ use super::goals::{
     AttackPlayerTargetGoal, AttackStrategyGoal, CircleAroundAnchorGoal, SweepAttackGoal,
 };
 use super::*;
+use crate::feline::{Feline, FelineKind};
 use crate::goals::Goal;
 use crate::monster_ai::MonsterGoalContext;
 use crate::world::families::Hurt;
@@ -471,4 +472,163 @@ fn its_anchor_never_sinks_below_sea_level() {
     let around = DVec3::new(to.x - f64::from(anchor.0), 0.0, to.z - f64::from(anchor.2));
     assert!((5.0..=15.0).contains(&around.length()), "{around}");
     assert!((to.y - f64::from(anchor.1) + 4.0 - circle.height as f64).abs() < 1e-5);
+}
+
+struct Sky {
+    rain: bool,
+}
+
+impl World for Sky {
+    fn block(&self, pos: Pos) -> Option<Block> {
+        (pos.1 < 64).then(|| Block::new("minecraft:stone"))
+    }
+
+    fn set_block(&mut self, _: Pos, _: Option<Block>) {}
+
+    fn light_path_cost(&self, pos: Pos) -> f32 {
+        if pos.1 >= 64 { 0.5 } else { -0.5 }
+    }
+
+    fn can_see_sky(&self, pos: Pos) -> bool {
+        pos.1 >= 64
+    }
+
+    fn rain_at(&self, pos: Pos) -> bool {
+        self.rain && pos.1 >= 64
+    }
+}
+
+fn burning(day: bool, rain: bool, no_ai: bool) -> (bool, f32) {
+    let mut world = EntityWorld::default();
+    world.set_monsters_burn(day);
+    let mut sky = Sky { rain };
+    let id = phantom_at(&mut world, DVec3::new(0.5, 80.0, 0.5));
+    world.family_core_mut(id).unwrap().1.no_ai = no_ai;
+    let mut lit = false;
+    for _ in 0..300 {
+        world.tick(&mut sky);
+        let Some(mob) = world
+            .family::<Phantom>()
+            .iter()
+            .find(|mob| mob.core.id == id)
+        else {
+            return (true, 0.0);
+        };
+        lit |= mob.core.body.fire_ticks > 0;
+    }
+    (lit, phantom(&world, id).core.health)
+}
+
+#[test]
+fn a_phantom_catches_fire_under_the_day_sky_but_not_in_rain_or_at_night() {
+    let (lit, health) = burning(true, false, false);
+    assert!(lit && health < MAX_HEALTH, "it burns by day: {health}");
+    let (lit, health) = burning(true, false, true);
+    assert!(lit && health < MAX_HEALTH, "without AI too: {health}");
+    assert_eq!(
+        burning(true, true, false),
+        (false, MAX_HEALTH),
+        "not in rain"
+    );
+    assert_eq!(
+        burning(false, false, false),
+        (false, MAX_HEALTH),
+        "not at night"
+    );
+}
+
+fn hisses_and_bites(cat: Option<(FelineKind, DVec3)>) -> (Option<i32>, Option<i32>, usize) {
+    let mut world = EntityWorld::default();
+    let mut field = open();
+    if let Some((kind, at)) = cat {
+        world.spawn_feline(Feline::new(kind, at), true);
+    }
+    phantom_at(&mut world, DVec3::new(0.5, 70.0, 0.5));
+    let players = [player_at(1, DVec3::new(0.5, 64.0, 0.5))];
+    let (mut hissed, mut bitten, mut hisses) = (None, None, 0);
+    for tick in 1..=600 {
+        world.tick_with_players(&mut field, &players);
+        let hiss = world
+            .take_sounds()
+            .iter()
+            .filter(|sound| sound.event.ends_with(".hiss"))
+            .count();
+        if hiss > 0 {
+            hissed.get_or_insert(tick);
+        }
+        hisses += hiss;
+        if !world.take_player_hits().is_empty() {
+            bitten.get_or_insert(tick);
+        }
+    }
+    (hissed, bitten, hisses)
+}
+
+#[test]
+fn a_cat_within_sixteen_blocks_breaks_off_a_swoop_and_hisses() {
+    let at = DVec3::new(0.5, 80.0, 0.5);
+    let below = player_at(1, DVec3::new(0.5, 64.0, 0.5));
+    let mut ctx = context(at, vec![below]);
+    let cat = |id: u64, x: f64| CatSeen {
+        id,
+        low: DVec3::new(x - 0.3, 64.0, 0.2),
+        high: DVec3::new(x + 0.3, 64.7, 0.8),
+    };
+    let mut goal = SweepAttackGoal::default();
+    let swoop = |ctx: &mut MonsterGoalContext, tick: i32, cats: Vec<CatSeen>| {
+        ctx.target = Some(Target::Player(1));
+        ctx.tick_count = tick;
+        let goals = shared(ctx);
+        goals.phase = AttackPhase::Swoop;
+        goals.cats = cats;
+        goals.hiss.clear();
+    };
+    swoop(&mut ctx, 100, vec![cat(7, 10.5), cat(8, 16.5)]);
+    assert!(!goal.can_continue(&mut ctx, &open()), "a cat in reach");
+    assert_eq!(shared(&mut ctx).hiss, [7, 8], "every cat in reach hisses");
+    swoop(&mut ctx, 110, Vec::new());
+    assert!(!goal.can_continue(&mut ctx, &open()), "still scared");
+    assert!(shared(&mut ctx).hiss.is_empty(), "no search for 20 ticks");
+    swoop(&mut ctx, 120, Vec::new());
+    assert!(!goal.can_continue(&mut ctx, &open()));
+    swoop(&mut ctx, 121, vec![cat(9, 20.5)]);
+    assert!(goal.can_continue(&mut ctx, &open()), "a cat 20 blocks off");
+    assert!(shared(&mut ctx).hiss.is_empty());
+
+    let mut world = EntityWorld::default();
+    let cat = world.spawn_feline(
+        Feline::new(FelineKind::Cat, DVec3::new(2.5, 64.0, 0.5)),
+        true,
+    );
+    let ocelot = world.spawn_feline(
+        Feline::new(FelineKind::Ocelot, DVec3::new(4.5, 64.0, 0.5)),
+        true,
+    );
+    let dead = world.spawn_feline(
+        Feline::new(FelineKind::Cat, DVec3::new(6.5, 64.0, 0.5)),
+        true,
+    );
+    world.feline_mut(dead).unwrap().feline.health = 0.0;
+    let seen = cats_of(&world);
+    assert_eq!(seen.iter().map(|cat| cat.id).collect::<Vec<_>>(), [cat]);
+    assert!((seen[0].low - DVec3::new(2.2, 64.0, 0.2)).length() < 1e-6);
+    assert!(world.felines().iter().any(|entity| entity.id == ocelot));
+
+    let (hissed, bitten, hisses) = hisses_and_bites(None);
+    assert!(hissed.is_none() && bitten.is_some(), "{bitten:?}");
+    let near = Some((FelineKind::Cat, DVec3::new(1.5, 64.0, 0.5)));
+    let (hissed, bitten, hisses_near) = hisses_and_bites(near);
+    let hissed = hissed.expect("the cat hisses at the swooping phantom");
+    assert!(
+        bitten.is_none_or(|bite| bite > hissed),
+        "{hissed} {bitten:?}"
+    );
+    assert!(hisses_near > hisses);
+    for far in [
+        (FelineKind::Cat, DVec3::new(40.5, 64.0, 0.5)),
+        (FelineKind::Ocelot, DVec3::new(1.5, 64.0, 0.5)),
+    ] {
+        let (hissed, bitten, _) = hisses_and_bites(Some(far));
+        assert!(hissed.is_none() && bitten.is_some(), "{far:?}: {bitten:?}");
+    }
 }

@@ -2,14 +2,14 @@ mod goals;
 #[cfg(test)]
 mod tests;
 
-pub use self::goals::{AttackPhase, GOAL_NAMES, PhantomGoals, TARGET_NAMES, block_of};
+pub use self::goals::{AttackPhase, CatSeen, GOAL_NAMES, PhantomGoals, TARGET_NAMES, block_of};
 use crate::fluid::FluidFrame;
 use crate::monster_ai::{MonsterAi, MonsterKind, Target};
 use crate::movement::Body;
 use crate::tempt::PlayerCandidate;
 use crate::wither::wrap_degrees;
 use crate::world::families::{Family, FamilyMob, MobCore, MonsterSpec};
-use crate::world::{EntityWorld, PlayerHitKind, Voice};
+use crate::world::{EntityWorld, PlayerHitKind, Voice, burn_undead, voice_pitch};
 use glam::DVec3;
 use minecraftoss_player::{World, mth};
 
@@ -120,12 +120,29 @@ pub fn move_control(speed: &mut f32, yaw: &mut f32, x_rot: &mut f32, body: &mut 
     body.velocity += (wanted - body.velocity) * 0.2;
 }
 
+pub fn cats_of(world: &EntityWorld) -> Vec<CatSeen> {
+    world
+        .felines()
+        .iter()
+        .filter(|entity| entity.feline.is_cat() && entity.feline.health > 0.0)
+        .map(|entity| {
+            let (low, high) = goals::bounds(&entity.feline.body);
+            CatSeen {
+                id: entity.id,
+                low,
+                high,
+            }
+        })
+        .collect()
+}
+
 #[derive(Default)]
 struct Flight {
     strike: Option<Target>,
     at: DVec3,
     swoop: Option<f32>,
     bit: bool,
+    hiss: Vec<u64>,
 }
 
 fn fly<W: World>(
@@ -135,6 +152,7 @@ fn fly<W: World>(
     players: &[PlayerCandidate],
 ) -> Flight {
     let (game_time, difficulty, sea_level) = (world.game_time, world.difficulty, world.sea_level);
+    let cats = cats_of(world);
     let Some(mob) = world.family_mob_mut::<Phantom>(id) else {
         return Flight::default();
     };
@@ -167,6 +185,8 @@ fn fly<W: World>(
     let goals = goals::shared(&mut ai.state.extra);
     goals.sea_level = sea_level;
     goals.hurt_recently = core.damage.hurt_ticks > 0;
+    goals.cats = cats;
+    goals.hiss.clear();
     let full = core.tick_count <= 1 || (core.tick_count + core.id as i32) % 2 == 0;
     ai.tick_goals(level, full);
     core.random = std::mem::take(&mut ai.state.random);
@@ -177,7 +197,9 @@ fn fly<W: World>(
         at: core.body.position,
         swoop: goals.swoop.take(),
         bit: std::mem::take(&mut goals.bit),
+        hiss: std::mem::take(&mut goals.hiss),
     };
+    goals.cats.clear();
     let to = goals.move_target;
     move_control(
         &mut state.speed,
@@ -262,8 +284,24 @@ impl Family for Phantom {
                     centre,
                 );
             }
+            for cat in flight.hiss {
+                if let Some(entity) = world.feline_mut(cat) {
+                    let pitch = voice_pitch(&mut entity.random, entity.feline.baby());
+                    let hiss = Voice::Event(entity.feline.sounds().hiss, 1.0, pitch);
+                    let at = entity.position();
+                    entity.voices.push((hiss, at));
+                }
+            }
         }
         world.family_after_move::<Self, W>(id, level, base.game_time, ticks);
+        let burns = world.monsters_burn;
+        if let Some(mob) = world.family_mob_mut::<Self>(id) {
+            let core = &mut mob.core;
+            if core.alive() {
+                let (random, body, eye) = (&mut core.random, &mut core.body, core.eye_height);
+                burn_undead(&*level, random, body, eye, burns, None);
+            }
+        }
     }
 
     fn enemy(_kind: &str) -> bool {
