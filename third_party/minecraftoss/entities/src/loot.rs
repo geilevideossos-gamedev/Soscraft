@@ -278,6 +278,11 @@ impl EntityLootBook {
         self.roll_of_type(table, "minecraft:gift", context)
     }
 
+    pub fn roll_table(&mut self, table: &str, loot_type: &str, this_type: &'static str) -> Option<Vec<ItemStack>> {
+        let context = EntityLootContext { this_type: Some(this_type), ..Default::default() };
+        self.roll_of_type(table, loot_type, context)
+    }
+
     fn roll_of_type(&mut self, entity_id: &str, kind: &str, context: EntityLootContext) -> Option<Vec<ItemStack>> {
         let table = self.tables.get(entity_id)?;
         if table["type"].as_str()? != kind {
@@ -914,6 +919,29 @@ mod tests {
             assert!(book.roll_hero_gift(table).is_some(), "{table}");
         }
         assert!(book.roll_hero_gift("minecraft:piglin").is_none(), "an entity table is no gift");
+    }
+
+    #[test]
+    fn a_named_table_rolls_only_as_its_own_type() {
+        let Some(mut book) = jar_book() else {
+            return;
+        };
+        const GIFT: &str = "minecraft:gift";
+        for _ in 0..20 {
+            let scutes = book.roll_table("minecraft:gameplay/armadillo_shed", GIFT, "minecraft:armadillo").unwrap();
+            assert_eq!(scutes.iter().map(|s| (s.id.as_str(), s.count)).collect::<Vec<_>>(), [("minecraft:armadillo_scute", 1)]);
+        }
+        let sneezes: Vec<ItemStack> = (0..7000).flat_map(|_| book.roll_table("minecraft:gameplay/panda_sneeze", GIFT, "minecraft:panda").unwrap()).collect();
+        assert!(sneezes.iter().all(|s| s.id == "minecraft:slime_ball" && s.count == 1));
+        assert!((3..=20).contains(&sneezes.len()), "about one in 700: {}", sneezes.len());
+        assert!(book.roll_table("minecraft:gameplay/panda_sneeze", "minecraft:entity", "minecraft:panda").is_none());
+        assert!(book.roll_table("minecraft:panda", GIFT, "minecraft:panda").is_none(), "an entity table is no gift");
+        assert!(book.roll_table("minecraft:gameplay/nothing", GIFT, "minecraft:panda").is_none());
+        let (mut fresh, mut again) = (jar_book().unwrap(), jar_book().unwrap());
+        for _ in 0..30 {
+            let cat = fresh.roll_cat_gift().unwrap();
+            assert_eq!(again.roll_table(crate::feline::GIFT_TABLE, GIFT, "minecraft:cat").unwrap(), cat, "the cat's gift and its named stream");
+        }
     }
 
     #[test]

@@ -8,7 +8,7 @@ use crate::mob_tracking::MobShow;
 use crate::poof_particles::PoofParticles;
 use crate::portal_particles::PortalParticles;
 use crate::spell_particles::SpellParticles;
-use glam::DVec3;
+use glam::{DVec3, Vec3};
 use minecraftoss_core::nbt::Tag;
 use minecraftoss_entities::look::LookControl;
 use minecraftoss_entities::movement::Body;
@@ -181,6 +181,8 @@ mod water;
 #[cfg(test)]
 mod tests;
 
+pub const GIFT: &str = "minecraft:gift";
+
 pub struct Common {
     pub pos: DVec3,
     pub yaw: f32,
@@ -212,6 +214,7 @@ pub struct ClientFx<'a> {
     pub spell: &'a mut SpellParticles,
     pub portal: &'a mut PortalParticles,
     pub poof: &'a mut PoofParticles,
+    pub item_crumbs: &'a mut Vec<(String, DVec3, Vec<Vec3>)>,
     pub sounds: &'a mut Vec<(String, DVec3, f32, f32)>,
     pub random: &'a mut LegacyRandom,
     pub seen: &'a mut HashMap<u64, i32>,
@@ -476,6 +479,31 @@ pub fn viewer_effects(world: &EntityWorld, poses: &ClientMobs, fx: &mut ViewerFx
     water::viewer_effects(world, poses, fx);
     night::viewer_effects(world, poses, fx);
     bosses::viewer_effects(world, poses, fx);
+}
+
+pub fn drop_family_gifts(
+    mobs: &mut EntityWorld,
+    loot: Option<&mut minecraftoss_entities::loot::EntityLootBook>,
+    level: &mut minecraftoss_world::level::Level<'_>,
+) {
+    let gifts = mobs.take_family_gifts();
+    let Some(loot) = loot else {
+        return;
+    };
+    for gift in gifts {
+        let Some(stacks) = loot.roll_table(gift.table, GIFT, gift.this_type) else {
+            continue;
+        };
+        for stack in stacks.into_iter().filter(|stack| stack.count > 0) {
+            let count = i32::from(stack.count);
+            let mut item = minecraftoss_core::item::ItemStack::new(&stack.id, count);
+            item.components = stack
+                .components
+                .as_ref()
+                .and_then(crate::item_nbt::components_tag);
+            level.spawn_at_location(gift.at.to_array(), item);
+        }
+    }
 }
 
 fn names(kinds: &[&str], kind: &str) -> bool {

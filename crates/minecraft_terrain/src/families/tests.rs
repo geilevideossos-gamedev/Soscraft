@@ -217,6 +217,7 @@ fn client_effects_forget_registered_mobs_that_are_gone() {
     let mut spell = SpellParticles::new(1);
     let mut portal = PortalParticles::default();
     let mut poof = PoofParticles::default();
+    let mut item_crumbs = Vec::new();
     let mut sounds = Vec::new();
     let mut random = LegacyRandom::new(1);
     let mut seen: HashMap<u64, i32> = [(fish, 3), (mite, 4), (999, 5)].into_iter().collect();
@@ -225,6 +226,7 @@ fn client_effects_forget_registered_mobs_that_are_gone() {
         spell: &mut spell,
         portal: &mut portal,
         poof: &mut poof,
+        item_crumbs: &mut item_crumbs,
         sounds: &mut sounds,
         random: &mut random,
         seen: &mut seen,
@@ -266,4 +268,118 @@ fn a_registered_mob_shows_nothing_around_the_viewer_unless_its_family_does() {
     assert!(spell.is_empty());
     assert_eq!(asked.get(), 0, "no block is read for them");
     assert_eq!(random.next_int(1000), LegacyRandom::new(1).next_int(1000));
+}
+
+#[test]
+fn client_effects_lend_the_viewers_item_crumbs_to_every_family() {
+    let mut world = EntityWorld::default();
+    spawn(&mut world, FISH, 0.5);
+    spawn(&mut world, MITE, 2.5);
+    let mobs = seen_by_client(&world);
+    let egg = (
+        "minecraft:egg".to_owned(),
+        DVec3::new(0.5, 65.0, 0.5),
+        vec![Vec3::ZERO; 8],
+    );
+    let mut ambient = AmbientParticles::new(1);
+    let mut spell = SpellParticles::new(1);
+    let mut portal = PortalParticles::default();
+    let mut poof = PoofParticles::default();
+    let mut item_crumbs = vec![egg.clone()];
+    let mut sounds = Vec::new();
+    let mut random = LegacyRandom::new(1);
+    let mut seen = HashMap::new();
+    let mut fx = ClientFx {
+        ambient: &mut ambient,
+        spell: &mut spell,
+        portal: &mut portal,
+        poof: &mut poof,
+        item_crumbs: &mut item_crumbs,
+        sounds: &mut sounds,
+        random: &mut random,
+        seen: &mut seen,
+    };
+    for _ in 0..20 {
+        client_effects(&world, &mobs, &mut fx);
+    }
+    assert_eq!(
+        item_crumbs,
+        [egg],
+        "the viewer keeps its crumbs to draw, and the pests scatter none"
+    );
+}
+
+#[test]
+fn a_queued_family_gift_rolls_its_table_and_drops_at_its_feet() {
+    use minecraftoss_world::level::entity::EntityKind;
+    let Some(root) = std::env::var_os("MINECRAFTOSS_ROOT") else {
+        return;
+    };
+    let jar = std::path::Path::new(&root).join("client.jar");
+    let Ok(mut loot) = minecraftoss_entities::loot::EntityLootBook::from_jar(&jar, 1) else {
+        return;
+    };
+    let Ok(paths) = minecraftoss_core::registries::DataPaths::discover() else {
+        return;
+    };
+    let Ok(registries) = minecraftoss_core::Registries::load(&paths) else {
+        return;
+    };
+    let registries = std::sync::Arc::new(registries);
+    let Ok(terrain) =
+        minecraftoss_generator::terrain::TerrainGenerator::overworld(registries.clone(), 0)
+    else {
+        return;
+    };
+    let terrain = std::sync::Arc::new(terrain);
+    let Ok(gen) =
+        minecraftoss_world::chunk_map::WorldGen::for_dimension(terrain, "minecraft:overworld")
+    else {
+        return;
+    };
+    let mut level = minecraftoss_world::level::Level::new(&gen.library, -64, 384);
+    let items = |level: &minecraftoss_world::level::Level<'_>| -> Vec<_> {
+        let items = level.entities.iter().filter_map(|e| match &e.kind {
+            EntityKind::Item(data) => Some((e.pos, e.delta, data.clone())),
+            _ => None,
+        });
+        items.collect()
+    };
+    const SHED: &str = "minecraft:gameplay/armadillo_shed";
+    let mut world = EntityWorld::default();
+    let feet = DVec3::new(3.5, 70.0, -2.5);
+    world.family_gift(SHED, "minecraft:armadillo", feet);
+    drop_family_gifts(&mut world, Some(&mut loot), &mut level);
+    let dropped = items(&level);
+    assert_eq!(dropped.len(), 1);
+    let (pos, delta, data) = &dropped[0];
+    assert_eq!(
+        (data.stack.id.as_str(), data.stack.count),
+        ("minecraft:armadillo_scute", 1)
+    );
+    assert_eq!(*pos, feet.to_array(), "at its feet");
+    assert_eq!(data.pickup_delay, 10);
+    assert_eq!(delta[1], 0.2);
+    assert!(delta[0].abs() <= 0.1 && delta[2].abs() <= 0.1);
+    assert!(world.take_family_gifts().is_empty(), "each gift drops once");
+
+    for table in ["minecraft:panda", "minecraft:gameplay/nothing"] {
+        world.family_gift(table, "minecraft:panda", feet);
+    }
+    drop_family_gifts(&mut world, Some(&mut loot), &mut level);
+    assert_eq!(items(&level).len(), 1, "only gift tables drop");
+    world.family_gift(SHED, "minecraft:armadillo", feet);
+    drop_family_gifts(&mut world, None, &mut level);
+    assert_eq!(items(&level).len(), 1, "no loot book, no gift");
+    assert!(world.take_family_gifts().is_empty(), "and none left over");
+    for _ in 0..7000 {
+        world.family_gift("minecraft:gameplay/panda_sneeze", "minecraft:panda", feet);
+    }
+    drop_family_gifts(&mut world, Some(&mut loot), &mut level);
+    let slime: Vec<_> = items(&level)
+        .into_iter()
+        .filter(|(_, _, data)| data.stack.id == "minecraft:slime_ball")
+        .collect();
+    assert!((3..=20).contains(&slime.len()), "{}", slime.len());
+    assert_eq!(items(&level).len(), 1 + slime.len());
 }

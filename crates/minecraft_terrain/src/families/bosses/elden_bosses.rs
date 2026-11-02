@@ -513,11 +513,13 @@ mod tests {
         }
 
         fn effects(&mut self) {
+            let mut item_crumbs = Vec::new();
             let mut fx = ClientFx {
                 ambient: &mut self.ambient,
                 spell: &mut self.spell,
                 portal: &mut self.portal,
                 poof: &mut self.poof,
+                item_crumbs: &mut item_crumbs,
                 sounds: &mut self.sounds,
                 random: &mut self.random,
                 seen: &mut self.seen,

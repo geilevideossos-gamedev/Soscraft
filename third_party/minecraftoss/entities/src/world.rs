@@ -1066,7 +1066,8 @@ fn monster_ai_step(ai: &mut MonsterAi, body: &mut Body, health: f32, random: &mu
     // move leaves the sideways input a strafe set, so it keeps fading.
     ai.sideways *= 0.98;
     ai.forward *= 0.98;
-    let control = ai.move_control.tick(
+    let still = ai.still.is_some_and(|still| still(&ai.state));
+    let control = if still { crate::control::MoveFrame { yaw: ai.yaw, speed: ai.speed, forward: ai.forward, sideways: ai.sideways, jump: false } } else { ai.move_control.tick(
         position,
         body.on_ground,
         ai.yaw,
@@ -1078,7 +1079,7 @@ fn monster_ai_step(ai: &mut MonsterAi, body: &mut Body, health: f32, random: &mu
         body.step_height,
         obstacle_top,
         |_, _| true,
-    );
+    ) };
     ai.yaw = control.yaw;
     ai.speed = control.speed;
     ai.forward = control.forward;

@@ -62,8 +62,12 @@ impl Level<'_> {
     }
 
     /// `Level.isRaining`.
-    pub(super) fn is_raining(&self) -> bool {
-        self.sky.as_ref().is_some_and(|s| s.weather.rain_level > 0.2)
+    pub fn is_raining(&self) -> bool {
+        self.sky.as_ref().is_some_and(|s| s.can_have_weather && f64::from(s.weather.rain_level) > 0.2)
+    }
+
+    pub fn is_thundering(&self) -> bool {
+        self.sky.as_ref().is_some_and(|s| s.can_have_weather && f64::from(s.weather.thunder_level * s.weather.rain_level) > 0.9)
     }
 
     /// `Level.isRainingAt`: raining, open to the sky, at or above the

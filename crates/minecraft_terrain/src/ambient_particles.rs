@@ -50,6 +50,10 @@ const MOUTH_POINTS: usize = 8;
 const FLAME_SPEEDS: usize = 6;
 const TOTEM_EMITTER_TICKS: i32 = 30;
 const TOTEM_TRIES: usize = 16;
+const SNEEZE_COLOR: [f32; 3] = [0.22, 1.0, 0.53];
+const SNEEZE_ALPHA: f32 = 0.4;
+const SNEEZE_FRICTION: f32 = 0.96;
+const SNEEZE_SCALE: f32 = 1.875;
 
 type Boxes = Vec<([f64; 3], [f64; 3])>;
 
@@ -61,6 +65,7 @@ pub enum Kind {
     CosySmoke,
     SignalSmoke,
     Poof,
+    Sneeze,
     Explosion,
     ExplosionEmitter,
     SonicBoom,
@@ -310,6 +315,19 @@ impl Particle {
         particle.lifetime = (16.0 / (f64::from(random.next_float()) * 0.8 + 0.2)) as i32 + 2;
         particle.gravity = -0.1;
         particle.friction = 0.9;
+        particle
+    }
+
+    fn sneeze(at: DVec3, motion: DVec3, random: &mut LegacyRandom) -> Self {
+        let mut particle = Self::base(Kind::Sneeze, at, DVec3::ZERO, random);
+        particle.friction = SNEEZE_FRICTION;
+        particle.velocity = particle.velocity * f64::from(0.1_f32) + motion;
+        let _ = random.next_float();
+        particle.color = SNEEZE_COLOR;
+        particle.alpha = SNEEZE_ALPHA;
+        particle.quad_size *= SNEEZE_SCALE;
+        let ticks = (8.0 / (f64::from(random.next_float()) * 0.8 + 0.3)) as i32;
+        particle.lifetime = (ticks as f32 * 2.5).max(1.0) as i32;
         particle
     }
 
@@ -631,6 +649,7 @@ impl Particle {
             self.kind,
             Kind::CosySmoke
                 | Kind::SignalSmoke
+                | Kind::Sneeze
                 | Kind::EndRod
                 | Kind::Totem
                 | Kind::TrialOmen
@@ -643,7 +662,7 @@ impl Particle {
 
     fn sprite(&self) -> Option<ResourceId> {
         let name = match self.kind {
-            Kind::Smoke | Kind::LargeSmoke | Kind::Poof | Kind::Snowflake => {
+            Kind::Smoke | Kind::LargeSmoke | Kind::Poof | Kind::Sneeze | Kind::Snowflake => {
                 let step = self.age * (GENERIC_SPRITES - 1) / self.lifetime.max(1);
                 format!(
                     "generic_{}",
@@ -717,6 +736,7 @@ impl Particle {
         match self.kind {
             Kind::Smoke
             | Kind::LargeSmoke
+            | Kind::Sneeze
             | Kind::Crit
             | Kind::DragonBreath
             | Kind::TrialSpawnerDetection
@@ -1327,6 +1347,7 @@ impl AmbientParticles {
                 Particle::campfire_smoke(kind, at, motion, random)
             }
             Kind::Poof => Particle::poof(at, motion, random),
+            Kind::Sneeze => Particle::sneeze(at, motion, random),
             Kind::Explosion => Particle::huge_explosion(at, motion.x, random),
             Kind::ExplosionEmitter => Particle::emitter(at, random),
             Kind::SonicBoom => Particle::sonic_boom(at, random),
@@ -1398,6 +1419,7 @@ impl AmbientParticles {
             }
             Kind::CosySmoke | Kind::SignalSmoke => particle.drift(scene, &mut cache, random),
             Kind::EndRod | Kind::Crit | Kind::TrialOmen => particle.coast(),
+            Kind::Sneeze => particle.coast(),
             Kind::OminousSpawning => particle.fly_home(),
             Kind::VaultConnection => particle.fly_to_keyhole(),
             Kind::DragonBreath => particle.breathe(),
@@ -2139,6 +2161,44 @@ mod tests {
             spit.tick(&scene);
         }
         assert!(spit.particles[0].position.y < at.y, "it falls: {}", spit.particles[0].position.y);
+    }
+
+    #[test]
+    fn a_sneeze_is_a_green_translucent_cloud() {
+        let at = DVec3::new(0.5, 65.05, 0.5);
+        let motion = DVec3::new(0.05, -0.5, -0.02);
+        let stone = Blocks(HashMap::from([((0, 64, 0), Block::new("minecraft:stone"))]));
+        let mut lifetimes = Vec::new();
+        for seed in 0..200 {
+            let mut particles = AmbientParticles::new(seed);
+            particles.add(Kind::Sneeze, at, motion);
+            let cloud = particles.particles[0].clone();
+            assert_eq!(cloud.kind, Kind::Sneeze);
+            assert_eq!((cloud.color, cloud.alpha, cloud.friction, cloud.gravity), ([0.22, 1.0, 0.53], 0.4, 0.96, 0.0));
+            assert!(particles_translucent(Kind::Sneeze));
+            assert!((0.1875..0.375).contains(&cloud.quad_size), "{}", cloud.quad_size);
+            let drift = cloud.velocity - motion;
+            assert!(drift.x.abs() <= 0.0181 && drift.z.abs() <= 0.0181, "{drift}");
+            assert!((-0.0081..=0.0281).contains(&drift.y), "{drift}");
+            lifetimes.push(cloud.lifetime);
+            assert_eq!(cloud.sprite().map(|id| id.key()).as_deref(), Some("minecraft:particle/generic_7"));
+            let mut old = cloud.clone();
+            old.age = old.lifetime;
+            assert_eq!(old.sprite().map(|id| id.key()).as_deref(), Some("minecraft:particle/generic_0"));
+            assert_eq!(cloud.size_at(0.0), 0.0, "it swells from nothing");
+            old.age = old.lifetime / 2;
+            assert_eq!(old.size_at(0.0), cloud.quad_size);
+            particles.tick(&stone);
+            let ticked = &particles.particles[0];
+            assert_eq!(ticked.position, at + cloud.velocity, "it passes through blocks");
+            assert_eq!(ticked.velocity, cloud.velocity * f64::from(0.96_f32));
+            for _ in 0..cloud.lifetime {
+                particles.tick(&stone);
+            }
+            assert!(particles.is_empty(), "gone after its lifetime");
+        }
+        assert!(lifetimes.iter().all(|ticks| (17..=65).contains(ticks)), "{lifetimes:?}");
+        assert!(lifetimes.iter().any(|&ticks| ticks < 25) && lifetimes.iter().any(|&ticks| ticks > 50));
     }
 
     #[test]

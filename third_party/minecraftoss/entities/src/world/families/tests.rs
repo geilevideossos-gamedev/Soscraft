@@ -744,6 +744,89 @@ fn a_registered_mob_runs_its_own_ai_step_with_its_core_in_sync() {
     );
 }
 
+fn holds_still(_ctx: &MonsterGoalContext) -> bool {
+    true
+}
+
+#[test]
+fn a_registered_mob_held_still_keeps_its_heading_and_drifts_to_a_stop() {
+    let field = Field::default();
+    let step = |world: &mut EntityWorld, id: u64| {
+        let before = probe(world, id).core.body.position;
+        let strike =
+            world.family_goal_step::<Probe, Field>(id, &field, &[], probe::SPEED, |probe| {
+                &mut *probe.ai
+            });
+        assert_eq!(strike, None);
+        let mob = probe(world, id);
+        (
+            mob.core.yaw,
+            mob.state.ai.forward,
+            mob.core.body.position - before,
+        )
+    };
+    let walking = |world: &mut EntityWorld, held: bool| {
+        let id = probe_at(world, KIND, at(0.5));
+        let ai = &mut probe_mut(world, id).state.ai;
+        assert!(ai.still.is_none(), "only its family holds a mob still");
+        if held {
+            ai.still = Some(holds_still);
+        }
+        ai.retain_goals(&[]);
+        ai.move_control
+            .set_wanted_position(DVec3::new(8.5, 64.0, 0.5), 1.0);
+        ai.forward = 0.3;
+        ai.speed = 0.3;
+        id
+    };
+
+    let mut world = EntityWorld::default();
+    let id = walking(&mut world, false);
+    let first = step(&mut world, id);
+    assert_eq!((first.0, first.1), (270.0, 0.3), "it turns east to walk");
+    let second = step(&mut world, id);
+    assert_eq!(second.1, 0.0, "and stops once it got there");
+    for _ in 0..40 {
+        step(&mut world, id);
+    }
+    let (_, _, moved) = step(&mut world, id);
+    assert!(moved.length() < 1e-6, "{moved}");
+
+    let mut world = EntityWorld::default();
+    let id = walking(&mut world, true);
+    let mut input = 0.3_f32;
+    let mut steps = Vec::new();
+    for tick in 0..300 {
+        let (yaw, forward, moved) = step(&mut world, id);
+        input *= 0.98;
+        assert_eq!(yaw, 0.0, "tick {tick}: it keeps its heading");
+        assert_eq!(forward, input, "tick {tick}: the input fades");
+        assert!(moved.x.abs() < 1e-9, "tick {tick}: straight ahead");
+        steps.push(moved.z);
+    }
+    let fastest = steps
+        .iter()
+        .enumerate()
+        .max_by(|a, b| a.1.total_cmp(b.1))
+        .map(|(tick, _)| tick)
+        .unwrap();
+    assert!(steps[fastest] > 0.05, "it drifts on: {}", steps[fastest]);
+    assert!(
+        steps[fastest..].windows(2).all(|pair| pair[1] <= pair[0]),
+        "then slows"
+    );
+    assert!(steps[299] < 0.001, "to a stop: {}", steps[299]);
+    let ai = &probe(&world, id).state.ai;
+    assert_eq!(
+        ai.move_control.operation,
+        crate::control::MoveOperation::MoveTo,
+        "its move control still waits to walk"
+    );
+    probe_mut(&mut world, id).state.ai.still = None;
+    let (yaw, forward, _) = step(&mut world, id);
+    assert_eq!((yaw, forward), (270.0, 0.3), "let go, it walks on");
+}
+
 #[test]
 fn an_iron_golem_hunts_an_enemy_registered_mob() {
     for (kind, hunted) in [(KIND, true), (ANIMAL, false)] {
@@ -1185,4 +1268,33 @@ fn a_typed_hit_reaches_the_player() {
     assert!(struck.is_some_and(|result| result.applied));
     assert_eq!(probe(&world, victim).core.health, probe::MAX_HEALTH - 3.0);
     assert_eq!(probe(&world, id).core.swings, 2);
+}
+
+#[test]
+fn a_queued_family_gift_waits_until_the_server_takes_it() {
+    const SNEEZE: &str = "minecraft:gameplay/panda_sneeze";
+    const SHED: &str = "minecraft:gameplay/armadillo_shed";
+    let mut world = EntityWorld::default();
+    assert!(world.take_family_gifts().is_empty());
+    world.family_gift(SNEEZE, "minecraft:panda", at(1.5));
+    world.family_gift(SHED, "minecraft:armadillo", at(4.5));
+    let view = world.clone_where(|_| true);
+    assert!(view.families.gifts.is_empty(), "a view drops no gifts");
+    let gifts = world.take_family_gifts();
+    assert_eq!(
+        gifts,
+        [
+            FamilyGift {
+                table: SNEEZE,
+                this_type: "minecraft:panda",
+                at: at(1.5),
+            },
+            FamilyGift {
+                table: SHED,
+                this_type: "minecraft:armadillo",
+                at: at(4.5),
+            },
+        ]
+    );
+    assert!(world.take_family_gifts().is_empty(), "each gift once");
 }

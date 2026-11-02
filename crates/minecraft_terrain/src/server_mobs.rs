@@ -366,6 +366,14 @@ impl PlayerWorld for MobWorld<'_> {
         self.level.borrow_mut().is_raining_at(minecraftoss_core::BlockPos::new(x, y, z))
     }
 
+    fn raining(&self) -> bool {
+        self.level.borrow().is_raining()
+    }
+
+    fn thundering(&self) -> bool {
+        self.level.borrow().is_thundering()
+    }
+
     fn snow_golem_melts(&self, (x, y, z): (i32, i32, i32)) -> bool {
         self.level.borrow().snow_golem_melts_at(x, y, z)
     }
@@ -2347,6 +2355,67 @@ pub fn in_chunk(position: DVec3, chunk: ChunkPos) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mob_worlds_know_when_it_rains_and_thunders() {
+        let Ok(paths) = minecraftoss_core::registries::DataPaths::discover() else { return };
+        let Ok(registries) = Registries::load(&paths) else { return };
+        let registries = std::sync::Arc::new(registries);
+        let Ok(terrain) = minecraftoss_generator::terrain::TerrainGenerator::overworld(registries.clone(), 0) else { return };
+        let Ok(gen) = minecraftoss_world::chunk_map::WorldGen::for_dimension(std::sync::Arc::new(terrain), "minecraft:overworld") else { return };
+        let gen: &'static minecraftoss_world::chunk_map::WorldGen = Box::leak(Box::new(gen));
+        let states = BlockStates::new(registries, 0, -64, 384).unwrap();
+        let mut level = Level::new(&gen.library, -64, 384);
+        level.set_dimension("minecraft:overworld").unwrap();
+        let tables = MobTables::new(&level, &states);
+        let weather = |level: &mut Level<'static>| {
+            let world = MobWorld { level: RefCell::new(level), states: &states, tables: &tables };
+            (world.raining(), world.thundering())
+        };
+        assert_eq!(weather(&mut level), (false, false), "a clear sky");
+        level.set_weather(0, 1000, true, true);
+        let (mut rain_from, mut thunder_from) = (None, None);
+        for tick in 1..=120 {
+            level.tick();
+            let (raining, thundering) = weather(&mut level);
+            if raining {
+                rain_from.get_or_insert(tick);
+            } else {
+                assert_eq!(rain_from, None, "tick {tick}: the rain keeps falling");
+            }
+            if thundering {
+                thunder_from.get_or_insert(tick);
+            } else {
+                assert_eq!(thunder_from, None, "tick {tick}: the storm keeps on");
+            }
+        }
+        assert!(matches!(rain_from, Some(20 | 21)), "rain above 0.2: {rain_from:?}");
+        assert_eq!(thunder_from, Some(95), "thunder times rain above 0.9");
+        let sky = level.sky.as_mut().unwrap();
+        sky.weather.rain_level = 0.5;
+        sky.weather.thunder_level = 1.0;
+        assert_eq!(weather(&mut level), (true, false), "thunder needs rain too");
+        level.sky.as_mut().unwrap().weather.rain_level = 0.0;
+        assert_eq!(weather(&mut level), (false, false));
+        level.set_weather(0, 1000, true, false);
+        for _ in 0..120 {
+            level.tick();
+        }
+        assert_eq!(weather(&mut level), (true, false), "rain alone");
+        level.set_weather(1000, 0, false, false);
+        for _ in 0..120 {
+            level.tick();
+        }
+        assert_eq!(weather(&mut level), (false, false), "cleared");
+        for dimension in ["minecraft:the_nether", "minecraft:the_end"] {
+            let mut level = Level::new(&gen.library, -64, 384);
+            level.set_dimension(dimension).unwrap();
+            let sky = level.sky.as_mut().unwrap();
+            sky.weather.rain_level = 1.0;
+            sky.weather.thunder_level = 1.0;
+            assert_eq!(weather(&mut level), (false, false), "{dimension} has no weather");
+        }
+    }
 
     fn strider_tag(fields: &str) -> Tag {
         minecraftoss_core::snbt::parse_compound(&format!("{{id:\"minecraft:strider\",Pos:[1.5d,64.5d,2.5d],Rotation:[90.0f,0.0f],{fields}}}")).unwrap()
