@@ -457,6 +457,13 @@ impl Despawn {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Breath {
+    Lungs { max: i32, refill: i32 },
+    Gills,
+    Own,
+}
+
 pub struct MonsterSpec {
     pub goal_names: &'static [&'static str],
     pub target_names: &'static [&'static str],
@@ -612,6 +619,13 @@ pub trait Family: Clone + Send + Sized + 'static {
 
     fn breathes_water(mob: &FamilyMob<Self>) -> bool {
         crate::wither::is_undead(mob.core.kind)
+    }
+
+    fn breath(_mob: &FamilyMob<Self>) -> Breath {
+        Breath::Lungs {
+            max: living::MAX_AIR,
+            refill: 4,
+        }
     }
 
     fn enemy(_kind: &str) -> bool {
@@ -1387,9 +1401,17 @@ impl EntityWorld {
         let eye = mob.core.eye_height;
         hazards::suffocate(mob, level, eye, game_time);
         let breathes = S::breathes_water(mob) || mob.core.effects.has(MobEffect::WaterBreathing);
-        if mob.core.health > 0.0 && breathe(&mut mob.core.body, level, eye, breathes) {
-            let drown =
-                Hurt::new(2.0, "minecraft:drown", DamageSourceKind::Generic).bypassing_armor();
+        let drown = Hurt::new(2.0, "minecraft:drown", DamageSourceKind::Generic).bypassing_armor();
+        let breath = S::breath(mob);
+        let out_of_air = match breath {
+            Breath::Lungs { max, refill } => {
+                let body = &mut mob.core.body;
+                mob.core.health > 0.0
+                    && living::breathe_up_to(body, level, eye, breathes, max, refill)
+            }
+            Breath::Gills | Breath::Own => false,
+        };
+        if out_of_air {
             S::hurt(mob, &drown);
         }
         let removed = mob.core.damage.tick();
@@ -1425,6 +1447,11 @@ impl EntityWorld {
                 core.ambient_sound_time += 1;
             }
         }
+        let alive = core.health > 0.0;
+        if breath == Breath::Gills && living::breathe_with_gills(&mut core.body, alive) {
+            S::hurt(mob, &drown);
+        }
+        let core = &mut mob.core;
         if removed {
             return None;
         }

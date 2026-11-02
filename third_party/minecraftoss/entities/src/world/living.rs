@@ -13,6 +13,10 @@ pub(crate) const MAX_AIR: i32 = 300;
 /// eyes must be in water (`isEyeInFluid`); `breathes_water` is
 /// `#can_breathe_under_water` (the undead among these mobs).
 pub(crate) fn breathe(body: &mut Body, world: &impl World, eye_height: f32, breathes_water: bool) -> bool {
+    breathe_up_to(body, world, eye_height, breathes_water, MAX_AIR, 4)
+}
+
+pub(crate) fn breathe_up_to(body: &mut Body, world: &impl World, eye_height: f32, breathes_water: bool, max: i32, refill: i32) -> bool {
     if FluidFrame::eye_in_water(world, body.position, eye_height) && !breathes_water {
         // `decreaseAirSupply`: no oxygen bonus here.
         body.air -= 1;
@@ -20,8 +24,21 @@ pub(crate) fn breathe(body: &mut Body, world: &impl World, eye_height: f32, brea
             body.air = 0;
             return true;
         }
-    } else if body.air < MAX_AIR {
-        body.air = (body.air + 4).min(MAX_AIR);
+    } else if body.air < max {
+        body.air = if refill >= max { max } else { (body.air + refill).min(max) };
+    }
+    false
+}
+
+pub(crate) fn breathe_with_gills(body: &mut Body, alive: bool) -> bool {
+    if !alive || body.touching_water {
+        body.air = MAX_AIR;
+        return false;
+    }
+    body.air -= 1;
+    if body.air <= -20 {
+        body.air = 0;
+        return true;
     }
     false
 }
