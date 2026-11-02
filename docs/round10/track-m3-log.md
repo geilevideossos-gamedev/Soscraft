@@ -43,6 +43,7 @@ For the orchestrator to copy at the merge of segment m3a:
 - Under World simulation in `docs/MINECRAFT-SURVIVAL.md`, after the swirl line (lightning-glow 2): "A struck lightning rod sends 10 to 19 short white-violet sparks darting along its length, and every copper block a bolt cleans sparks on all six faces; friends within 64 blocks see them too."
 - Under Mobs in `docs/MINECRAFT-SURVIVAL.md` (phantoms-live 1): "Phantoms (round 10, track M3) hatch from their egg and `/summon minecraft:phantom`, are saved with their size and anchor, and fly as vanilla's: they circle 5 to 15 blocks around a point five blocks above where they hatched, turning 4 degrees a tick and speeding up to 1.8 on the straight. Every 3 seconds (the first time after 1) they look for the highest player in sight within 16 blocks around and 64 up or down, climb 20 to 39 blocks above that player (never below sea level), and 10 ticks later dive with a screech and bite for 1 heart (a `size` set by command or save bites for 6 plus the size and grows 15 percent a size). A bite, a wall or any hit breaks the dive off: the phantom forgets the player and climbs 10 to 29 blocks above the ground before it looks again. Creative and spectator players and players under a roof are left alone. Friends see the size and the dive's pitch." (phantoms-drawn adds the model.)
 - Under Mobs in `docs/MINECRAFT-SURVIVAL.md`, after the phantom line (phantoms-live 2): "Phantoms catch fire under the open day sky (not in rain or water), with or without AI. While a phantom dives it looks for cats every second: every cat within 16 blocks of it hisses, and the dive breaks off as if it had bitten. Ocelots do not count."
+- Under Mobs in `docs/MINECRAFT-SURVIVAL.md`, after the burning line (phantoms-drawn 1): "Phantoms are drawn as vanilla draws them: the eight-part model with two glowing green eyes that stay lit in the dark, wings that beat 16 degrees up and down with the tail curling at each beat, a model 15 percent larger for each size, and the body pitched with its climbs and dives. They also show in monster spawner cages, wingtips poking out. Friends see the same."
 
 ## Left for later
 
@@ -378,6 +379,47 @@ After 7a93ae34 ("Minecraft phantoms circle, swoop and bite like vanilla").
 
 ```
 IW4L_MINECRAFT_KIT=minecraft:phantom_spawn_egg*8,minecraft:cat_spawn_egg*4,minecraft:ocelot_spawn_egg*2,minecraft:golden_apple*8,minecraft:cooked_beef*32
+```
+
+### Group phantoms-drawn
+
+#### 1. Minecraft phantoms are drawn like vanilla
+
+After 6c28a475 ("Minecraft phantoms burn by day and shy away from cats").
+
+- **javap (26.3 `client.jar`):**
+  - `PhantomModel.createBodyLayer` (64 x 64): `body` (0,8) box(-3,-2,-8; 5,3,9), xRot -0.1, holding `tail_base` (3,20) box(-2,0,0; 3,2,6) at (0,-2,1) with `tail_tip` (4,29) box(-1,0,0; 1,1,6) at (0,0.5,6); `left_wing_base` (23,12) box(0,0,0; 6,2,9) at (2,-2,-8), zRot 0.1, with `left_wing_tip` (16,24) box(0,0,0; 13,1,9) at (6,0,0), zRot 0.1; `right_wing_base` and `right_wing_tip` mirrored (`CubeListBuilder.mirror`) at (-3,-2,-8) and (-6,0,0), boxes from -6 and -13, zRot -0.1; `head` (0,0) box(-4,-2,-5; 7,3,5) at (0,1,-7), xRot 0.2.
+  - `PhantomModel.setupAnim`: `f = flapTime * 7.448451 * 0.017453292`; both left wing parts get `zRot = Mth.cos(f) * 16 * 0.017453292` (replacing their 0.1), the right parts its negative; both tail parts get `xRot = -(5 + Mth.cos(f * 2) * 5) * 0.017453292`.
+  - `PhantomRenderer`: shadow 0.75, `textures/entity/phantom/phantom.png`, the `PhantomEyesLayer`; `extractRenderState`: `flapTime = getUniqueFlapTickOffset() + ageInTicks` (`id * 3`), `size`; `scale`: `s = 1 + 0.15 * size`, `scale(s, s, s)`, `translate(0, 1.3125, 0.1875)`; `setupRotations`: `MobRenderer`'s, then `Axis.XP` by `xRot`. No `getFlipDegrees` override (90). `LivingEntityRenderer.submit`: `setupRotations`, `scale(-1, -1, 1)`, the renderer's `scale`, `translate(0, -1.501, 0)`. The model's render type is `EntityModel`'s default `entityCutoutNoCull`.
+  - `PhantomEyesLayer`: `RenderTypes.eyes(phantom_eyes.png)`; `RenderPipelines.EYES` is `EYES_SNIPPET` (`EMISSIVE`, `NO_OVERLAY`, `NO_CARDINAL_LIGHTING`) with TRANSLUCENT blending and no depth write.
+  - `phantom_eyes.png` (26.3 jar): four opaque texels, (5,6), (6,6), (10,6) and (11,6), all on the head's north face (u 5 to 12, v 5 to 8). No other part carries eye texels.
+- **Changed (terrain):**
+  - New `families/night/phantoms/render.rs`: `PARTS` (the eight parts with their parents), `flap_offset`/`flap_time` (`id * 3 + age`), `flap` (wing and tail angles), `part_poses` (each part under its parent), `model_root` (the body turn with the death tip, the dive's pitch from `MobPose.head_pitch`, the flip, the size scale and the 1.3125/0.1875 lift) and `append_phantoms`: the model in the cell's light, then the head again in `phantom_eyes` at light 15, unshaded and without the hurt overlay.
+  - `families/night/phantoms.rs`: `mod render;`, `TEXTURES` (phantom and phantom_eyes), `CAGE_MARGIN` 0.3, and `draw` into `out.models` (the mesh without back-face culling).
+  - Friends draw it from their mirror world as the host does; the size comes in the look tag and the pitch in `ServerMob.x_rot` (phantoms-live), so nothing in the protocol changed.
+- **Tests added** (terrain `families::night::phantoms::render::tests`):
+  - `a_phantom_is_eight_cubes_on_a_64_texture`: the eight parts in order, each box's UVs inside 64 x 64, parents before children, the right wing mirrored; the drawn phantom is 54 faces (the eight cubes and the head again), the model in the phantom's atlas region and the cell's light, shaded and unhurt; the eyes in their own region at light 15, unshaded and without overlay, on the head's vertices; 48 faces with no eyes texture; nothing for a phantom the client has not seen.
+  - `its_wings_flap_sixteen_degrees_and_its_tail_curls_with_the_flap_time`: 16 degrees and a 10-degree curl at flap time 0, level wings and a straight tail a quarter beat later, the other way half a beat later, the same again a full beat (48.3 ticks) later; `flap_time(7, 2.5)` is 23.5; the wing tip and tail tip hang from their bases under the body's -0.1; both wingtips move together, more than 18 pixels out.
+  - `a_size_four_phantom_draws_one_point_six_times_larger_and_pitches_with_its_dive`: every vertex of a size 4 phantom is 1.6 times as far from its feet; the body's middle sits 0.24 above the feet; the wings span more than 2.3 blocks; at a dive pitch of about -35 degrees every vertex is the level model turned by that pitch about the feet, and the head is below the tail.
+- **Decisions:**
+  - The render file is `families/night/phantoms/render.rs` (a submodule, as M1's polar bears and rabbits and D's breezes do), not `phantoms_render.rs` beside the family file as the brief says: the group file `night.rs` keeps only registration lines. Its tests are `families::night::phantoms::render::tests`.
+  - Eyes: only the head is drawn again (the texel check above). They go into the same cutout mesh as the body, at light 15, unshaded and with no hurt overlay, as `spider_render.rs` and `enderman_render.rs` draw their eyes. Vanilla blends them TRANSLUCENT without writing depth; the four texels are fully opaque, so the picture is the same.
+  - `CAGE_MARGIN` 0.3: the phantom's 2.7-block wingspan at the cage scale of 0.53125 reaches about 0.23 past the cage's sides, as the wings do in vanilla's spawner.
+  - The body's yaw is the client's generic `BodyRotationControl` (`client_mobs.rs`, on D0's never-edit list). Vanilla's `PhantomBodyRotationControl` sets the body to the yaw every tick; the generic control does the same whenever the phantom moves, which a phantom with AI always does. A still `NoAI` phantom's body turns to its head, and its head yaw is its yaw, within 20 ticks.
+  - The flap time counts each viewer's own ticks (`ClientMob.tick_count`), as vanilla's client `tickCount` does, so two windows can show the wings at different points of the beat.
+- **Runs:** `test -p minecraft_terrain --locked --lib` (1757 passed, 3 ignored), `check -p launcher --locked` (green; only the old render_frame and skate warnings).
+- **Test steps:** release build, survival, Normal, flat open ground above y 63, no roof, `/time set midnight`, the kit below, the host is op. Name each screenshot by its label.
+  1. Use a phantom egg on the ground 5 blocks away: a dark blue-grey phantom with long wings and two small glowing green eyes circles 5 to 15 blocks around a point about 5 blocks above where it hatched. Its wings beat slowly up and down and its tail curls with each beat; it tips its body up when it climbs and down when it sinks. **m3p-drawn-1**
+  2. Stand in the open and watch it dive at you: it points its head down at you as it comes, then levels out and climbs away. **m3p-drawn-2**
+  3. Hit it with the sword: it flashes red, but its eyes stay green. Kill it: it tips over onto its side as it dies. **m3p-drawn-3**
+  4. `/summon minecraft:phantom ~ ~3 ~5 {NoAI:1b,size:4}` and `/summon minecraft:phantom ~4 ~3 ~5 {NoAI:1b}`: the first is 1.6 times as large as the second, and both beat their wings in place. **m3p-drawn-4**
+  5. Build a 3 x 3 cobblestone hut 3 blocks high with no light inside, stand in it and run `/summon minecraft:phantom ~ ~1 ~1 {NoAI:1b}`: its body is dark, its eyes glow bright green. **m3p-drawn-5**
+  6. Place the spawner and use a phantom egg on it: a small phantom turns slowly inside the cage, its wingtips poking out of the cage's sides. **m3p-drawn-6**
+  7. Friend, two windows (`scripts\mp-local.ps1`): the host hatches a phantom at night. The friend sees it with the same model and size and the same dives (its wings may beat at another point of the beat). **m3p-drawn-friend**
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:phantom_spawn_egg*8,minecraft:diamond_sword,minecraft:spawner,minecraft:cobblestone*64,minecraft:golden_apple*8,minecraft:cooked_beef*32
 ```
 
 ## Combined kit

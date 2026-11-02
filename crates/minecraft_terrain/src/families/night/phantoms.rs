@@ -7,13 +7,16 @@ use minecraftoss_entities::world::families::FamilyMob;
 use minecraftoss_entities::world::families::night::phantoms;
 pub use minecraftoss_entities::world::families::night::phantoms::Phantom;
 
+mod render;
+
 pub const SHADOW_RADIUS: f32 = 0.75;
 
 impl TerrainFamily for Phantom {
     const TRACKING_RANGE: i32 = 8;
     const VOLATILE: &'static [&'static str] = &["anchor_pos"];
-    const TEXTURES: &'static [&'static str] = &[];
+    const TEXTURES: &'static [&'static str] = &render::TEXTURES;
     const SHADOW_RADIUS: f32 = SHADOW_RADIUS;
+    const CAGE_MARGIN: f32 = render::CAGE_MARGIN;
 
     fn read(mob: &mut FamilyMob<Self>, tag: &Tag) {
         let yaw = mob.core.yaw;
@@ -37,13 +40,15 @@ impl TerrainFamily for Phantom {
     }
 
     fn draw(
-        _out: &mut FamilyDraw<'_>,
-        _mobs: &[FamilyMob<Self>],
-        _poses: &ClientMobs,
-        _atlas: &Atlas,
-        _light: &SkyLight,
-        _partial: f32,
+        out: &mut FamilyDraw<'_>,
+        mobs: &[FamilyMob<Self>],
+        poses: &ClientMobs,
+        atlas: &Atlas,
+        light: &SkyLight,
+        partial: f32,
     ) {
+        let shown = mobs.iter().filter(|mob| !mob.core.removed);
+        render::append_phantoms(out.models, shown, poses, atlas, light, partial);
     }
 }
 
