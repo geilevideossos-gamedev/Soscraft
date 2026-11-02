@@ -22,6 +22,7 @@ Files under `third_party/minecraftoss` this track patched or added.
 - Changed again (polar-bears-live 4): `world/src/natural_spawner/families/land.rs` (the polar bear row, `polar_bear_rule` and their tests).
 - polar-bears-drawn: no vendored file (game code only).
 - Changed again, no new file (review fix 1): `entities/src/world/families/land/rabbits.rs` (the jump clock while the step does not run), `entities/src/world/families/land/rabbits/ai.rs` (`count_jump`), `entities/src/world/families/land/rabbits/tests.rs` (its test).
+- Added (pandas-live 1): `entities/src/world/families/land/pandas.rs`, `entities/src/world/families/land/pandas/ai.rs`, `entities/src/world/families/land/pandas/tests.rs` (test only). Changed again: `entities/src/world/families/land.rs` (registration).
 
 ## Hooks
 
@@ -55,6 +56,7 @@ For the orchestrator to copy at the merge of segment m1a (rabbits done):
 - A rabbit's bite on a carrot: level event 2001 (the crumbs and the break sound) waits for foxes' `World::destroy_effect` (M1-4). The `block_change` game event for W's vibrations is one line where the rabbit's tick applies the bite, added by whichever of W and M1 merges second (rabbits-behaviour 1).
 - Polar bears (M1-2): `mustReach` (ported nowhere, so a bear may take a target it cannot path to), the 0.98 water slow-down, the standing bear's taller client box and freeze immunity. The old `AngerTime` key is not read.
 - The shared `FloatGoal` uses a fixed 0.4 water height; vanilla's `getFluidJumpThreshold` is 0 for an eye below 0.4 (a baby rabbit, a silverfish). The rabbit's own jump uses the right threshold.
+- Pandas (M1-3): eggs read `CanPickUpLoot` as false (`spawning.rs` serves eggs and `/summon` alike), so egg pandas pick up nothing; vanilla eggs keep the constructor's true (fork-wide, the steps use `{CanPickUpLoot:1b}`). Dispensers filling a panda's paw and the pickup's flight animation. D0's `monster_ai_step` adds `Monster`'s +2 idle in light for every goal family, creatures included (D0's fix). Sneaking players are not seen at 0.8 of the range by the breed goal's look search (the fork's look goals ignore it too).
 
 ## Segment m1a
 
@@ -573,3 +575,57 @@ One line for every step above (rabbits, polar bears and the review fix), 27 stac
 ```
 IW4L_MINECRAFT_KIT=minecraft:rabbit_spawn_egg*16,minecraft:polar_bear_spawn_egg*8,minecraft:carrot*64,minecraft:dandelion*16,minecraft:golden_dandelion*4,minecraft:iron_hoe,minecraft:bone_meal*64,minecraft:water_bucket,minecraft:oak_fence*64,minecraft:wolf_spawn_egg*2,minecraft:cat_spawn_egg*2,minecraft:zombie_spawn_egg*2,minecraft:lead*4,minecraft:iron_sword,minecraft:shield,minecraft:iron_helmet,minecraft:iron_chestplate,minecraft:iron_leggings,minecraft:iron_boots,minecraft:spawner,minecraft:cooked_beef*32,minecraft:bow,minecraft:arrow*64,minecraft:grass_block*64,minecraft:flint_and_steel,minecraft:ice*32,minecraft:torch*16
 ```
+
+## Segment m1b
+
+### Group pandas-live
+
+#### 1. Minecraft pandas live in the entity world with their genes
+
+After 7a1afdf7 (`r10-m1b-base`).
+
+- **javap this round** (`Panda` and its inner classes `Gene`, `PandaAttackGoal`, `PandaAvoidGoal`, `PandaBreedGoal`, `PandaHurtByTargetGoal`, `PandaLookAtPlayerGoal`, `PandaMoveControl`, `PandaPanicGoal`; `EntityTypes.PANDA`; `Mob.doHurtTarget`): the M1-3 "Vanilla 26.3" numbers hold. Added on the way:
+  - `EntityTypes.PANDA`: `CREATURE`, `sized(1.3, 1.25)` (eye 1.0625), `clientTrackingRange(10)`. `BABY_DIMENSIONS` is the type's size scaled 0.5 with eye 0.28125.
+  - The constructor calls `setCanPickUpLoot(true)` only when `!isBaby()`, which is always true while it is built.
+  - `Gene.getRandom`: `nextInt(16)` with 0 lazy, 1 worried, 2 playful, 4 aggressive, 3 and 5-8 weak, 9-10 brown, 11-15 normal. `getVariantFromGenes`: a recessive main gene (brown, weak) shows only when the hidden gene is the same, else `NORMAL`. `CODEC` by name; an unknown name reads as `NORMAL`.
+  - `setGeneFromParents(a, b)` runs on the cub: its `nextBoolean` and both `nextInt(32)` mutations come from the cub's random, while `getOneOfGenesRandomly` runs on each parent with that parent's random. `getBreedOffspring(level, partner)` passes `this` (the parent whose breed goal bred) as `a`.
+  - `PandaBreedGoal.canUse`: `BreedGoal.canUse()` and an unhappy counter of 0, then `canFindBamboo` (any `minecraft:bamboo` at `blockPosition()` plus x and z -7..7, y 0..2). Otherwise, once `unhappyCooldown <= tickCount`: unhappy 32, cooldown `tickCount + 600`, and `lookAtPlayerGoal.setTarget(getNearestPlayer(forNonCombat().range(8), panda))`.
+  - `PandaLookAtPlayerGoal.canUse`: the 0.02 roll, a search only while `lookAt` is null, then `canPerformAction() && lookAt != null`. `canContinueToUse` adds `lookAt != null`; `tick` runs only with a target.
+  - `PandaHurtByTargetGoal.canContinueToUse`: `gotBamboo` or `didBite` clears the target and ends the goal. `alertOther` sets the target only on a `Panda` whose `isAggressive()` holds; the panda's override of `isAggressive` is its aggressive variant. `HurtByTargetGoal.alertOthers` searches its own class in `unitCubeFromLowerCorner(position).inflate(followRange, 10, followRange)` for mobs with no target.
+  - `PandaAttackGoal` and `PandaAvoidGoal` test `canPerformAction` (the avoid goals `isWorried` first) before the parent's `canUse`. `PandaPanicGoal(2.0, #panic_environmental_causes)` ends at once while the panda sits, stopping its path. `PandaMoveControl.tick` skips the move while `!canPerformAction` (H1, `pandas-eating`).
+  - `Panda.tick` after `super.tick()`: the worried panda's thunder sit (`pandas-thunder`); `getTarget() == null` clears `gotBamboo` and `didBite`; the unhappy tail (`lookAt(target, 90, 90)` while it has a target, `cant_breed` at 29 and 14, then one less); then the sneeze, the roll, sitting, eating and the amounts (later groups).
+  - `doHurtTarget` sets `didBite` on a panda that is not aggressive, before `Animal.doHurtTarget`. `Mob.doHurtTarget` plays `playAttackSound` (the panda's `entity.panda.bite` at 1, 1) only after the hurt landed.
+  - `mobInteract`: scared → pass; on its back → it gets up; `#panda_food` → `gotBamboo` when it has a target, then a cub that `canAgeUp` grows (`ageUp((-age / 20) * 0.1, true)`), any other cub passes, an adult at age 0 that `canFallInLove` falls in love, otherwise the eat-from-hand branch (`pandas-eating`); a cub held a golden dandelion → `Animal.mobInteract`.
+- **Changed (vendored entities crate):**
+  - New `world/families/land/pandas.rs`: `Gene` (ids, names, recessive, the 16-slot table, `variant`); `Panda` (the two genes, `Age`, love, the last damage, its own movement speed, the held stack with its drop chance, `can_pick_up_loot`, `bred`, `MonsterAi`); `set_baby` (0.65 x 0.625, eye 0.28125); `set_attributes` (weak: max health 10, health clamped to it; lazy: speed 0.07); `is_food` (`#panda_food`, or bamboo without a recipe book); `genes_from_parents`; `interact`; and `impl Family`: key 52, kind `minecraft:panda`, 1.3 x 1.25, eye 1.0625, health 20, speed 0.15, ambient interval 120, category `creature`, no lead, panicking while its panic goal runs, step `entity.panda.step`, its `MonsterSpec`.
+  - The tick: `family_base_tick`; an aggressive or worried panda's ambient voice becomes `entity.panda.aggressive_ambient` or `entity.panda.worried_ambient` (vanilla's roll and pitch kept); the goals get its variant, age, the damage of the last 40 ticks, the players holding bamboo, and the other pandas as mates and kin; `family_goal_step` at its own speed; the bite (`family_strike`, 6, `Melee`; `did_bite` unless aggressive; the bite sound unless the hit failed); the alert to aggressive pandas; breeding; `family_after_move`; growing up and the love countdown; the tail.
+  - New `world/families/land/pandas/ai.rs`: `SPEC` (follow range 16, eye 1.0625, the animal fire maluses, `WalkTarget::Animal`), `PandaGoals` (the animal goal state, variant, cub, the sit, back, roll, sneeze, eat and scared flags the later groups set, the unhappy counter, `got_bamboo`, `did_bite`, `can_perform_action`), `can_find_bamboo`, and the goals in vanilla's order: `FloatGoal` 0, `PandaPanicGoal` 2 (2.0), `PandaBreedGoal` 2 (1.0), `PandaAttackGoal` 3 (melee 1.2, follows unseen), `TemptGoal` 4 (1.0), two `PandaAvoidGoal`s 6 (players within 8, `is_monster_class` within 4, both 2.0), `PandaLookAtPlayerGoal` 9 (6 blocks), `RandomLookAroundGoal` 10, `FollowParentGoal` 13 (1.25), `WaterAvoidingRandomStrollGoal` 14 (1.0); the target `PandaHurtByTargetGoal` 1, alerting others.
+  - New `world/families/land/pandas/tests.rs` (test only).
+  - `world/families/land.rs`: `pub mod pandas;` and `pandas: pandas::Panda` in `family_group!`, between the rabbits and the polar bears (key order).
+- **Tests added** (`world::families::land::pandas::tests`):
+  - `a_panda_is_a_big_twenty_health_animal_with_its_kind` (sizes and eyes of adult and cub, health, speed, attack, interval, genes, loot pickup, census, candidates, traits, voice, step sound, goal and target names, follow range, floating, walk target, the table and 1-3 experience for adults only).
+  - `a_cub_is_half_size_with_its_own_eye_height` (the walk profile too; it grows to 1.3 x 1.25 at age 0).
+  - `random_genes_follow_the_sixteen_slot_table` (each roll, 16000 draws, ids, names, an unknown name normal, the two recessive genes), `a_recessive_gene_shows_only_when_both_match` (the goals see the variant).
+  - `a_cub_takes_a_gene_from_each_parent_and_mutates_one_time_in_thirty_two` (6400 litters: 3-9% mutated, either parent gives the main gene about half the time, all four genes seen; two weak parents make weak cubs).
+  - `weak_pandas_have_ten_health_and_lazy_ones_walk_at_0_07` (only the shown variant counts; a tempted lazy panda covers under 0.6 of a normal one's way in 100 ticks).
+  - `bamboo_within_seven_blocks_across_and_two_up_counts`, `pandas_breed_only_with_bamboo_within_seven_blocks_and_sulk_otherwise` (goal level: unhappy 32, the look target the nearest visible player within 8 blocks, no sulk while unhappy, the goal runs with bamboo 7 across and 2 up; in a walled pen: bamboo 5 blocks off gives a cub with hearts, parents at 6000, an orb of 1-7, a cub with `bred` and 10 health when it is weak; bamboo 12 blocks off or none gives no cub, each parent sulks once in its love with two `cant_breed` sounds 15 ticks apart).
+  - `a_hit_panda_bites_back_once_unless_aggressive` (one bite for 6 as `Melee` with the bite sound, then no target and `did_bite` cleared; an aggressive panda keeps biting), `only_aggressive_pandas_join_a_fight` (within 16 blocks), `bamboo_calms_an_angry_panda`.
+  - `a_panda_panics_from_fire_and_cactus_but_not_from_a_punch` (fire, burning, lava, cactus and a hot floor at 2.0; not a punch, a bite, an arrow or a fall).
+  - `a_worried_panda_runs_from_players_within_eight_and_monsters_within_four` (not from creative players or slimes; other genes never run).
+  - `bamboo_grows_a_cub_and_brings_an_adult_into_love` (love 600 and event 18; not again in love; a cub grows a tenth; a locked cub, a parent, wheat and an adult's golden dandelion pass), `a_tempted_panda_follows_bamboo` (in the off hand; wheat does not), `a_panda_refuses_a_lead`, `aggressive_and_worried_pandas_have_their_own_ambient_sounds`.
+- **Decisions:**
+  - Goals 7, 8 and 12 (sit, lie on back, sneeze, roll) come with their groups and go in at their vanilla places in the list. The flags they set are in `PandaGoals` already, so `can_perform_action` and the goals that read it are final now.
+  - `PandaAttackGoal` and both `PandaAvoidGoal`s are one generic wrapper (`Gated`) that tests its gate before the wrapped goal, as vanilla's `&&` does, so the melee goal's 20-tick check and the avoid search only run when the gate holds.
+  - The breed goal's look target goes into the shared `look_at_player` state, which only `PandaLookAtPlayerGoal` uses.
+  - Genes from the parents only in the two-parent form: a panda breeds only with a panda, so vanilla's one-parent branch (`b == null`) is never reached.
+  - The bred cub's random is seeded as the rabbit's (`born_seeds`, else the seed uniquifier); its gene draws and mutations come from it, the parents' picks from their own randoms, and the orb from the breeding parent's random after that, in vanilla's order.
+  - `bred` marks a cub whose weak or lazy attributes came from breeding, so the terrain saves `attributes` for it (commit 2). Loaded and spawned pandas keep their tag's `attributes` (decision 3).
+  - Event 18 goes through E1's `broadcast_entity_event` (merged with e1b), once per feeding and once per breeding. D0's generic interact arm posts none for registered families, so there is no double post.
+  - The held stack, its drop chance (0.085; a pickup's guaranteed 2.0) and `can_pick_up_loot` (the constructor's true) are in the state now so commit 2 saves and loads them; the pickup, eating, the drop when it stops sitting and the death drop come with `pandas-eating`.
+  - The unhappy tail's `lookAt(target, 90, 90)` turns the body and pitch through `monster_ai::look_at` after the move, as vanilla's tail runs after `super.tick()`, and copies the yaw and pitch to the core.
+  - The worried panda's monsters are `animal_goals::is_monster_class` (M1-1).
+  - The breeding test keeps its pandas in a walled pen, since a panda that strolls within 7 blocks of the bamboo would breed (vanilla asks again at every full goal update).
+  - Until commit 2 registers the `TerrainFamily`, D0's terrain test `server_mobs::tests::every_registered_kind_is_simulated_and_summonable` sees the two registries differ, as with rabbits-live 2. The vendored crates are green; in-game nothing changes (the terrain spawns no kind it does not register).
+- **Runs:** `test -p minecraftoss-entities --locked --lib` (572 passed; the first panda run failed two statistical tests that reseeded `LegacyRandom` with 0, 1, 2, ..., whose first draws are close together; they now draw from one stream), `check -p launcher --locked` (green; only the old render_frame and skate warnings; the tree also held commit 2's world-crate row, which nothing else uses). The new files pass `rustfmt --check --edition 2021` on their staged content.
+- **Test steps:** nothing new in-game yet (the terrain registers pandas in the next commit); the steps are those of commit 2.
+- **Kit:** none.
