@@ -22,6 +22,8 @@ Started 2026-10-28 on `minecraft-survival` at 532474d6. The owner's brief is the
 
 ## Where it stands
 
+**Resumed 2026-11-02 at about 08:45.** `minecraft-survival` was merged into `track-w` (no conflicts, for D's block dust hook) and into `track-e1` (c51af5b6, one test-module conflict, both kept); E1's target moved to `D:\iw4l-wt	rack-e1` (decisions). Running: w2, f3, e2b and the e1b review, each with its `docs/round10/runs/<segment>-resume.json` (only the groups not yet committed, the WIP commit named in the group prompt). d0b starts in the first free place, then m1b and m3a.
+
 **Stopped for the week on 2026-10-29 at about 17:30** (the owner's weekly usage ran out). No track run is going. Every track branch and every `r10-*-base` tag is on `origin` (checked with `git ls-remote` on 2026-10-30). The installed game is still release 5 (e7c9a1c8, protocol 10); its test steps are `docs/round10/release-5-tests.md`. Since then `minecraft-survival` has only docs, scripts and licence commits, no game code.
 
 **Setup for Soscraft, done 2026-10-30** (no track run, no release build):
@@ -101,6 +103,7 @@ Disk: target dirs `D:\iw4l-wt\track-e2`, `track-f`, `track-m1`, `track-w` and `C
 | 1 | track-d merged (d6, keyframes, withers, wind charges) | 6e0e0573 | done 2026-10-28: full suite green (24.9 min, 3863 tests); release 12m 57s (`-p launcher -p iw4l-master`); copied in as `iw4l-survival.exe`, old one kept as `iw4l-survival-f743218.exe`, relay copied (same hash); protocol 6; test steps `docs/round10/release-1-tests.md` |
 
 ## Log
+- 2026-11-02: round 10 resumed: track-w and track-e1 took `minecraft-survival` in, E1's target moved to D:, w2, f3, e2b and the e1b review started from their resume specs.
 - 2026-10-30: setup for Soscraft: paths moved to `C:\Dev\Soscraft`, old worktrees removed and the four stopped segments' worktrees made again, licence leftovers, goal and roadmap, rooms of 5, references with REA as a project MCP server. Round 10 not continued.
 - 2026-10-29: stopped for the week (the owner's usage): the four runs stopped, their half-done groups committed as "Unfinished" commits, every track branch and base tag pushed; e1b merged (23b449ef, full suite green, not reviewed); PROTOCOL 10 (e7c9a1c8); release 5 built and copied in; test steps `docs/round10/release-5-tests.md`.
 - 2026-10-29: release 4 copied in; d2 finished and merged (fd93ce96, full suite green); w2 started in d2's place; release 4 test steps written and checked.
