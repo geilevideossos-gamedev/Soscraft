@@ -1,7 +1,7 @@
 mod ai;
 
-use self::ai::SPEC;
 pub use self::ai::{GOAL_NAMES, PandaGoals, TARGET_NAMES, can_find_bamboo};
+use self::ai::{SPEC, held_still};
 use crate::age::Age;
 use crate::animal::{self, AnimalEvent};
 use crate::cow::InteractionResult;
@@ -13,9 +13,9 @@ use crate::world::families::land::animal_goals::{LAST_DAMAGE_TICKS, Mate, Tempte
 use crate::world::families::{Family, FamilyMob, Hurt, MobCore, MonsterSpec, Registered};
 use crate::world::{EntityWorld, PlayerHitKind, Voice};
 use glam::DVec3;
-use minecraftoss_player::World;
 use minecraftoss_player::inventory::{Inventory, ItemStack};
 use minecraftoss_player::rng::LegacyRandom;
+use minecraftoss_player::{World, WorldItem};
 
 pub const KIND: &str = "minecraft:panda";
 pub const WIDTH: f32 = 1.3;
@@ -40,6 +40,20 @@ pub const UNHAPPY_LOOK: f32 = 90.0;
 pub const CANT_BREED_TICKS: [i32; 2] = [29, 14];
 pub const FOOD_TAG: &str = "minecraft:panda_food";
 pub const FOOD: [&str; 1] = ["minecraft:bamboo"];
+pub const GROUND_FOOD_TAG: &str = "minecraft:panda_eats_from_ground";
+pub const GROUND_FOOD: [&str; 2] = ["minecraft:bamboo", "minecraft:cake"];
+pub const GUARANTEED_DROP: f32 = 2.0;
+pub const PICKUP_REACH: f64 = 1.0;
+pub const PICKUP_DELAY: i32 = 10;
+pub const EAT_START: u32 = 80;
+pub const EAT_SOUND_TICKS: i32 = 5;
+pub const EAT_CRUMBS: usize = 6;
+pub const EAT_CRUMB_ROLLS: usize = 6;
+pub const EAT_PAUSE: i32 = 80;
+pub const EAT_DONE: i32 = 100;
+pub const EAT_STOP: u32 = 20;
+pub const EAT_SOUND: &str = "entity.panda.eat";
+pub const EAT_EVENT: &str = "minecraft:eat";
 pub const BITE_SOUND: &str = "entity.panda.bite";
 pub const CANT_BREED_SOUND: &str = "entity.panda.cant_breed";
 pub const STEP_SOUND: &str = "entity.panda.step";
@@ -259,6 +273,17 @@ pub fn is_food(world: &EntityWorld, item: &str) -> bool {
     }
 }
 
+pub fn eats_from_ground(world: &EntityWorld, item: &str) -> bool {
+    match &world.recipes {
+        Some(recipes) => recipes.item_in_tag(GROUND_FOOD_TAG, item),
+        None => GROUND_FOOD.contains(&item),
+    }
+}
+
+pub fn can_pick_up_and_eat(world: &EntityWorld, item: &WorldItem) -> bool {
+    item.count > 0 && item.pickup_delay <= 0 && eats_from_ground(world, &item.item)
+}
+
 pub fn genes_from_parents(
     random: &mut LegacyRandom,
     first: (Gene, Gene),
@@ -291,7 +316,12 @@ pub fn interact(
     inventory: &mut Inventory,
     hand: usize,
     infinite: bool,
-) -> Option<(InteractionResult, Vec<AnimalEvent>, DVec3)> {
+) -> Option<(
+    InteractionResult,
+    Vec<AnimalEvent>,
+    DVec3,
+    Option<ItemStack>,
+)> {
     let recipes = world.recipes.clone();
     let food = |item: &str| match &recipes {
         Some(recipes) => recipes.item_in_tag(FOOD_TAG, item),
@@ -299,7 +329,7 @@ pub fn interact(
     };
     let mob = world.family_mob_mut::<Panda>(id)?;
     let position = mob.core.body.position;
-    let pass = Some((InteractionResult::Pass, Vec::new(), position));
+    let pass = Some((InteractionResult::Pass, Vec::new(), position, None));
     if !mob.core.alive() {
         return pass;
     }
@@ -310,10 +340,11 @@ pub fn interact(
     }
     if goals.on_back {
         goals.on_back = false;
-        return Some((InteractionResult::SuccessServer, Vec::new(), position));
+        return Some((InteractionResult::SuccessServer, Vec::new(), position, None));
     }
     let held = inventory.slots.get(hand).and_then(Option::as_ref);
-    if held.is_some_and(|stack| food(&stack.id)) && has_target {
+    let fed = held.map(|stack| stack.id.clone()).filter(|item| food(item));
+    if fed.is_some() && has_target {
         goals.got_bamboo = true;
     }
     let state = &mut mob.state;
@@ -332,10 +363,33 @@ pub fn interact(
     if baby != mob.core.baby {
         set_baby(mob, baby);
     }
+    if let Some(item) = fed.filter(|_| result == InteractionResult::Pass && !baby) {
+        let sitting = mob.state.goals().is_some_and(|goals| goals.sitting);
+        if sitting || mob.state.ai.state.fluid.in_water() {
+            return pass;
+        }
+        sit_down(&mut mob.state);
+        mob.state.goals_mut().eat_counter = 1;
+        let old = mob.state.held.replace(ItemStack::new(item, 1));
+        if !infinite {
+            animal::consume_one(inventory, hand);
+        }
+        let dropped = old.filter(|_| !infinite);
+        return Some((InteractionResult::SuccessServer, events, position, dropped));
+    }
     if events.contains(&AnimalEvent::Hearts) {
         world.broadcast_entity_event(id, 18);
     }
-    Some((result, events, position))
+    Some((result, events, position, None))
+}
+
+fn sit_down(panda: &mut Panda) {
+    let ai = &mut *panda.ai;
+    ai.forward = 0.0;
+    ai.state.navigation.stop();
+    if let Some(goals) = ai.state.extra.get_mut::<PandaGoals>() {
+        goals.sitting = true;
+    }
 }
 
 fn take_random(world: &mut EntityWorld, id: u64) -> Option<LegacyRandom> {
@@ -461,12 +515,150 @@ fn tail(mob: &mut FamilyMob<Panda>) {
     }
 }
 
-fn animate(mob: &mut FamilyMob<Panda>) {
+fn worry(mob: &mut FamilyMob<Panda>) {
+    let worried = mob.state.variant() == Gene::Worried;
+    let goals = mob.state.goals_mut();
+    if worried && !goals.eating() {
+        goals.sitting = false;
+    }
+}
+
+fn face_ahead(mob: &mut FamilyMob<Panda>) {
     if mob.state.goals().is_some_and(|goals| goals.sitting) {
         mob.core.look.pitch = 0.0;
         mob.state.ai.state.look_control.pitch = 0.0;
     }
-    mob.state.step_amounts();
+}
+
+fn handle_eating(mob: &mut FamilyMob<Panda>, ground_food: bool) -> bool {
+    let FamilyMob { core, state } = mob;
+    let holding = state.held.is_some();
+    let goals = state.goals_mut();
+    let random = &mut core.random;
+    if !goals.eating()
+        && goals.sitting
+        && !goals.scared
+        && holding
+        && random.next_int(EAT_START) == 1
+    {
+        goals.eat_counter = 1;
+    } else if !holding || !goals.sitting {
+        goals.eat_counter = 0;
+    }
+    if !goals.eating() {
+        return false;
+    }
+    let counter = goals.eat_counter;
+    if counter % EAT_SOUND_TICKS == 0 {
+        let volume = 0.5 + 0.5 * random.next_int(2) as f32;
+        let pitch = (random.next_float() - random.next_float()) * 0.2 + 1.0;
+        let voice = Voice::Event(EAT_SOUND, volume, pitch);
+        core.voices.push((voice, core.body.position));
+        if holding {
+            for _ in 0..EAT_CRUMBS * EAT_CRUMB_ROLLS {
+                let _ = core.random.next_float();
+            }
+        }
+    }
+    if counter > EAT_PAUSE && core.random.next_int(EAT_STOP) == 1 {
+        let ate = counter > EAT_DONE && ground_food;
+        goals.eat_counter = 0;
+        if ate {
+            goals.sitting = false;
+            state.held = None;
+        }
+        return ate;
+    }
+    goals.eat_counter += 1;
+    false
+}
+
+fn food_near<W: World>(world: &EntityWorld, level: &W, id: u64) -> Vec<WorldItem> {
+    let pandas = world.family::<Panda>();
+    let Some(mob) = pandas.iter().find(|mob| mob.core.id == id) else {
+        return Vec::new();
+    };
+    let able = mob
+        .state
+        .goals()
+        .is_some_and(PandaGoals::can_perform_action);
+    if mob.core.baby || mob.state.held.is_some() || !able {
+        return Vec::new();
+    }
+    let body = &mob.core.body;
+    let reach = ai::FETCH_REACH;
+    let half = f64::from(body.width) / 2.0 + reach;
+    let min = body.position - DVec3::new(half, reach, half);
+    let max = body.position + DVec3::new(half, f64::from(body.height) + reach, half);
+    let mut items = level.items_in(min, max);
+    items.retain(|item| can_pick_up_and_eat(world, item));
+    items
+}
+
+fn spawn_at_location<W: World>(
+    world: &mut EntityWorld,
+    level: &mut W,
+    at: DVec3,
+    stack: &ItemStack,
+) {
+    let x = world.level_random.next_double() * 0.2 - 0.1;
+    let z = world.level_random.next_double() * 0.2 - 0.1;
+    level.spawn_item(at, stack, DVec3::new(x, 0.2, z), PICKUP_DELAY);
+}
+
+fn settle<W: World>(world: &mut EntityWorld, level: &mut W, id: u64) {
+    let Some(mob) = world.family_mob_mut::<Panda>(id) else {
+        return;
+    };
+    let goals = mob.state.goals_mut();
+    goals.food.clear();
+    let sat_down = std::mem::take(&mut goals.sat_down);
+    let dropped = goals.dropped.take();
+    if sat_down {
+        mob.state.ai.forward = 0.0;
+    }
+    let Some(at) = dropped else {
+        return;
+    };
+    if let Some(stack) = mob.state.held.take() {
+        spawn_at_location(world, level, at, &stack);
+    }
+}
+
+fn pick_up<W: World>(world: &mut EntityWorld, level: &mut W, id: u64) {
+    if !world.mob_griefing {
+        return;
+    }
+    let pandas = world.family::<Panda>();
+    let Some(mob) = pandas.iter().find(|mob| mob.core.id == id) else {
+        return;
+    };
+    if !mob.state.can_pick_up_loot || !mob.core.alive() {
+        return;
+    }
+    let body = &mob.core.body;
+    let half = f64::from(body.width) / 2.0 + PICKUP_REACH;
+    let min = body.position - DVec3::new(half, 0.0, half);
+    let max = body.position + DVec3::new(half, f64::from(body.height), half);
+    for near in level.items_in(min, max) {
+        let Some(item) = level.item(near.id) else {
+            continue;
+        };
+        if !can_pick_up_and_eat(world, &item) {
+            continue;
+        }
+        let Some(mob) = world.family_mob_mut::<Panda>(id) else {
+            return;
+        };
+        if mob.state.held.is_some() {
+            return;
+        }
+        let mut stack = ItemStack::new(item.item.clone(), item.count.clamp(1, 255) as u8);
+        stack.components = item.components.clone();
+        mob.state.held = Some(stack);
+        mob.state.drop_chance = GUARANTEED_DROP;
+        level.take_item(item.id, item.count);
+    }
 }
 
 fn bite(world: &mut EntityWorld, id: u64, target: Target) {
@@ -591,6 +783,7 @@ impl Family for Panda {
         core.ambient_interval = AMBIENT_INTERVAL;
         let mut ai = MonsterAi::of_kind(MonsterKind::Registered(kind), &core.body, core.yaw);
         ai.state.extra.set(PandaGoals::default());
+        ai.still = Some(held_still);
         Some(FamilyMob {
             core,
             state: Panda {
@@ -635,6 +828,7 @@ impl Family for Panda {
             let tempters = tempters(world, players);
             let mates = mates(world, id);
             let kin = kin(world, id);
+            let food = food_near(world, &*level, id);
             let mut speed = SPEED;
             if let Some(mob) = world.family_mob_mut::<Self>(id) {
                 let tick_count = mob.core.tick_count;
@@ -646,9 +840,12 @@ impl Family for Panda {
                 speed = mob.state.speed;
                 let (variant, baby) = (mob.state.variant(), mob.core.baby);
                 let (age, in_love) = (mob.state.age.ticks, mob.state.in_love > 0);
+                let holding = mob.state.held.is_some();
                 let goals = mob.state.goals_mut();
                 goals.variant = variant;
                 goals.baby = baby;
+                goals.holding = holding;
+                goals.food = food;
                 goals.animal.id = id;
                 goals.animal.age = age;
                 goals.animal.last_damage = last_damage;
@@ -665,6 +862,7 @@ impl Family for Panda {
                     let alert = mob.state.ai.state.alert.take();
                     (alert, mob.state.goals_mut().animal.breed_with.take())
                 });
+            settle(world, level, id);
             if let Some(target) = strike {
                 bite(world, id, target);
             }
@@ -676,10 +874,27 @@ impl Family for Panda {
             }
         }
         world.family_after_move::<Self, W>(id, level, base.game_time, ticks);
+        if base.alive {
+            pick_up(world, level, id);
+        }
+        let pandas = world.family::<Self>();
+        let this = pandas.iter().find(|mob| mob.core.id == id);
+        let ground_food = this
+            .and_then(|mob| mob.state.held.as_ref())
+            .is_some_and(|stack| eats_from_ground(world, &stack.id));
+        let mut ate = None;
         if let Some(mob) = world.family_mob_mut::<Self>(id) {
             grow(mob);
+            worry(mob);
             tail(mob);
-            animate(mob);
+            face_ahead(mob);
+            if handle_eating(mob, ground_food) {
+                ate = Some(mob.core.body.position);
+            }
+            mob.state.step_amounts();
+        }
+        if let Some(at) = ate {
+            world.game_event(EAT_EVENT, at, Some(id), None);
         }
     }
 
@@ -699,6 +914,18 @@ impl Family for Panda {
 
     fn panicking(mob: &FamilyMob<Self>) -> bool {
         mob.state.panicking()
+    }
+
+    fn death_drops(mob: &mut FamilyMob<Self>) -> Vec<ItemStack> {
+        let chance = mob.state.drop_chance;
+        if mob.core.baby || chance == 0.0 || mob.state.held.is_none() {
+            return Vec::new();
+        }
+        let by_player = mob.core.damage.player_memory > 0;
+        if !(by_player || chance > 1.0) || mob.core.random.next_float() >= chance {
+            return Vec::new();
+        }
+        mob.state.held.take().into_iter().collect()
     }
 
     fn step_sound(_kind: &str) -> Option<&'static str> {

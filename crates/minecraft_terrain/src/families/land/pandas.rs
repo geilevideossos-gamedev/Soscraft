@@ -1,10 +1,11 @@
 use crate::client_mobs::ClientMobs;
-use crate::families::{FamilyDraw, FamilyShow, TerrainFamily};
+use crate::families::{ClientFx, FamilyDraw, FamilyShow, TerrainFamily};
 use crate::item_nbt::stack_tag;
 use crate::lighting::SkyLight;
 use crate::mesh::Atlas;
 use crate::mob_actions::{Actor, MobOutcome, MobSound};
 use crate::piglin_save::stack_of;
+use glam::{DVec3, Vec3};
 use minecraftoss_core::nbt::Tag;
 use minecraftoss_entities::age::Age;
 use minecraftoss_entities::animal::AnimalEvent;
@@ -14,6 +15,7 @@ use minecraftoss_entities::world::families::FamilyMob;
 pub use minecraftoss_entities::world::families::land::pandas::Panda;
 use minecraftoss_entities::world::families::land::pandas::{self, Gene};
 use minecraftoss_player::inventory::ItemStack;
+use minecraftoss_player::mth;
 use std::collections::BTreeMap;
 
 mod render;
@@ -33,6 +35,9 @@ pub const HELD_NOTHING: i32 = 0;
 pub const HELD_BAMBOO: i32 = 1;
 pub const HELD_CAKE: i32 = 2;
 pub const HELD_OTHER: i32 = 3;
+pub const CRUMBS: usize = 6;
+pub const CRUMB_TICKS: i32 = 5;
+const DEGREES: f32 = 0.017453292;
 const BAMBOO: &str = "minecraft:bamboo";
 const CAKE: &str = "minecraft:cake";
 const MAX_HEALTH: &str = "minecraft:max_health";
@@ -78,6 +83,51 @@ fn held_of(value: i32) -> Option<ItemStack> {
         HELD_CAKE => Some(ItemStack::new(CAKE, 1)),
         _ => None,
     }
+}
+
+fn x_rot(v: DVec3, angle: f32) -> DVec3 {
+    let (cos, sin) = (
+        f64::from(mth::cos(f64::from(angle))),
+        f64::from(mth::sin(f64::from(angle))),
+    );
+    DVec3::new(v.x, v.y * cos + v.z * sin, v.z * cos - v.y * sin)
+}
+
+fn y_rot(v: DVec3, angle: f32) -> DVec3 {
+    let (cos, sin) = (
+        f64::from(mth::cos(f64::from(angle))),
+        f64::from(mth::sin(f64::from(angle))),
+    );
+    DVec3::new(v.x * cos + v.z * sin, v.y, v.z * cos - v.x * sin)
+}
+
+pub fn eating_crumbs(
+    item: &str,
+    position: DVec3,
+    eye_height: f32,
+    (pitch, yaw, body_yaw): (f32, f32, f32),
+    random: &mut minecraftoss_player::rng::LegacyRandom,
+) -> Vec<(String, DVec3, Vec<Vec3>)> {
+    let eyes = position + DVec3::Y * (f64::from(eye_height) + 1.0);
+    (0..CRUMBS)
+        .map(|_| {
+            let mut next = || f64::from(random.next_float());
+            let motion = DVec3::new(
+                (next() - 0.5) * 0.1,
+                next() * 0.1 + 0.1,
+                (next() - 0.5) * 0.1,
+            );
+            let motion = y_rot(x_rot(motion, -pitch * DEGREES), -yaw * DEGREES);
+            let offset = DVec3::new(
+                (next() - 0.5) * 0.8,
+                -next() * 0.6 - 0.3,
+                1.0 + (next() - 0.5) * 0.4,
+            );
+            let at = eyes + y_rot(offset, -body_yaw * DEGREES);
+            let velocity = Vec3::new(motion.x as f32, (motion.y + 0.05) as f32, motion.z as f32);
+            (item.to_owned(), at, vec![velocity])
+        })
+        .collect()
 }
 
 impl TerrainFamily for Panda {
@@ -216,13 +266,14 @@ impl TerrainFamily for Panda {
         outcome: &mut MobOutcome,
     ) -> bool {
         let used = pandas::interact(world, id, actor.inventory, actor.selected, actor.infinite);
-        let Some((result, events, position)) = used else {
+        let Some((result, events, position, dropped)) = used else {
             return false;
         };
         if result == InteractionResult::Pass {
             return false;
         }
         outcome.inventory_changed = true;
+        outcome.drops.extend(dropped.map(|stack| (stack, position)));
         let lock = events.iter().find_map(|event| match event {
             AnimalEvent::AgeLock => Some("item.golden_dandelion.use"),
             AnimalEvent::AgeUnlock => Some("item.golden_dandelion.unuse"),
@@ -238,6 +289,26 @@ impl TerrainFamily for Panda {
             });
         }
         true
+    }
+
+    fn client_effects(mobs: &[FamilyMob<Self>], poses: &ClientMobs, fx: &mut ClientFx<'_>) {
+        for mob in mobs.iter().filter(|mob| !mob.core.removed) {
+            let Some(shown) = poses.get(mob.core.id) else {
+                continue;
+            };
+            let eating = mob.state.goals().map_or(0, |goals| goals.eat_counter);
+            let last = fx.seen.insert(mob.core.id, eating);
+            let Some(held) = mob.state.held.as_ref() else {
+                continue;
+            };
+            if eating <= 0 || eating % CRUMB_TICKS != 0 || last == Some(eating) {
+                continue;
+            }
+            let turns = (shown.x_rot, shown.y_rot, shown.y_body_rot);
+            let eye_height = mob.core.eye_height;
+            let crumbs = eating_crumbs(&held.id, shown.position, eye_height, turns, fx.random);
+            fx.item_crumbs.extend(crumbs);
+        }
     }
 }
 
@@ -547,5 +618,156 @@ mod tests {
         assert_eq!(inventory.slots[0].as_ref().map(|s| s.count), Some(1));
         assert_eq!(panda(&world, id).state.in_love, 600);
         assert_eq!(world.take_entity_events(), vec![(id, 18)]);
+    }
+
+    #[test]
+    fn feeding_a_panda_in_love_drops_its_old_item_where_it_sits() {
+        for infinite in [false, true] {
+            let mut world = EntityWorld::default();
+            let tag = parse(
+                "{id:\"minecraft:panda\",Pos:[1.5d,64.0d,2.5d],InLove:400,equipment:{mainhand:{id:\"minecraft:cake\",count:1}},drop_chances:{mainhand:2.0f}}",
+            );
+            let id = spawn_saved(&mut world, &tag).unwrap();
+            let mut inventory = Inventory::default();
+            inventory.slots[0] = Some(ItemStack::new(BAMBOO, 2));
+            let mut actor = Actor {
+                player: 1,
+                inventory: &mut inventory,
+                selected: 0,
+                infinite,
+                entity_loot: None,
+                shearing_loot: None,
+            };
+            let outcome = interact(&mut world, MobHit::Family(52, id), &mut actor);
+            assert!(outcome.handled && outcome.inventory_changed, "{infinite}");
+            let drops: Vec<_> = outcome
+                .drops
+                .iter()
+                .map(|(stack, at)| (stack.id.as_str(), stack.count, *at))
+                .collect();
+            let left = inventory.slots[0].as_ref().map(|s| s.count);
+            if infinite {
+                assert!(
+                    drops.is_empty(),
+                    "a creative player's bamboo replaces the cake"
+                );
+                assert_eq!(left, Some(2));
+            } else {
+                assert_eq!(drops, [(CAKE, 1, DVec3::new(1.5, 64.0, 2.5))]);
+                assert_eq!(left, Some(1));
+            }
+            let mob = panda(&world, id);
+            let held = mob.state.held.as_ref().map(|s| (s.id.as_str(), s.count));
+            assert_eq!(held, Some((BAMBOO, 1)));
+            assert!(world.take_entity_events().is_empty(), "no hearts");
+            let shown = shows(&world)[&id].family.unwrap();
+            assert_eq!(
+                (
+                    shown.flags & SITTING,
+                    shown.values[EAT_VALUE],
+                    shown.values[HELD_VALUE]
+                ),
+                (SITTING, 1, HELD_BAMBOO)
+            );
+        }
+    }
+
+    struct Viewer {
+        ambient: crate::ambient_particles::AmbientParticles,
+        spell: crate::spell_particles::SpellParticles,
+        portal: crate::portal_particles::PortalParticles,
+        poof: crate::poof_particles::PoofParticles,
+        item_crumbs: Vec<(String, DVec3, Vec<Vec3>)>,
+        sounds: Vec<(String, DVec3, f32, f32)>,
+        random: minecraftoss_player::rng::LegacyRandom,
+        seen: HashMap<u64, i32>,
+    }
+
+    impl Viewer {
+        fn new(seed: u64) -> Self {
+            Self {
+                ambient: crate::ambient_particles::AmbientParticles::new(seed),
+                spell: crate::spell_particles::SpellParticles::new(seed),
+                portal: Default::default(),
+                poof: Default::default(),
+                item_crumbs: Vec::new(),
+                sounds: Vec::new(),
+                random: minecraftoss_player::rng::LegacyRandom::new(seed),
+                seen: HashMap::new(),
+            }
+        }
+
+        fn crumbs(
+            &mut self,
+            world: &EntityWorld,
+            poses: &ClientMobs,
+        ) -> Vec<(String, DVec3, Vec<Vec3>)> {
+            let mut fx = ClientFx {
+                ambient: &mut self.ambient,
+                spell: &mut self.spell,
+                portal: &mut self.portal,
+                poof: &mut self.poof,
+                item_crumbs: &mut self.item_crumbs,
+                sounds: &mut self.sounds,
+                random: &mut self.random,
+                seen: &mut self.seen,
+            };
+            crate::families::client_effects(world, poses, &mut fx);
+            std::mem::take(&mut self.item_crumbs)
+        }
+    }
+
+    #[test]
+    fn an_eating_panda_scatters_six_crumbs_every_five_ticks() {
+        let mut host = EntityWorld::default();
+        let tag = parse(
+            "{id:\"minecraft:panda\",Pos:[1.5d,64.0d,2.5d],Rotation:[30.0f,0.0f],NoAI:1b,equipment:{mainhand:{id:\"minecraft:bamboo\",count:1}}}",
+        );
+        let id = spawn_saved(&mut host, &tag).unwrap();
+        let saved = saved_tag(&host, id, Some(tag));
+        let mut friend = EntityWorld::default();
+        assert!(spawn_tracked(&mut friend, id, &saved));
+        let mut poses = ClientMobs::default();
+        poses.spawn_missing(&crate::client_mobs::server_mobs(&host));
+        let mut viewers = [Viewer::new(3), Viewer::new(4)];
+        let mut fired = [Vec::new(), Vec::new()];
+        let counters = (0..=10).chain([10]).chain(11..=15).chain([0, 3, 5]);
+        for counter in counters {
+            let goals = host.family_mob_mut::<Panda>(id).unwrap().state.goals_mut();
+            goals.sitting = true;
+            goals.eat_counter = counter;
+            let show = shows(&host)[&id].family.unwrap();
+            Panda::show_on(friend.family_mob_mut::<Panda>(id).unwrap(), &show);
+            for (index, world) in [&host, &friend].into_iter().enumerate() {
+                let crumbs = viewers[index].crumbs(world, &poses);
+                if crumbs.is_empty() {
+                    continue;
+                }
+                assert_eq!(crumbs.len(), CRUMBS, "{counter}");
+                fired[index].push(counter);
+                let eyes = 64.0 + f64::from(pandas::EYE_HEIGHT) + 1.0;
+                for (item, at, velocities) in crumbs {
+                    assert_eq!((item.as_str(), velocities.len()), (BAMBOO, 1));
+                    let reach = (at.x - 1.5).hypot(at.z - 2.5);
+                    assert!((0.79..=1.27).contains(&reach), "{at}");
+                    assert!((eyes - 0.9..=eyes - 0.3).contains(&at.y), "{at}");
+                    let v = velocities[0];
+                    assert!(
+                        v.x.hypot(v.z) <= 0.0708 && (0.15..=0.25).contains(&v.y),
+                        "{v}"
+                    );
+                }
+            }
+        }
+        assert_eq!(
+            fired[0],
+            [5, 10, 15, 5],
+            "once at each fifth tick of eating"
+        );
+        assert_eq!(fired[1], fired[0], "the friend sees them at the same ticks");
+        host.family_mob_mut::<Panda>(id).unwrap().state.held = None;
+        let goals = host.family_mob_mut::<Panda>(id).unwrap().state.goals_mut();
+        goals.eat_counter = 10;
+        assert!(viewers[0].crumbs(&host, &poses).is_empty(), "an empty paw");
     }
 }

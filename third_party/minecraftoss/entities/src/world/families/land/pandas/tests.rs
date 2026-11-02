@@ -1,6 +1,7 @@
 use super::ai::{self, PandaGoals};
 use super::*;
 use crate::controls::PlayerControls;
+use crate::fluid::FluidFrame;
 use crate::walk_path::WalkTarget;
 use crate::world::families::land::animal_goals::Mate;
 use crate::world::{DamageSourceKind, LeashHolder, PlayerAttack, PlayerHit};
@@ -10,6 +11,34 @@ use minecraftoss_player::{Block, Pos};
 struct Grove {
     bamboo: Vec<Pos>,
     pen: bool,
+    items: Vec<WorldItem>,
+    next_item: i32,
+    dropped: Vec<(i32, DVec3)>,
+}
+
+impl Grove {
+    fn drop_item(&mut self, position: DVec3, item: &str, count: i32, pickup_delay: i32) -> i32 {
+        self.next_item += 1;
+        self.items.push(WorldItem {
+            id: self.next_item,
+            position,
+            item: item.to_owned(),
+            count,
+            components: None,
+            pickup_delay,
+        });
+        self.next_item
+    }
+
+    fn age_items(&mut self) {
+        for item in &mut self.items {
+            item.pickup_delay = (item.pickup_delay - 1).max(0);
+        }
+    }
+
+    fn has(&self, id: i32) -> bool {
+        self.items.iter().any(|item| item.id == id)
+    }
 }
 
 impl World for Grove {
@@ -25,6 +54,36 @@ impl World for Grove {
     }
 
     fn set_block(&mut self, _: Pos, _: Option<Block>) {}
+
+    fn items_in(&self, min: DVec3, max: DVec3) -> Vec<WorldItem> {
+        let half = ai::ITEM_SIZE / 2.0;
+        let touches = |p: DVec3| {
+            p.x + half > min.x
+                && p.x - half < max.x
+                && p.y + ai::ITEM_SIZE > min.y
+                && p.y < max.y
+                && p.z + half > min.z
+                && p.z - half < max.z
+        };
+        let near = self.items.iter().filter(|item| touches(item.position));
+        near.cloned().collect()
+    }
+
+    fn item(&self, id: i32) -> Option<WorldItem> {
+        self.items.iter().find(|item| item.id == id).cloned()
+    }
+
+    fn take_item(&mut self, id: i32, count: i32) {
+        if let Some(item) = self.items.iter_mut().find(|item| item.id == id) {
+            item.count -= count;
+        }
+        self.items.retain(|item| item.count > 0);
+    }
+
+    fn spawn_item(&mut self, position: DVec3, stack: &ItemStack, velocity: DVec3, delay: i32) {
+        let id = self.drop_item(position, &stack.id, i32::from(stack.count), delay);
+        self.dropped.push((id, velocity));
+    }
 }
 
 const PEN: i32 = 4;
@@ -413,6 +472,7 @@ fn bamboo_within_seven_blocks_across_and_two_up_counts() {
         let grove = Grove {
             bamboo: vec![offset],
             pen: false,
+            ..Grove::default()
         };
         assert_eq!(
             can_find_bamboo(&grove, DVec3::new(0.5, 0.0, 0.5)),
@@ -436,6 +496,7 @@ fn breeding(bamboo: Option<Pos>, gene: Gene) -> Breeding {
     let mut grove = Grove {
         bamboo: bamboo.into_iter().collect(),
         pen: true,
+        ..Grove::default()
     };
     let first = panda_with(&mut world, at(0.5, 0.5), gene);
     let second = panda_with(&mut world, at(-1.5, 0.5), gene);
@@ -443,7 +504,7 @@ fn breeding(bamboo: Option<Pos>, gene: Gene) -> Breeding {
     world.tick_with_players(&mut grove, &[player]);
     let mut bamboo = holding("minecraft:bamboo", 4);
     for id in [first, second] {
-        let (result, events, _) = interact(&mut world, id, &mut bamboo, 0, false).unwrap();
+        let (result, events, _, _) = interact(&mut world, id, &mut bamboo, 0, false).unwrap();
         assert_eq!(result, InteractionResult::SuccessServer);
         assert_eq!(events, vec![AnimalEvent::Hearts]);
     }
@@ -520,6 +581,7 @@ fn pandas_breed_only_with_bamboo_within_seven_blocks_and_sulk_otherwise() {
     let grove = Grove {
         bamboo: vec![(7, 66, 0)],
         pen: false,
+        ..Grove::default()
     };
     assert_eq!(
         sulking(&grove, 10, 0),
@@ -680,7 +742,7 @@ fn bamboo_calms_an_angry_panda() {
     assert!(bitten);
     assert_eq!(panda(&world, id).state.target(), Some(Target::Player(1)));
     let mut bamboo = holding("minecraft:bamboo", 2);
-    let (result, _, _) = interact(&mut world, id, &mut bamboo, 0, false).unwrap();
+    let (result, _, _, _) = interact(&mut world, id, &mut bamboo, 0, false).unwrap();
     assert_ne!(result, InteractionResult::Pass);
     assert!(goals(&world, id).got_bamboo);
     for _ in 0..3 {
@@ -786,48 +848,51 @@ fn bamboo_grows_a_cub_and_brings_an_adult_into_love() {
     let adult = panda_at(&mut world, at(0.5, 0.5));
     let cub = cub_at(&mut world, at(4.5, 0.5));
     let mut bamboo = holding("minecraft:bamboo", 5);
-    let (result, events, _) = interact(&mut world, adult, &mut bamboo, 0, false).unwrap();
+    let (result, events, _, _) = interact(&mut world, adult, &mut bamboo, 0, false).unwrap();
     assert_eq!(result, InteractionResult::SuccessServer);
     assert_eq!(events, vec![AnimalEvent::Hearts]);
     assert_eq!(panda(&world, adult).state.in_love, 600);
     assert_eq!(count(&bamboo), Some(4));
     assert_eq!(world.take_entity_events(), vec![(adult, 18)]);
-    let (result, _, _) = interact(&mut world, adult, &mut bamboo, 0, false).unwrap();
-    assert_eq!(result, InteractionResult::Pass, "in love it takes no more");
-    assert_eq!(count(&bamboo), Some(4));
+    let (result, events, _, _) = interact(&mut world, adult, &mut bamboo, 0, false).unwrap();
+    assert_eq!(result, InteractionResult::SuccessServer);
+    assert!(events.is_empty(), "in love it sits down to eat one instead");
+    assert!(goals(&world, adult).sitting && goals(&world, adult).eating());
+    assert_eq!(count(&bamboo), Some(3));
 
     let before = panda(&world, cub).state.age.ticks;
-    let (result, events, _) = interact(&mut world, cub, &mut bamboo, 0, false).unwrap();
+    let (result, events, _, _) = interact(&mut world, cub, &mut bamboo, 0, false).unwrap();
     assert_ne!(result, InteractionResult::Pass);
     assert!(events.is_empty() && world.take_entity_events().is_empty());
-    assert_eq!(count(&bamboo), Some(3));
+    assert_eq!(count(&bamboo), Some(2));
     let grown = panda(&world, cub).state.age.ticks - before;
     assert_eq!(grown, (-before / 20) / 10 * 20, "a tenth of the time left");
 
     let mut dandelion = holding("minecraft:golden_dandelion", 1);
-    let (_, events, _) = interact(&mut world, cub, &mut dandelion, 0, false).unwrap();
+    let (_, events, _, _) = interact(&mut world, cub, &mut dandelion, 0, false).unwrap();
     assert_eq!(events, vec![AnimalEvent::AgeLock]);
     assert!(panda(&world, cub).state.age.locked && panda(&world, cub).core.persistent);
-    let (result, _, _) = interact(&mut world, cub, &mut bamboo, 0, false).unwrap();
+    let (result, _, _, _) = interact(&mut world, cub, &mut bamboo, 0, false).unwrap();
     assert_eq!(result, InteractionResult::Pass, "a locked cub takes none");
-    assert_eq!(count(&bamboo), Some(3));
+    assert_eq!(count(&bamboo), Some(2));
 
     let parent = panda_at(&mut world, at(8.5, 0.5));
     panda_mut(&mut world, parent).state.age.set(PARENT_AGE);
-    let (result, _, _) = interact(&mut world, parent, &mut bamboo, 0, false).unwrap();
-    assert_eq!(result, InteractionResult::Pass);
+    let (result, _, _, _) = interact(&mut world, parent, &mut bamboo, 0, false).unwrap();
+    assert_eq!(result, InteractionResult::SuccessServer, "a parent eats it");
+    assert!(world.take_entity_events().is_empty());
     let fresh = panda_at(&mut world, at(12.5, 0.5));
     let mut wheat = holding("minecraft:wheat", 1);
-    let (result, _, _) = interact(&mut world, fresh, &mut wheat, 0, false).unwrap();
+    let (result, _, _, _) = interact(&mut world, fresh, &mut wheat, 0, false).unwrap();
     assert_eq!(result, InteractionResult::Pass, "only bamboo feeds a panda");
     let mut dandelion = holding("minecraft:golden_dandelion", 1);
-    let (result, _, _) = interact(&mut world, fresh, &mut dandelion, 0, false).unwrap();
+    let (result, _, _, _) = interact(&mut world, fresh, &mut dandelion, 0, false).unwrap();
     assert_eq!(
         result,
         InteractionResult::Pass,
         "an adult cannot be age locked"
     );
-    assert_eq!(count(&bamboo), Some(3));
+    assert_eq!(count(&bamboo), Some(1));
 }
 
 #[test]
@@ -954,5 +1019,421 @@ fn aggressive_and_worried_pandas_have_their_own_ambient_sounds() {
         }
         assert!(!heard.is_empty(), "{gene:?}");
         assert!(heard.iter().all(|e| e == event), "{gene:?}: {heard:?}");
+    }
+}
+
+const CAKE: &str = "minecraft:cake";
+
+fn fed_parent(world: &mut EntityWorld, position: DVec3) -> u64 {
+    let id = panda_at(world, position);
+    panda_mut(world, id).state.age.set(PARENT_AGE);
+    let mut bamboo = holding(ai::BAMBOO, 2);
+    let (result, events, _, dropped) = interact(world, id, &mut bamboo, 0, false).unwrap();
+    assert_eq!(result, InteractionResult::SuccessServer);
+    assert!(events.is_empty() && dropped.is_none());
+    id
+}
+
+fn held(world: &EntityWorld, id: u64) -> Option<(String, u8)> {
+    let held = panda(world, id).state.held.as_ref();
+    held.map(|stack| (stack.id.clone(), stack.count))
+}
+
+fn tempting(world: &mut EntityWorld, at: DVec3) -> PlayerCandidate {
+    world.set_player_controls(&[PlayerControls {
+        id: 1,
+        main_hand: Some(ai::BAMBOO.to_owned()),
+        ..PlayerControls::default()
+    }]);
+    player_at(1, at)
+}
+
+#[test]
+fn a_panda_picks_up_a_whole_stack_of_bamboo_or_a_cake_only_with_mob_griefing_and_an_empty_paw() {
+    let mut world = EntityWorld::default();
+    let mut grove = Grove::default();
+    let eater = panda_at(&mut world, at(0.5, 0.5));
+    let baker = panda_at(&mut world, at(8.5, 0.5));
+    let full = panda_at(&mut world, at(16.5, 0.5));
+    let shy = panda_at(&mut world, at(24.5, 0.5));
+    for id in [eater, baker, full, shy] {
+        panda_mut(&mut world, id).core.no_ai = true;
+    }
+    let stick = ItemStack::new("minecraft:stick", 1);
+    panda_mut(&mut world, full).state.held = Some(stick);
+    panda_mut(&mut world, shy).state.can_pick_up_loot = false;
+    let stalks = grove.drop_item(at(2.0, 0.5), ai::BAMBOO, 5, 0);
+    let wheat = grove.drop_item(at(0.5, 1.5), "minecraft:wheat", 3, 0);
+    let far = grove.drop_item(at(0.5, 3.0), ai::BAMBOO, 1, 0);
+    let late = grove.drop_item(at(8.5, 1.5), ai::BAMBOO, 2, 20);
+    let cake = grove.drop_item(at(9.5, 0.5), CAKE, 1, 0);
+    let spare = grove.drop_item(at(16.5, 1.5), ai::BAMBOO, 1, 0);
+    let ignored = grove.drop_item(at(24.5, 1.5), ai::BAMBOO, 1, 0);
+    world.set_mob_griefing(false);
+    for _ in 0..3 {
+        world.tick(&mut grove);
+        grove.age_items();
+    }
+    assert_eq!(grove.items.len(), 7, "nothing without mob_griefing");
+    assert_eq!(held(&world, eater), None);
+    world.set_mob_griefing(true);
+    world.tick(&mut grove);
+    assert_eq!(
+        held(&world, eater),
+        Some((ai::BAMBOO.to_owned(), 5)),
+        "the whole stack"
+    );
+    assert_eq!(panda(&world, eater).state.drop_chance, GUARANTEED_DROP);
+    assert!(!grove.has(stalks));
+    assert!(
+        grove.has(wheat) && grove.has(far),
+        "not wheat, nor bamboo out of reach"
+    );
+    assert_eq!(held(&world, baker), Some((CAKE.to_owned(), 1)));
+    assert!(
+        !grove.has(cake) && grove.has(late),
+        "bamboo it may not pick up yet stays"
+    );
+    assert_eq!(held(&world, full), Some(("minecraft:stick".to_owned(), 1)));
+    assert!(grove.has(spare), "a full paw takes nothing");
+    assert_eq!(held(&world, shy), None);
+    assert!(grove.has(ignored), "nor a panda that may not pick up loot");
+}
+
+#[test]
+fn a_sitting_panda_eats_after_eighty_ticks_and_finishes_after_a_hundred() {
+    let mut seeds = LegacyRandom::new(2604);
+    let mut pauses = 0;
+    for _ in 0..24 {
+        let mut world = EntityWorld::default();
+        let mut grove = Grove::default();
+        let id = fed_parent(&mut world, at(0.5, 0.5));
+        panda_mut(&mut world, id).core.random = LegacyRandom::new(seeds.next_long());
+        let start = panda(&world, id).core.body.position;
+        let mut last = goals(&world, id).eat_counter;
+        assert_eq!(last, 1, "fed, it starts eating at once");
+        let mut finished = false;
+        for _ in 0..4000 {
+            world.tick(&mut grove);
+            let now = goals(&world, id).eat_counter;
+            for sound in world.take_sounds() {
+                if sound.event != EAT_SOUND {
+                    continue;
+                }
+                assert!(
+                    last > 0 && last % 5 == 0,
+                    "a munch every fifth tick: {last}"
+                );
+                assert!(sound.volume == 0.5 || sound.volume == 1.0);
+                assert!((0.8..=1.2).contains(&sound.pitch), "{}", sound.pitch);
+                assert_eq!(sound.category, "neutral_volume");
+            }
+            let events = world.take_game_events();
+            let eaten = events.iter().filter(|e| e.event == EAT_EVENT).count();
+            let mob = panda(&world, id);
+            let sitting = mob.state.goals().unwrap().sitting;
+            if sitting {
+                let moved = mob.core.body.position - start;
+                assert!(
+                    moved.x.abs() < 1e-9 && moved.z.abs() < 1e-9,
+                    "it sits still"
+                );
+            }
+            if last > 0 && now == 0 {
+                assert!(last > EAT_PAUSE, "it eats past eighty: {last}");
+                if mob.state.held.is_some() {
+                    assert!(sitting && eaten == 0, "a pause");
+                    pauses += 1;
+                } else {
+                    assert!(last > EAT_DONE, "it finishes past a hundred: {last}");
+                    assert!(!sitting, "and stands up");
+                    assert_eq!(eaten, 1, "with the eat game event");
+                    finished = true;
+                    break;
+                }
+            } else {
+                assert_eq!(eaten, 0);
+            }
+            last = now;
+        }
+        assert!(finished);
+    }
+    assert!(pauses > 0, "now and then it pauses and starts again");
+}
+
+#[test]
+fn feeding_a_panda_in_love_seats_it_with_one_bamboo_and_returns_its_old_item() {
+    let mut world = EntityWorld::default();
+    let mut grove = Grove::default();
+    let id = panda_at(&mut world, at(0.5, 0.5));
+    let mut bamboo = holding(ai::BAMBOO, 5);
+    let (_, events, _, dropped) = interact(&mut world, id, &mut bamboo, 0, false).unwrap();
+    assert_eq!(events, vec![AnimalEvent::Hearts]);
+    assert!(dropped.is_none());
+    assert_eq!(world.take_entity_events(), vec![(id, 18)]);
+    let mob = panda_mut(&mut world, id);
+    mob.state.held = Some(ItemStack::new(CAKE, 1));
+    mob.state.drop_chance = GUARANTEED_DROP;
+    mob.state.ai.forward = 0.4;
+    let (result, events, position, dropped) =
+        interact(&mut world, id, &mut bamboo, 0, false).unwrap();
+    assert_eq!(result, InteractionResult::SuccessServer);
+    assert!(events.is_empty() && world.take_entity_events().is_empty());
+    assert_eq!(position, at(0.5, 0.5));
+    let dropped = dropped.map(|stack| (stack.id, stack.count));
+    assert_eq!(dropped, Some((CAKE.to_owned(), 1)), "its old item");
+    assert_eq!(count(&bamboo), Some(3));
+    assert_eq!(held(&world, id), Some((ai::BAMBOO.to_owned(), 1)));
+    let mob = panda(&world, id);
+    assert_eq!(
+        mob.state.drop_chance, GUARANTEED_DROP,
+        "the slot stays guaranteed"
+    );
+    assert!(mob.state.in_love > 0);
+    let sat = mob.state.goals().unwrap();
+    assert!(sat.sitting && sat.eat_counter == 1);
+    assert_eq!(mob.state.ai.forward, 0.0);
+    assert!(mob.state.ai.state.navigation.is_done());
+    let (result, _, _, _) = interact(&mut world, id, &mut bamboo, 0, false).unwrap();
+    assert_eq!(result, InteractionResult::Pass, "not while it sits");
+    assert_eq!(count(&bamboo), Some(3));
+
+    let player = tempting(&mut world, at(3.5, 0.5));
+    for _ in 0..40 {
+        world.tick_with_players(&mut grove, &[player]);
+        let position = panda(&world, id).core.body.position;
+        assert_eq!((position.x, position.z), (0.5, 0.5), "tempted, it sits on");
+    }
+    assert!(goals(&world, id).eating());
+
+    let creative = panda_at(&mut world, at(8.5, 0.5));
+    panda_mut(&mut world, creative).state.in_love = 300;
+    panda_mut(&mut world, creative).state.held = Some(ItemStack::new(CAKE, 1));
+    let (result, _, _, dropped) = interact(&mut world, creative, &mut bamboo, 0, true).unwrap();
+    assert_eq!(result, InteractionResult::SuccessServer);
+    assert!(
+        dropped.is_none(),
+        "a creative player's bamboo replaces the cake"
+    );
+    assert_eq!(count(&bamboo), Some(3));
+    assert_eq!(held(&world, creative), Some((ai::BAMBOO.to_owned(), 1)));
+
+    let wet = panda_at(&mut world, at(16.5, 0.5));
+    panda_mut(&mut world, wet).state.in_love = 300;
+    let fluid = &mut panda_mut(&mut world, wet).state.ai.state.fluid;
+    *fluid = FluidFrame {
+        water_height: 0.4,
+        lava_height: 0.0,
+    };
+    let (result, _, _, _) = interact(&mut world, wet, &mut bamboo, 0, false).unwrap();
+    assert_eq!(result, InteractionResult::Pass, "not in water");
+    assert!(!goals(&world, wet).sitting && held(&world, wet).is_none());
+}
+
+fn sitter(lazy: bool, seed: u64) -> MonsterAi {
+    let mob = Panda::spawn(KIND, at(0.5, 0.5)).unwrap();
+    let mut ai = (*mob.state.ai).clone();
+    ai.retain_goals(&["PandaSitGoal"]);
+    ai.state.body.on_ground = true;
+    ai.state.random = LegacyRandom::new(seed);
+    if lazy {
+        sit_goals(&mut ai).variant = Gene::Lazy;
+    }
+    ai
+}
+
+fn sit_goals(ai: &mut MonsterAi) -> &mut PandaGoals {
+    ai.state.extra.get_mut::<PandaGoals>().unwrap()
+}
+
+#[test]
+fn a_panda_that_stops_sitting_drops_its_item_and_waits() {
+    let grove = Grove::default();
+    let food = WorldItem {
+        id: 1,
+        position: at(3.5, 0.5),
+        item: ai::BAMBOO.to_owned(),
+        count: 1,
+        components: None,
+        pickup_delay: 0,
+    };
+    let wet = FluidFrame {
+        water_height: 0.4,
+        lava_height: 0.0,
+    };
+    let mut seeds = LegacyRandom::new(1717);
+    let mut waits = [Vec::new(), Vec::new()];
+    for (index, lazy) in [false, true].into_iter().enumerate() {
+        for _ in 0..40 {
+            let mut ai = sitter(lazy, seeds.next_long());
+            ai.state.tick_count = 100;
+            sit_goals(&mut ai).holding = true;
+            ai.tick_goals(&grove, true);
+            assert_eq!(ai.running_goals(), ["PandaSitGoal"]);
+            let goals = sit_goals(&mut ai);
+            assert!(goals.sitting && std::mem::take(&mut goals.sat_down));
+            ai.state.fluid = wet;
+            ai.state.tick_count = 102;
+            ai.tick_goals(&grove, true);
+            assert!(ai.running_goals().is_empty(), "in water it gets up");
+            let goals = sit_goals(&mut ai);
+            assert!(!goals.sitting && !goals.holding);
+            assert_eq!(goals.dropped, Some(at(0.5, 0.5)), "and lets go of it");
+            goals.food = vec![food.clone()];
+            ai.state.fluid = FluidFrame::default();
+            let mut tick = 102;
+            while ai.running_goals().is_empty() {
+                tick += 2;
+                ai.state.tick_count = tick;
+                ai.tick_goals(&grove, true);
+            }
+            waits[index].push(tick - 102);
+            assert!(
+                !ai.state.navigation.is_done(),
+                "it walks to the bamboo it saw"
+            );
+            assert!(!sit_goals(&mut ai).sitting);
+        }
+    }
+    for (index, most) in [(0, 3180), (1, 1180)] {
+        let ok = waits[index].iter().all(|wait| (200..=most).contains(wait));
+        assert!(ok, "{:?}", waits[index]);
+    }
+    assert!(
+        waits[0].iter().any(|&wait| wait > 1180),
+        "only lazy pandas always sit again within a minute"
+    );
+
+    let mut ai = sitter(false, 5);
+    ai.state.tick_count = 100;
+    sit_goals(&mut ai).food = vec![food.clone()];
+    ai.tick_goals(&grove, true);
+    assert_eq!(ai.running_goals(), ["PandaSitGoal"]);
+    assert!(!sit_goals(&mut ai).sitting && !ai.state.navigation.is_done());
+    ai.state.fluid = wet;
+    ai.state.tick_count = 102;
+    ai.tick_goals(&grove, true);
+    assert_eq!(
+        sit_goals(&mut ai).dropped,
+        None,
+        "nothing held, nothing dropped"
+    );
+    ai.state.fluid = FluidFrame::default();
+    ai.state.tick_count = 104;
+    ai.tick_goals(&grove, true);
+    assert_eq!(ai.running_goals(), ["PandaSitGoal"], "and no wait");
+
+    let mut world = EntityWorld::default();
+    let mut grove = Grove::default();
+    let id = panda_at(&mut world, at(0.5, 0.5));
+    panda_mut(&mut world, id).state.held = Some(ItemStack::new(CAKE, 1));
+    for _ in 0..4 {
+        world.tick(&mut grove);
+    }
+    assert!(goals(&world, id).sitting, "it sits down with its cake");
+    let feet = panda(&world, id).core.body.position;
+    let player = tempting(&mut world, at(4.5, 0.5));
+    for _ in 0..4 {
+        world.tick_with_players(&mut grove, &[player]);
+    }
+    assert_eq!(
+        held(&world, id),
+        None,
+        "bamboo tempts it up, and it lets go"
+    );
+    assert!(!goals(&world, id).sitting);
+    let cake = &grove.items[0];
+    assert_eq!(
+        (cake.item.as_str(), cake.count, cake.pickup_delay),
+        (CAKE, 1, PICKUP_DELAY)
+    );
+    assert_eq!(cake.position, feet, "at its feet");
+    let (_, push) = grove.dropped[0];
+    assert!(
+        push.y == 0.2 && push.x.abs() <= 0.1 && push.z.abs() <= 0.1,
+        "{push}"
+    );
+}
+
+#[test]
+fn a_held_item_drops_on_death_always_when_picked_up() {
+    let mut seeds = LegacyRandom::new(8085);
+    let mut dies = |held: Option<(&str, u8, f32)>, baby: bool, by_player: bool, drops: bool| {
+        let mut world = EntityWorld::default();
+        world.set_mob_drops(drops);
+        let id = if baby {
+            cub_at(&mut world, at(0.5, 0.5))
+        } else {
+            panda_at(&mut world, at(0.5, 0.5))
+        };
+        let mob = panda_mut(&mut world, id);
+        mob.core.random = LegacyRandom::new(seeds.next_long());
+        if let Some((item, count, chance)) = held {
+            mob.state.held = Some(ItemStack::new(item, count));
+            mob.state.drop_chance = chance;
+        }
+        if by_player {
+            let hit = world.player_attack(&attack(1, at(3.5, 0.5), 100.0), id);
+            assert!(hit.died);
+        } else {
+            let magic = Hurt::new(100.0, "minecraft:magic", DamageSourceKind::Magic);
+            assert!(world.hurt_family(id, &magic).unwrap().died);
+        }
+        let deaths = world.take_deaths();
+        let death = deaths.into_iter().find(|death| death.id == id).unwrap();
+        let stacks = death.equipment.into_iter();
+        stacks
+            .map(|stack| (stack.id, stack.count))
+            .collect::<Vec<_>>()
+    };
+    let picked = Some((ai::BAMBOO, 5, GUARANTEED_DROP));
+    for by_player in [false, true] {
+        let drops = dies(picked, false, by_player, true);
+        assert_eq!(drops, [(ai::BAMBOO.to_owned(), 5)], "{by_player}");
+        assert!(
+            dies(picked, true, by_player, true).is_empty(),
+            "a cub drops nothing"
+        );
+        assert!(
+            dies(picked, false, by_player, false).is_empty(),
+            "nor without mob_drops"
+        );
+    }
+    let fed = Some((ai::BAMBOO, 1, DROP_CHANCE));
+    let mut shaken = 0;
+    for _ in 0..800 {
+        assert!(
+            dies(fed, false, false, true).is_empty(),
+            "only a player's kill"
+        );
+        shaken += dies(fed, false, true, true).len();
+    }
+    assert!((40..=100).contains(&shaken), "{shaken} of 800");
+    assert!(dies(None, false, true, true).is_empty());
+}
+
+#[test]
+fn a_worried_panda_does_not_settle_on_picked_up_bamboo() {
+    for (gene, settles) in [(Gene::Worried, false), (Gene::Normal, true)] {
+        let mut world = EntityWorld::default();
+        let mut grove = Grove::default();
+        let id = panda_with(&mut world, at(0.5, 0.5), gene);
+        panda_mut(&mut world, id).core.random = LegacyRandom::new(31);
+        grove.drop_item(at(0.5, 0.5), ai::BAMBOO, 3, 0);
+        let (mut sat, mut ate) = (0, false);
+        for _ in 0..600 {
+            world.tick(&mut grove);
+            grove.age_items();
+            let goals = goals(&world, id);
+            sat += usize::from(goals.sitting);
+            ate |= goals.eating();
+        }
+        assert_eq!(ate, settles, "{gene:?}");
+        if !settles {
+            assert_eq!(sat, 0, "it never stays sat");
+            let lying: i32 = grove.items.iter().map(|item| item.count).sum();
+            let kept = held(&world, id).map_or(0, |(_, count)| i32::from(count));
+            assert_eq!(lying + kept, 3, "and eats none of it");
+        }
     }
 }

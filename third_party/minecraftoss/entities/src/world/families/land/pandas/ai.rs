@@ -4,15 +4,18 @@ use crate::monster_ai::{
     AvoidEntityGoal, FloatGoal, HurtByTargetGoal, MeleeAttackGoal, MonsterGoalContext,
     RandomLookGoal, StrollGoal, Target,
 };
+use crate::movement::Body;
+use crate::navigation::navigate_walk_to_entity;
 use crate::walk_path::{WalkProfile, WalkTarget};
 use crate::world::families::MonsterSpec;
+use crate::world::families::goals::reduced_tick_delay;
 use crate::world::families::land::animal_goals::{
     AnimalExtra, AnimalGoals, BreedGoal, FollowParentGoal, PanicGoal, TemptGoal, is_monster_class,
     panic_environmental_cause,
 };
 use glam::DVec3;
-use minecraftoss_player::World;
 use minecraftoss_player::path_type::PathType;
+use minecraftoss_player::{World, WorldItem};
 
 pub const PANIC_SPEED: f64 = 2.0;
 pub const BREED_SPEED: f64 = 1.0;
@@ -34,8 +37,17 @@ pub const BAMBOO_REACH: i32 = 7;
 pub const BAMBOO_HEIGHT: i32 = 2;
 pub const BAMBOO: &str = "minecraft:bamboo";
 pub const PLAYER: &str = "minecraft:player";
+pub const SIT_REACH: f64 = 6.0;
+pub const FETCH_REACH: f64 = 8.0;
+pub const FETCH_SPEED: f64 = 1.2000000476837158;
+pub const SIT_LASTS: u32 = 600;
+pub const SIT_ENDS: u32 = 2000;
+pub const SIT_COOLDOWN: i32 = 10;
+pub const SIT_COOLDOWN_SPREAD: u32 = 150;
+pub const LAZY_SIT_COOLDOWN_SPREAD: u32 = 50;
+pub const ITEM_SIZE: f64 = 0.25;
 
-pub const GOAL_NAMES: [&str; 11] = [
+pub const GOAL_NAMES: [&str; 12] = [
     "FloatGoal",
     "PandaPanicGoal",
     "PandaBreedGoal",
@@ -43,6 +55,7 @@ pub const GOAL_NAMES: [&str; 11] = [
     "TemptGoal",
     "PandaAvoidGoal",
     "PandaAvoidGoal",
+    "PandaSitGoal",
     "PandaLookAtPlayerGoal",
     "RandomLookAroundGoal",
     "FollowParentGoal",
@@ -76,6 +89,10 @@ pub struct PandaGoals {
     pub roll_counter: i32,
     pub got_bamboo: bool,
     pub did_bite: bool,
+    pub holding: bool,
+    pub food: Vec<WorldItem>,
+    pub sat_down: bool,
+    pub dropped: Option<DVec3>,
 }
 
 impl PandaGoals {
@@ -144,6 +161,7 @@ fn goals() -> GoalSelector<MonsterGoalContext> {
             gate: worried_and_able,
         },
     );
+    selector.add(7, PandaSitGoal::default());
     selector.add(9, PandaLookAtPlayerGoal);
     selector.add(10, RandomLookGoal);
     selector.add(13, FollowParentGoal::<PandaGoals>::new(FOLLOW_PARENT_SPEED));
@@ -177,6 +195,32 @@ fn panda(ctx: &MonsterGoalContext) -> Option<&PandaGoals> {
 
 pub fn can_perform_action(ctx: &MonsterGoalContext) -> bool {
     panda(ctx).is_some_and(PandaGoals::can_perform_action)
+}
+
+pub fn held_still(ctx: &MonsterGoalContext) -> bool {
+    panda(ctx).is_some_and(|goals| !goals.can_perform_action())
+}
+
+pub fn within(body: &Body, item: &WorldItem, reach: f64) -> bool {
+    let (p, q) = (body.position, item.position);
+    let (half, size) = (f64::from(body.width) / 2.0 + reach, ITEM_SIZE / 2.0);
+    q.x + size > p.x - half
+        && q.x - size < p.x + half
+        && q.y + ITEM_SIZE > p.y - reach
+        && q.y < p.y + f64::from(body.height) + reach
+        && q.z + size > p.z - half
+        && q.z - size < p.z + half
+}
+
+fn try_to_sit(ctx: &mut MonsterGoalContext) {
+    if ctx.fluid.in_water() {
+        return;
+    }
+    ctx.navigation.stop();
+    if let Some(goals) = ctx.extra.get_mut::<PandaGoals>() {
+        goals.sat_down = true;
+        goals.sitting = true;
+    }
 }
 
 fn worried_and_able(ctx: &MonsterGoalContext) -> bool {
@@ -346,6 +390,104 @@ impl Goal<MonsterGoalContext> for PandaBreedGoal {
 
     fn tick_world(&mut self, ctx: &mut MonsterGoalContext, world: &dyn World) {
         self.breed.tick_world(ctx, world);
+    }
+}
+
+#[derive(Clone, Default)]
+struct PandaSitGoal {
+    cooldown: i32,
+}
+
+impl Goal<MonsterGoalContext> for PandaSitGoal {
+    fn controls(&self) -> Controls {
+        Controls::new(&[Control::Move])
+    }
+
+    fn can_start(&mut self, ctx: &mut MonsterGoalContext, _world: &dyn World) -> bool {
+        let Some(goals) = panda(ctx) else {
+            return false;
+        };
+        if self.cooldown > ctx.tick_count
+            || goals.baby
+            || ctx.fluid.in_water()
+            || !goals.can_perform_action()
+            || goals.unhappy > 0
+        {
+            return false;
+        }
+        goals.holding
+            || goals
+                .food
+                .iter()
+                .any(|item| within(&ctx.body, item, SIT_REACH))
+    }
+
+    fn can_continue(&mut self, ctx: &mut MonsterGoalContext, _world: &dyn World) -> bool {
+        if ctx.fluid.in_water() {
+            return false;
+        }
+        let lazy = panda(ctx).is_some_and(|goals| goals.variant == Gene::Lazy);
+        if !lazy && ctx.random.next_int(reduced_tick_delay(SIT_LASTS)) == 1 {
+            return false;
+        }
+        ctx.random.next_int(reduced_tick_delay(SIT_ENDS)) != 1
+    }
+
+    fn start_world(&mut self, ctx: &mut MonsterGoalContext, world: &dyn World) {
+        if panda(ctx).is_some_and(|goals| goals.holding) {
+            try_to_sit(ctx);
+        } else {
+            let first = panda(ctx).and_then(|goals| {
+                let mut near = goals.food.iter();
+                near.find(|item| within(&ctx.body, item, FETCH_REACH))
+                    .map(|item| item.position)
+            });
+            if let Some(target) = first {
+                let profile = ctx.profile();
+                navigate_walk_to_entity(
+                    &ctx.body,
+                    &mut ctx.navigation,
+                    world,
+                    &profile,
+                    ctx.fluid,
+                    target,
+                    FETCH_SPEED,
+                    1,
+                );
+            }
+        }
+        self.cooldown = 0;
+    }
+
+    fn stop(&mut self, ctx: &mut MonsterGoalContext) {
+        let Some((holding, lazy)) =
+            panda(ctx).map(|goals| (goals.holding, goals.variant == Gene::Lazy))
+        else {
+            return;
+        };
+        if holding {
+            let spread = if lazy {
+                LAZY_SIT_COOLDOWN_SPREAD
+            } else {
+                SIT_COOLDOWN_SPREAD
+            };
+            let wait = SIT_COOLDOWN + ctx.random.next_int(spread) as i32;
+            self.cooldown = ctx.tick_count + wait * 20;
+        }
+        let at = ctx.body.position;
+        if let Some(goals) = ctx.extra.get_mut::<PandaGoals>() {
+            if holding {
+                goals.holding = false;
+                goals.dropped = Some(at);
+            }
+            goals.sitting = false;
+        }
+    }
+
+    fn tick(&mut self, ctx: &mut MonsterGoalContext) {
+        if panda(ctx).is_some_and(|goals| goals.holding && !goals.sitting) {
+            try_to_sit(ctx);
+        }
     }
 }
 
