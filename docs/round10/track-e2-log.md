@@ -1237,3 +1237,40 @@ After f26f20f6, the unfinished commit of this group (stopped for the week on 202
 ```
 IW4L_MINECRAFT_KIT=minecraft:potion@long_water_breathing,minecraft:potion@long_water_breathing,minecraft:potion@long_water_breathing,minecraft:potion@night_vision,minecraft:potion@night_vision,minecraft:oak_boat,minecraft:iron_shovel,minecraft:diamond_shovel,minecraft:diamond_pickaxe,minecraft:compass,minecraft:torch*64,minecraft:cobblestone*64,minecraft:cooked_beef*32,minecraft:turtle_helmet,minecraft:diamond_sword,minecraft:shield,minecraft:spyglass
 ```
+
+## Group maps-colours
+
+### 1. Minecraft reads block map colours from the 26.3 jar
+
+After 5e83e1f0.
+
+- **Vanilla (26.3, checked with javap):**
+  - `BlockBehaviour$Properties`: the `mapColor` function starts as `state -> MapColor.NONE`. `mapColor(MapColor)` and `mapColor(DyeColor)` store constant functions (`dye.getMapColor()`), `mapColor(Function)` stores the function itself. `ofLegacyCopy(block)` copies the block's `mapColor`, and `ofFullCopy` starts from `ofLegacyCopy`.
+  - `BlockStateBase.<init>` keeps `properties.mapColor.apply(state)` for every state, and `getMapColor` returns it. `BlockBehaviour.defaultMapColor()` applies the function to `defaultBlockState()`.
+  - No block constructor changes the map colour: the only classes in the jar that name `mapColor` are `Blocks`, `BlockBehaviour`, `BlockBehaviour$Properties`, `BlockBehaviour$BlockStateBase`, `DyeColor` and `MapItemSavedData$MapPatch`.
+  - `Blocks.<clinit>` has no branches. It registers through `register` (four overloads, all ending in `BuiltInRegistries.BLOCK`, so a block's registry id is its registration order), the helpers `registerSlab`, `registerStair`, `registerLegacyStair` and `registerWall` (`ofLegacyCopy` or `ofFullCopy` of the base block) and `wallVariant`, and the property builders:
+    - `logProperties(top, side, sound)`: `axis == Y ? top : side`.
+    - `netherStemProperties(colour)`, `leavesProperties` (`PLANT`), `shulkerBoxProperties(colour)` and `candleProperties(colour)`.
+    - `waterloggedMapColor(colour)`: `WATER` while waterlogged (barrier, light).
+  - 26.3 registers the dyed blocks through `ColorCollection.registerBlocks(ids, register, factory, dye -> properties)`, once per dye in `DyeColor` order, and their stairs and slabs through `ColorCollection.zipMap`. Copper blocks come from `WeatheringCopperCollection.registerBlocks(ids, register, waxed, weathering, state -> properties)`: unaffected, exposed, weathered and oxidized, then the four waxed ones. Several copper property lambdas pick their colour with a `switch` over `Blocks$1.$SwitchMap$…WeatherState`.
+  - The state lambdas: beds `part == FOOT ? dye.getMapColor() : WOOL`, crops `age >= 6 ? COLOR_YELLOW : PLANT`, lightning rods `COPPER_BLOCK.weathering().pick(state).defaultMapColor()` (the waxed ones the same through `waxed()`).
+  - `DyeColor(id, name, diffuse, mapColor, terracottaColor, firework, text)`: dyed terracotta takes `getTerracottaColor()`.
+  - Copper bars and chains have no map colour (`Properties.of()` without `mapColor`), so they are `NONE` like iron bars.
+- **Changed:**
+  - `minecraft_terrain/src/block_map_colors.rs` (new): `BlockMapColors::read_jar(jar, states)` gives the `MapColor` id of every block state (`id(state)`, `NONE` 0 when a block has none). It runs `Blocks.<clinit>` in a small bytecode interpreter: the `Blocks` helpers and lambdas are interpreted, and `register`, `Properties`, `DyeColor`, `Block.defaultMapColor`, `BlockState.getValue` and the colour and copper collections are built in. The names come from `BlockItemIds` and `BlockIds`, the dye colours from `DyeColor.<clinit>`, the switch cases from `Blocks$1`. Property fields are followed through static aliases and super classes to their name (`BedBlock.PART` → `AbstractBedBlock.PART` → `BlockStateProperties.BED_PART` → `"part"`). The `BlockStates` trait gives the states, and `BlockRegistry` (the 26.3 block catalog) implements it.
+  - `minecraft_terrain/src/class_file.rs`: `ClassFile.super_name`, read from the class file. `keyframes.rs`: its test class sets it.
+  - `minecraft_terrain/src/lib.rs`: the module.
+- **Tests:**
+  - `block_map_colors::tests::blocks_take_their_map_colour_from_their_properties_like_vanilla`: a hand-made `Blocks` class: a fixed colour, `ofLegacyCopy`, a log whose axis lambda reads a property through an alias and a super class, `defaultMapColor` of the log's default state, and a colour collection with `mapColor(DyeColor)`.
+  - `block_map_colors::tests::a_block_without_a_map_colour_is_none_and_the_catalog_must_match_the_jar`: a wrong name or block count in the catalog is an error naming the block; without `mapColor` every block is `NONE`.
+  - `block_map_colors::tests::switches_jump_to_their_case_or_their_default`: `tableswitch` and `lookupswitch` targets.
+  - `block_map_colors::tests::every_26_3_block_state_gets_its_vanilla_map_colour` (with the 26.3 jar and catalog): every one of the catalog's states gets an id; air 0, `grass_block` 1, `sand` 2, `stone` 11, `water` 12, `oak_log[axis=y]` 13 and `[axis=x]`/`[axis=z]` 34 (`PODZOL`), oak planks 13, red bed head 3 (`WOOL`) and foot 28 (`COLOR_RED`), white wool 8, red terracotta 50, wheat age 0 7 and age 7 18, copper 15, exposed copper 44, oxidized and waxed oxidized copper 55, the oxidized and waxed exposed lightning rods like their copper, copper and iron bars 0, a waterlogged barrier or light 12 and a dry barrier 0.
+- **Decisions:**
+  - The n-th block `Blocks.<clinit>` registers is catalog block n, as vanilla's registry ids follow registration. Every name the id classes give (plain ids and the dyed collections) must match the catalog at that place, and the counts must match, or reading fails. The copper collections' names are not worked out and are checked by their place only.
+  - Block factories are never run, since no block constructor touches the map colour. A block keeps the colour rule it had when it registered, as each state keeps its colour from construction.
+  - An enum property value matches a constant by its lower-case name (`BedPart.FOOT` ↔ `foot`, `Direction$Axis.Y` ↔ `y`).
+  - Anything the interpreter does not know fails the whole read with the place in the bytecode, rather than guessing a colour.
+  - The table is not used in game yet: group `maps-explore` (commit 2) loads it with the world for `MapItem.update`.
+- **Protocol:** no message change.
+- **Test steps:** none in game for this commit alone: nothing reads the table until `maps-explore` commit 2 ("Minecraft maps fill in as their holder walks"), whose steps check the colours.
+- **Kit:** none.

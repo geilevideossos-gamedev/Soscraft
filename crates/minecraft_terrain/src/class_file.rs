@@ -92,6 +92,7 @@ pub struct Bootstrap {
 #[derive(Clone, Debug, PartialEq)]
 pub struct ClassFile {
     pub name: String,
+    pub super_name: Option<String>,
     pub pool: Vec<Constant>,
     pub fields: Vec<Field>,
     pub methods: Vec<Method>,
@@ -189,6 +190,7 @@ impl ClassFile {
         }
         let mut class = ClassFile {
             name: String::new(),
+            super_name: None,
             pool,
             fields: Vec::new(),
             methods: Vec::new(),
@@ -200,7 +202,8 @@ impl ClassFile {
             .class_name(this)
             .ok_or_else(|| anyhow!("class file has no name"))?
             .to_owned();
-        r.take(2)?;
+        let parent = r.u16()?;
+        class.super_name = class.class_name(parent).map(str::to_owned);
         let interfaces = r.u16()? as usize;
         r.take(interfaces * 2)?;
         let fields = r.u16()?;

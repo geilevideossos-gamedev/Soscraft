@@ -1189,6 +1189,7 @@ mod tests {
         code.push(RETURN);
         let mut class = ClassFile {
             name: String::new(),
+            super_name: None,
             pool: pool.0,
             fields: Vec::new(),
             methods: vec![Method {

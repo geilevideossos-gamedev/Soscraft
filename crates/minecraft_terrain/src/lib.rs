@@ -54,6 +54,7 @@ pub mod locate;
 pub mod lodestone;
 pub mod map_picture;
 pub mod maps;
+pub mod block_map_colors;
 pub mod mesh;
 pub mod model;
 pub mod pack;
