@@ -179,6 +179,7 @@ impl Chicken {
             self.body.velocity.y *= 0.6;
         }
         self.flap += self.flapping * 2.0_f32;
+        self.body.flap_speed = Some(self.flap_speed);
         if self.health > 0.0 && !self.age.baby() && !self.is_chicken_jockey {
             self.egg_time -= 1;
             if self.egg_time <= 0 {
@@ -187,6 +188,7 @@ impl Chicken {
                 let _ = random.next_float();
                 let _ = random.next_float();
                 self.egg_time = random.next_int(6000) as i32 + 6000;
+                self.body.game_events.push(("minecraft:entity_place", self.body.position, None));
                 return true;
             }
         }

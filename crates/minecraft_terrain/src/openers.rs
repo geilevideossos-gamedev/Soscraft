@@ -24,6 +24,13 @@ impl OpenerEvent {
     pub fn block_event(&self) -> (BlockPos, u8, u32) {
         (self.pos, SET_OPEN_COUNT, self.count)
     }
+
+    pub fn game_event(&self) -> Option<&'static str> {
+        self.change.map(|change| match change {
+            Change::Opened => crate::game_events::CONTAINER_OPEN,
+            Change::Closed => crate::game_events::CONTAINER_CLOSE,
+        })
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -209,6 +216,37 @@ mod tests {
         assert_eq!(
             event(pos, 2, None).unwrap().block_event(),
             (pos, SET_OPEN_COUNT, 2)
+        );
+    }
+
+    #[test]
+    fn opening_a_chest_posts_container_open_once_and_closing_the_last_viewer_posts_close() {
+        let pos = (4, 70, -9);
+        let mut openers = Openers::default();
+        let posted: Vec<Option<&str>> = [
+            openers.open(pos, STEVE, false),
+            openers.open(pos, ALEX, false),
+            openers.close(pos, STEVE),
+            openers.close(pos, ALEX),
+        ]
+        .iter()
+        .map(|event| event.and_then(|event| event.game_event()))
+        .collect();
+        assert_eq!(
+            posted,
+            vec![
+                Some(crate::game_events::CONTAINER_OPEN),
+                None,
+                None,
+                Some(crate::game_events::CONTAINER_CLOSE)
+            ]
+        );
+        openers.open(pos, STEVE, false);
+        let left = openers.leave(STEVE);
+        assert_eq!(
+            left.iter().map(OpenerEvent::game_event).collect::<Vec<_>>(),
+            vec![Some(crate::game_events::CONTAINER_CLOSE)],
+            "a player who leaves closes it"
         );
     }
 

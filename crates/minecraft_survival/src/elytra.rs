@@ -10,6 +10,7 @@ const GLIDER: &str = "minecraft:glider";
 const REMOVED_GLIDER: &str = "!minecraft:glider";
 const TICK_SECONDS: f64 = 0.05;
 const WEAR_TICKS: u32 = 20;
+const GLIDE_EVENT_TICKS: u32 = 10;
 const SLOW_FALL: f64 = -0.5;
 const WALL_SCALE: f64 = 10.0;
 const WALL_GRACE: f64 = 3.0;
@@ -25,6 +26,7 @@ pub struct Flight {
 pub struct Glided {
     pub wall_damage: Option<f32>,
     pub worn: u32,
+    pub glides: u32,
 }
 
 #[derive(Default)]
@@ -105,6 +107,9 @@ impl Elytra {
                 continue;
             }
             self.fall_fly_ticks += 1;
+            if self.fall_fly_ticks.is_multiple_of(GLIDE_EVENT_TICKS) {
+                glided.glides += 1;
+            }
             if self.fall_fly_ticks.is_multiple_of(WEAR_TICKS)
                 && wears
                 && wear(inventory, &mut self.random)
@@ -200,6 +205,23 @@ mod tests {
         let mut flier = Elytra::default();
         assert_eq!(flier.step(GLIDING, 10.0, &mut creative, false).worn, 0);
         assert_eq!(damage(&creative), 0);
+    }
+
+    #[test]
+    fn gliding_is_heard_every_ten_ticks_also_in_creative() {
+        let mut creative = wearing(None);
+        let mut elytra = Elytra::default();
+        let glides: Vec<u32> = (0..25)
+            .map(|_| elytra.step(GLIDING, 0.05, &mut creative, false).glides)
+            .collect();
+        assert_eq!(glides.iter().sum::<u32>(), 2);
+        assert_eq!((glides[9], glides[19]), (1, 1));
+        elytra.step(Flight::default(), 0.05, &mut creative, false);
+        assert_eq!(
+            elytra.step(GLIDING, 0.45, &mut creative, false).glides,
+            0,
+            "landing starts the count over"
+        );
     }
 
     #[test]

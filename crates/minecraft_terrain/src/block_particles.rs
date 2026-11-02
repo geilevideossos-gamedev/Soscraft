@@ -6,7 +6,7 @@ use crate::{
     scene::{Block, BlockPos, Scene},
 };
 use anyhow::Result;
-use glam::{Vec2, Vec3};
+use glam::{DVec3, Vec2, Vec3};
 use std::collections::HashSet;
 
 struct Fragment {
@@ -26,6 +26,35 @@ pub struct BlockParticles {
     fragments: Vec<Fragment>,
     tint: BiomeTint,
     rng: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BlockDust {
+    pub at: DVec3,
+    pub inside: BlockPos,
+    pub below: BlockPos,
+    pub count: u32,
+}
+
+impl BlockDust {
+    pub fn of(feet: DVec3, at: DVec3, count: u32) -> BlockDust {
+        let cell = |y: f64| (feet.x.floor() as i32, y.floor() as i32, feet.z.floor() as i32);
+        BlockDust {
+            at,
+            inside: cell(feet.y),
+            below: cell(feet.y - 1.0e-5),
+            count,
+        }
+    }
+
+    pub fn block<'a, S: Scene>(&self, scene: &'a S) -> Option<(BlockPos, &'a Block)> {
+        match scene.block(self.inside) {
+            Some(block) if !matches!(block.id.path.as_str(), "air" | "cave_air" | "void_air") => {
+                Some((self.inside, block))
+            }
+            _ => scene.block(self.below).map(|block| (self.below, block)),
+        }
+    }
 }
 
 impl BlockParticles {
@@ -111,6 +140,32 @@ impl BlockParticles {
             fragment.size *= 0.6;
         }
         Ok(true)
+    }
+
+    pub fn spawn_dust<S: Scene>(
+        &mut self,
+        packs: &PackStack,
+        scene: &S,
+        dust: &BlockDust,
+        atlas: &Atlas,
+    ) -> Result<bool> {
+        let Some((pos, block)) = dust.block(scene) else {
+            return Ok(false);
+        };
+        let Some((texture, tint)) = self.material(packs, scene, pos, block, atlas)? else {
+            return Ok(false);
+        };
+        self.spawn_points(dust.at.as_vec3(), dust.count, texture, tint);
+        Ok(true)
+    }
+
+    fn spawn_points(&mut self, at: Vec3, count: u32, texture: ResourceId, tint: [f32; 3]) {
+        for _ in 0..count {
+            self.spawn_fragment(at, Vec3::ZERO, texture.clone(), tint);
+        }
+        if self.fragments.len() > 4096 {
+            self.fragments.drain(..self.fragments.len() - 4096);
+        }
     }
 
     fn material<S: Scene>(
@@ -492,6 +547,49 @@ mod tests {
             && f.texture == texture
             && f.velocity.y > 0.0
             && f.position == Vec3::new(0.5, 64.0, 0.5)));
+    }
+
+    #[test]
+    fn block_dust_comes_from_the_block_it_is_in_or_else_the_block_below() {
+        let mut scene = HandcraftedScene::new();
+        scene.set((0, 63, 0), Some(Block::new("minecraft:stone")));
+        let feet = DVec3::new(0.5, 64.0, 0.5);
+        let dust = BlockDust::of(feet, feet + DVec3::Y, 20);
+        assert_eq!(
+            (dust.at, dust.inside, dust.below, dust.count),
+            (DVec3::new(0.5, 65.0, 0.5), (0, 64, 0), (0, 63, 0), 20)
+        );
+        let path = |dust: &BlockDust, scene: &HandcraftedScene| {
+            dust.block(scene)
+                .map(|(pos, block)| (pos, block.id.path.clone()))
+        };
+        assert_eq!(path(&dust, &scene), Some(((0, 63, 0), "stone".to_owned())));
+        scene.set((0, 64, 0), Some(Block::new("minecraft:snow")));
+        assert_eq!(path(&dust, &scene), Some(((0, 64, 0), "snow".to_owned())));
+        scene.set((0, 64, 0), Some(Block::new("minecraft:cave_air")));
+        assert_eq!(path(&dust, &scene), Some(((0, 63, 0), "stone".to_owned())));
+        scene.set((0, 64, 0), None);
+        let flying = BlockDust::of(DVec3::new(0.5, 64.5, 0.5), feet, 1);
+        assert_eq!((flying.inside, flying.below), ((0, 64, 0), (0, 64, 0)));
+        assert_eq!(path(&flying, &scene), None);
+        let west = BlockDust::of(DVec3::new(-0.5, 70.0, -2.5), feet, 1);
+        assert_eq!((west.inside, west.below), ((-1, 70, -3), (-1, 69, -3)));
+    }
+
+    #[test]
+    fn dust_starts_where_it_is_raised_and_flies_off_slowly() {
+        let packs = PackStack::open(vec![]).unwrap();
+        let mut particles = BlockParticles::new(&packs).unwrap();
+        let texture = ResourceId::parse("minecraft:block/stone").unwrap();
+        let at = Vec3::new(0.5, 64.0, 0.5);
+        particles.spawn_points(at, 20, texture.clone(), [1.0; 3]);
+        assert_eq!(particles.len(), 20);
+        assert!(particles.fragments.iter().all(|f| f.position == at
+            && f.texture == texture
+            && f.color == [0.6; 3]
+            && (f.velocity - Vec3::Y * 0.1).length() <= 0.18 + 1e-6));
+        particles.spawn_points(at, 5000, texture, [1.0; 3]);
+        assert_eq!(particles.len(), 4096);
     }
 
     #[test]

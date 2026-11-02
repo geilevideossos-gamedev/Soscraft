@@ -252,6 +252,14 @@ impl EntityWorld {
         Some((entity.position(), snow_golem::EYE_HEIGHT))
     }
 
+    pub fn snowball_damage(&self, victim: u64) -> f32 {
+        if self.blazes.iter().any(|e| e.id == victim) {
+            snow_golem::SNOWBALL_BLAZE_DAMAGE
+        } else {
+            0.0
+        }
+    }
+
     pub fn snowball_hits_mob(&mut self, shooter: u64, victim: u64, velocity: DVec3) -> bool {
         let Some(feet) = self
             .positions()
@@ -260,11 +268,7 @@ impl EntityWorld {
         else {
             return false;
         };
-        let damage = if self.blazes.iter().any(|e| e.id == victim) {
-            snow_golem::SNOWBALL_BLAZE_DAMAGE
-        } else {
-            0.0
-        };
+        let damage = self.snowball_damage(victim);
         let from = feet - DVec3::new(velocity.x, 0.0, velocity.z);
         self.mob_hits_mob(shooter, victim, damage, from, 0.0)
             .is_some_and(|hit| hit.applied)

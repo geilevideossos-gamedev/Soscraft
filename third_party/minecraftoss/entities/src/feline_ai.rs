@@ -193,7 +193,7 @@ pub fn cat_targets() -> GoalSelector<MonsterGoalContext> {
     let mut selector = GoalSelector::default();
     selector.add(
         1,
-        NearestTargetGoal::every(Prey::Absent, false, 5).wild_only(),
+        NearestTargetGoal::every(Prey::Kinds(&["minecraft:rabbit"]), false, 5).wild_only(),
     );
     selector.add(
         1,
@@ -763,7 +763,7 @@ pub fn can_sit_on(world: &dyn World, pos: (i32, i32, i32)) -> bool {
         return false;
     };
     if block.id == "minecraft:chest" {
-        return true;
+        return world.chest_open_count(pos) < 1;
     }
     if block.id == "minecraft:furnace" {
         return block.property("lit") == Some("true");

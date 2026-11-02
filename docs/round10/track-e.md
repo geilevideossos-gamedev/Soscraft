@@ -5,7 +5,7 @@ Track E fixes the known limits at the end of `docs/round9/release-2-tests.md`. I
 - **E1, screens, visuals and sounds:** particles, banner patterns and the crossbow pull, swinging bells, the trading screen and the effect list, horses.
 - **E2, gameplay and loot:** doors, thrown items, leads and cat chests, explorer maps, fireworks, projectiles ringing bells.
 
-All file:line references are to the merged code in `C:\Dev\mc-wt\track-d` (detached at 6e0e0573). Check them again before editing: D0 may have moved them. Vanilla facts were checked with javap on the 26.3 `client.jar`, and data facts against the 26.3 packs.
+All file:line references are to the merged code in `C:\Dev\Soscraft\mc-wt\track-d` (detached at 6e0e0573). Check them again before editing: D0 may have moved them. Vanilla facts were checked with javap on the 26.3 `client.jar`, and data facts against the 26.3 packs.
 
 ## Overview
 
@@ -42,8 +42,8 @@ Three pieces moved from where the cluster research put them, so that the two tra
 
 | Track | Worktree | Branch | Target dir | Log |
 |---|---|---|---|---|
-| E1 | `C:\Dev\mc-wt\track-e1` | `track-e1` | `D:\iw4l-wt\track-e1` | `docs/round10/track-e1-log.md` |
-| E2 | `C:\Dev\mc-wt\track-e2` | `track-e2` | `D:\iw4l-wt\track-e2` | `docs/round10/track-e2-log.md` |
+| E1 | `C:\Dev\Soscraft\mc-wt\track-e1` | `track-e1` | `D:\iw4l-wt\track-e1` | `docs/round10/track-e1-log.md` |
+| E2 | `C:\Dev\Soscraft\mc-wt\track-e2` | `track-e2` | `D:\iw4l-wt\track-e2` | `docs/round10/track-e2-log.md` |
 
 (The orchestrator may put one target on `C:\iw4l-wt\` because of disk space; see `docs/round10/decisions.md`.)
 

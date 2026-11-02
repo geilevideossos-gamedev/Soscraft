@@ -316,6 +316,7 @@ pub(crate) fn movement(
         riding,
         drop_throttle,
         arsenal,
+        warden_tracker,
         ..
     } = player;
     let feet = sim::voxel::to_block(origin, ps.origin);
@@ -329,6 +330,11 @@ pub(crate) fn movement(
     let water = sim::voxel::water(ps.origin, hull_mins, hull_maxs, ps.view_height_current);
     if water.wet() {
         steps.air_peak = None;
+    }
+    for event in steps.heard(survival.hurts(), inventory) {
+        if let Some(entities) = entities.as_mut() {
+            entities.game_event(u64::from(client.0), event, feet, None);
+        }
     }
     let counts =
         crate::minecraft_riding::counts_steps(alive, player_mode.noclip(), riding.is_some());
@@ -381,6 +387,9 @@ pub(crate) fn movement(
                     p == "snow" || p.ends_with("_carpet") || p == "moss_carpet"
                 });
                 let (pos, block) = inside.as_ref().map_or((*pos, block), |(p, b)| (*p, b));
+                if let Some(entities) = entities.as_mut().filter(|_| sounding) {
+                    entities.game_event(u64::from(client.0), minecraft_terrain::game_events::STEP, feet, Some(block.id.key()));
+                }
                 if sounding
                     && let (Some(sounds), Some(kind)) =
                         (sounds.as_mut(), terrain.scene.sound_type(block))
@@ -392,6 +401,14 @@ pub(crate) fn movement(
                         kind.volume * 0.15,
                         kind.pitch,
                     );
+                }
+            }
+        } else if water.wet() && horizontal < 2.0 && !skate.active {
+            steps.move_dist += horizontal;
+            if steps.move_dist > steps.next_step && under.is_some() {
+                steps.next_step = steps.move_dist as i32 as f32 + 1.0;
+                if let Some(entities) = entities.as_mut() {
+                    entities.game_event(u64::from(client.0), minecraft_terrain::game_events::SWIM, feet, None);
                 }
             }
         }
@@ -415,6 +432,9 @@ pub(crate) fn movement(
                 feet[1],
             );
             if let Some(peak) = steps.air_peak.take().filter(|_| !caught && !on_wall) {
+                if let Some(entities) = entities.as_mut().filter(|_| peak > feet[1]) {
+                    entities.game_event(u64::from(client.0), minecraft_terrain::game_events::HIT_GROUND, feet, under.as_ref().map(|(_, b)| b.id.key()));
+                }
                 let fall = survival.impulse_fall(peak - feet[1], feet[1]);
                 let landed_on = under.as_ref().map(|(_, b)| b.id.key());
                 let crouching = !skate.active
@@ -485,6 +505,7 @@ pub(crate) fn movement(
     hand.clock -= f64::from(hand_ticks) * TICK_SECONDS;
     hand.cooldowns.tick(hand_ticks);
     drop_throttle.tick(hand_ticks);
+    warden_tracker.tick_by(hand_ticks);
     let cooldowns = hand.cooldowns.shown((hand.clock / TICK_SECONDS) as f32);
     hand.miss_time = hand.miss_time.saturating_sub(hand_ticks);
     hand.attack_ticks = hand.attack_ticks.saturating_add(hand_ticks);
@@ -568,6 +589,7 @@ pub(crate) fn movement(
                     &globals.registries,
                     (shapes, shape_ids, level),
                     entities,
+                    Some(u64::from(client.0)),
                     frozen
                         .into_iter()
                         .map(|(pos, block)| (pos, scene_block(&block)))
@@ -591,6 +613,7 @@ pub(crate) fn movement(
                     &globals.registries,
                     (shapes, shape_ids, level),
                     entities,
+                    Some(u64::from(client.0)),
                     writes,
                 );
                 entities.destroyed.extend(gone);
@@ -704,6 +727,7 @@ impl Body for MwBody<'_> {
             self.registries,
             (self.shapes, self.shape_ids, self.level),
             entities,
+            Some(u64::from(self.client.0)),
             writes,
         );
     }
@@ -755,6 +779,7 @@ pub(crate) fn struck(
         vehicle_health,
         raid_bars,
         wither_bars,
+        warden_tracker,
         ..
     } = player;
     let local_uuid = &*uuid;
@@ -953,6 +978,16 @@ pub(crate) fn struck(
     }
     for amplifier in outputs.raid_heroes {
         survival.become_hero(amplifier);
+    }
+    if let Some(tracker) = outputs.warden_tracker {
+        *warden_tracker = tracker;
+    }
+    let survival_like = matches!(
+        player_mode.mode,
+        minecraftoss_player::GameMode::Survival | minecraftoss_player::GameMode::Adventure
+    );
+    for grant in outputs.effects.iter().filter(|_| alive) {
+        survival.take_effect(survival_like, grant);
     }
     for horn in outputs.raid_horns {
         if let Some(sounds) = sounds.as_mut() {
@@ -1213,6 +1248,12 @@ pub(crate) fn pop_totem(
 ) {
     let key = minecraft_survival::level::opener_key(uuid);
     entities.totem_pop(key, feet, PLAYER_WIDTH, height);
+    entities.game_event(
+        u64::from(client),
+        minecraft_terrain::game_events::ITEM_INTERACT_FINISH,
+        feet,
+        None,
+    );
     let event = minecraft_survival::heard::TOTEM_EVENT;
     let heard = minecraft_survival::heard::Heard::Player {
         client,
@@ -1261,19 +1302,30 @@ fn place(
 }
 
 pub(crate) fn drop_on_death(
+    client: u64,
     death_watch: &mut minecraft_survival::death::DeathWatch,
     inventory: &mut minecraftoss_player::inventory::Inventory,
     hand: &mut minecraft_survival::player::Hand,
     entities: &mut Entities,
 ) {
-    let Some(death) = death_watch.take().filter(|death| !death.keep_inventory) else {
+    let Some(death) = death_watch.take() else {
         return;
     };
+    entities.game_event(
+        client,
+        minecraft_terrain::game_events::ENTITY_DIE,
+        death.spot.feet,
+        None,
+    );
+    let experience = if death.keep_inventory { 0 } else { death.experience };
+    entities.award_death_experience(client, death.spot.feet, experience);
+    if death.keep_inventory {
+        return;
+    }
     let eye = glam::DVec3::from_array(death.spot.eye);
     for stack in minecraft_survival::death::dropped_on_death(&death, inventory) {
         entities.view.world_items.drop_on_death(stack, eye);
     }
-    entities.award_experience(death.spot.feet, death.experience);
     hand.blocking = None;
 }
 
@@ -1343,6 +1395,7 @@ pub(crate) fn tick_actor<'a>(
                 != 0,
         ),
         omens: player.survival.omens(),
+        warden: player.warden_tracker,
     };
     let actor = TickActor {
         id: u64::from(player.id.0),
@@ -1495,7 +1548,7 @@ fn leave_level(player: &mut Player, level: &mut Level) {
             }
         }
     }
-    minecraft_survival::level::leave(level, &player.uuid);
+    minecraft_survival::level::leave(level, &player.uuid, Some(u64::from(player.id.0)));
     let Player {
         survival,
         hand,
@@ -1766,7 +1819,7 @@ pub(crate) fn step_friend(
             hand,
             ..
         } = player;
-        drop_on_death(death_watch, inventory, hand, entities);
+        drop_on_death(u64::from(client.0), death_watch, inventory, hand, entities);
     }
     let (effects, (table, block, bench), bed, open_book) = friend_hand(
         player,

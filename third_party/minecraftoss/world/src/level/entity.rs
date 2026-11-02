@@ -672,6 +672,7 @@ impl Level<'_> {
                 self.lightning_rod_strike(state, strike);
             }
             self.clear_copper_on_strike(strike);
+            self.game_event_from("minecraft:lightning_strike", e.pos, Some(super::game_event::EventSource::Entity(e.id)), None);
         }
         let EntityKind::LightningBolt(data) = &mut e.kind else { return };
         data.life -= 1;
@@ -1276,9 +1277,15 @@ impl Level<'_> {
     }
 
     /// `BlockBehaviour.stepOn`.
-    fn step_on(&mut self, _e: &mut Entity, state: BlockStateId, _pos: BlockPos) {
+    fn step_on(&mut self, e: &mut Entity, state: BlockStateId, pos: BlockPos) {
+        if self.is_sculk_sensor(state) {
+            if self.sculk_can_activate(pos) {
+                self.force_game_event(pos, "minecraft:step", e.pos, Some(super::game_event::EventSource::Entity(e.id)));
+            }
+            return;
+        }
         let name = self.name(state);
-        if matches!(name, "minecraft:redstone_ore" | "minecraft:deepslate_redstone_ore" | "minecraft:sculk_sensor" | "minecraft:calibrated_sculk_sensor" | "minecraft:sculk_shrieker") {
+        if matches!(name, "minecraft:redstone_ore" | "minecraft:deepslate_redstone_ore" | "minecraft:sculk_shrieker") {
             self.unsupported.push(format!("stepping on {name}"));
         }
     }
@@ -1289,7 +1296,7 @@ impl Level<'_> {
         let info = blocks.block(blocks.block_of(state));
         if info.is_a("BasePressurePlateBlock") {
             if self.plate_signal(state) == 0 {
-                self.plate_check_pressed(pos, state, 0);
+                self.plate_check_pressed(pos, state, 0, Some(super::game_event::EventSource::Entity(e.id)));
             }
             return;
         }
@@ -1365,7 +1372,7 @@ impl Level<'_> {
     }
 
     /// `BasePressurePlateBlock.checkPressed`.
-    pub(super) fn plate_check_pressed(&mut self, pos: BlockPos, state: BlockStateId, old: i32) {
+    pub(super) fn plate_check_pressed(&mut self, pos: BlockPos, state: BlockStateId, old: i32, source: Option<super::game_event::EventSource>) {
         let signal = self.plate_signal_strength(state, pos);
         if old != signal {
             let next = if self.registries().blocks.property(state, "power").is_some() {
@@ -1377,6 +1384,9 @@ impl Level<'_> {
             let block = self.block_id(state);
             self.update_neighbors_at(pos, block);
             self.update_neighbors_at(pos.below(), block);
+        }
+        if (old > 0) != (signal > 0) {
+            self.block_game_event_from(super::game_event::activated(signal > 0), pos, source, None);
         }
         if signal > 0 {
             let block = self.block_id(state);

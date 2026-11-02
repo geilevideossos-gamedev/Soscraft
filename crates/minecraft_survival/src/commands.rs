@@ -231,7 +231,7 @@ pub fn summon_answers(
         .flat_map(|(source, answer)| match answer {
             Ok(kind) => server.feedback(
                 source,
-                Text::translate("commands.summon.success", vec![Text::entity(kind)]),
+                Text::translate("commands.summon.success", vec![crate::death::entity_text(&kind)]),
                 true,
                 rules,
             ),
@@ -2163,6 +2163,23 @@ pub(crate) mod tests {
             assert!(entities.iter().any(|known| known == kind), "{kind}");
         }
         assert!(entities.windows(2).all(|pair| pair[0] < pair[1]), "sorted, each once");
+    }
+
+    #[test]
+    fn the_summon_command_knows_iw4l_margit() {
+        let mut parts = Parts::new();
+        let packs = minecraft_terrain::pack::PackStack::open(Vec::new()).unwrap();
+        *parts.server.registries_mut() = registries(&packs);
+        assert!(parts.server.registries().entities.iter().any(|kind| kind == "iw4l:margit"));
+        let hints = CommandHints::from_server(&parts.server);
+        let typed = "/summon iw4l:m";
+        let completion = minecraft_commands::complete(typed, typed.len(), 4, &hints);
+        let offered: Vec<&str> = completion.list.iter().map(|suggestion| suggestion.text.as_str()).collect();
+        assert!(offered.contains(&"iw4l:margit"), "{offered:?}");
+        let (unknown, _) = parts.send(HOST, &["/summon iw4l:nothing 0 30000000 0"]);
+        assert_eq!(unknown, ["commands.summon.failed"], "an unknown id stops at the registry");
+        let (margit, _) = parts.send(HOST, &["/summon iw4l:margit 0 30000000 0"]);
+        assert_eq!(margit, ["commands.summon.invalidPosition"], "his id passes the registry");
     }
 
     #[test]

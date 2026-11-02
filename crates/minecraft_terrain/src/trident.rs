@@ -482,6 +482,16 @@ impl ThrownTrident {
         targets: &[PotionTarget],
         owner: Option<TridentOwner>,
     ) -> Vec<TridentEvent> {
+        self.tick_deflected(world, targets, owner, &mut |_| false)
+    }
+
+    pub fn tick_deflected(
+        &mut self,
+        world: &impl World,
+        targets: &[PotionTarget],
+        owner: Option<TridentOwner>,
+        deflects: &mut dyn FnMut(u64) -> bool,
+    ) -> Vec<TridentEvent> {
         let mut events = Vec::new();
         if !self.alive {
             return events;
@@ -532,7 +542,14 @@ impl ThrownTrident {
             let to = from + self.velocity;
             let block = minecraftoss_entities::sight::clip(world, from, to);
             let end = block.map_or(to, |(_, at)| at);
-            if let Some((target, at)) = self.struck(targets, from, end) {
+            let struck = self.struck(targets, from, end);
+            if let Some((_, at)) = struck.filter(|(target, _)| deflects(*target)) {
+                self.velocity *= -0.5;
+                self.position = at + self.velocity;
+                let turn = 170.0 + self.random.next_float() * 20.0;
+                self.yaw += turn;
+                self.previous_yaw += turn;
+            } else if let Some((target, at)) = struck {
                 self.position = at;
                 events.push(TridentEvent::Struck {
                     target,
@@ -1112,6 +1129,49 @@ mod tests {
         assert!(struck[0].1.z > 2.0);
         assert!(thrown.dealt_damage && thrown.in_ground);
         assert!(thrown.position.z < 6.0, "{:?}", thrown.position);
+    }
+
+    #[test]
+    fn a_trident_a_mob_turns_back_flies_back_at_half_speed_without_a_hit() {
+        let world = floor();
+        let mut thrown = launched(worn(0), 0.0, 1);
+        let breeze = PotionTarget {
+            id: 7,
+            min: DVec3::new(0.2, 61.0, 6.0),
+            max: DVec3::new(0.8, 62.95, 6.6),
+            owner: false,
+        };
+        let (mut asked, mut events, mut turned) = (Vec::new(), Vec::new(), None);
+        for _ in 0..60 {
+            let before = thrown.velocity;
+            events.extend(
+                thrown.tick_deflected(&world, &[breeze], None, &mut |id| {
+                    asked.push(id);
+                    true
+                }),
+            );
+            if turned.is_none() && !asked.is_empty() {
+                turned = Some((before, thrown.clone()));
+            }
+        }
+        assert_eq!(asked, vec![7], "asked once, then it flies away");
+        let (before, back) = turned.unwrap();
+        assert!(before.z > 2.0);
+        let expected = before * -0.5 * f64::from(0.99_f32) - DVec3::Y * GRAVITY;
+        assert!((back.velocity - expected).length() < 1e-12, "{:?}", back.velocity);
+        assert!(back.position.z < 6.0, "it leaves the box: {:?}", back.position);
+        assert!(!back.dealt_damage && !back.in_ground);
+        assert!(
+            events.iter().all(|event| !matches!(
+                event,
+                TridentEvent::Struck { .. }
+                    | TridentEvent::Sound {
+                        event: HIT_SOUND,
+                        ..
+                    }
+            )),
+            "{events:?}"
+        );
     }
 
     fn loyal(level: i32) -> ItemStack {

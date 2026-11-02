@@ -1,1 +1,5 @@
-terrain_group!(trial {});
+mod breezes;
+
+terrain_group!(trial {
+    breezes::Breeze,
+});

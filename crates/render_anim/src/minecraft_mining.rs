@@ -154,6 +154,15 @@ impl Mining {
         }
     }
 
+    pub(crate) fn dust(&mut self, packs: &PackStack, scene: &HandcraftedScene, atlas: &Atlas, dust: &minecraft_terrain::block_particles::BlockDust) {
+        if self.particles.is_none() {
+            self.particles = BlockParticles::new(packs).ok();
+        }
+        if let Some(particles) = self.particles.as_mut() {
+            let _ = particles.spawn_dust(packs, scene, dust, atlas);
+        }
+    }
+
     pub(crate) fn hit_particle(&mut self, packs: &PackStack, scene: &HandcraftedScene, atlas: &Atlas, hit: (BlockPos, minecraftoss_player::Face), block: &minecraft_terrain::scene::Block) {
         if self.particles.is_none() {
             self.particles = BlockParticles::new(packs).ok();

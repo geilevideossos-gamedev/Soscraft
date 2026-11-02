@@ -252,6 +252,14 @@ impl Arrow {
         }
     }
 
+    pub fn deflect(&mut self) {
+        let _ = self.random.next_float();
+        self.velocity *= -0.5;
+        self.position += self.velocity;
+        self.velocity *= 0.99_f32 as f64;
+        self.velocity.y -= 0.05;
+    }
+
     /// `playSound(ARROW_HIT, 1.0F, 1.2F / (random.nextFloat() * 0.2F +
     /// 0.9F))` where it stands, on a block or an entity it hurt.
     fn play_hit_sound(&mut self) {
@@ -262,6 +270,10 @@ impl Arrow {
     /// The hit sound it played since the last call.
     pub fn take_hit_sound(&mut self) -> Option<(DVec3, f32)> {
         self.hit_sound.take()
+    }
+
+    pub fn impact_state(&self) -> Option<&Block> {
+        self.impact_state.as_ref()
     }
 
     fn should_fall(&self, world: &impl World) -> bool {

@@ -169,7 +169,7 @@ pub fn spill(containers: &mut Containers, entities: &mut Entities, pos: (i32, i3
     }
 }
 
-pub fn write_blocks(terrain: &mut Terrain, entities: &mut Entities, writes: Writes) {
+pub fn write_blocks(terrain: &mut Terrain, entities: &mut Entities, player: Option<u64>, writes: Writes) {
     let positions: Vec<_> = writes.iter().map(|(p, _)| *p).collect();
     for (at, block) in writes {
         terrain.scene.set(at, block);
@@ -178,9 +178,9 @@ pub fn write_blocks(terrain: &mut Terrain, entities: &mut Entities, writes: Writ
     terrain.stream.mark_edited(&terrain.scene, &positions);
     for &at in &positions {
         if Scene::block(&terrain.scene, at).is_some() {
-            entities.placed(&terrain.scene, at);
+            entities.placed(player, &terrain.scene, at);
         } else {
-            entities.broke(&[at]);
+            entities.broke(player, &[at]);
         }
     }
 }
@@ -373,7 +373,7 @@ pub struct OpenerOutcome {
     pub block_event: ((i32, i32, i32), u8, u32),
     pub sound: Option<OpenerSound>,
     pub state: Option<((i32, i32, i32), Block)>,
-    pub trapped: Option<((i32, i32, i32), u32)>,
+    pub chest_openers: Option<((i32, i32, i32), u32)>,
 }
 
 pub fn opener_outcome(scene: &HandcraftedScene, event: &OpenerEvent) -> OpenerOutcome {
@@ -386,8 +386,13 @@ pub fn opener_outcome(scene: &HandcraftedScene, event: &OpenerEvent) -> OpenerOu
         state: changed
             .and_then(|(block, change)| minecraft_terrain::openers::opened_state(block, change))
             .map(|state| (event.pos, state)),
-        trapped: Scene::block(scene, event.pos)
-            .filter(|block| block.id.key() == "minecraft:trapped_chest")
+        chest_openers: Scene::block(scene, event.pos)
+            .filter(|block| {
+                matches!(
+                    block.id.key().as_str(),
+                    "minecraft:chest" | "minecraft:trapped_chest"
+                )
+            })
             .map(|_| (event.pos, event.count)),
     }
 }
@@ -405,7 +410,7 @@ pub fn leave_containers(
         .collect()
 }
 
-pub fn leave(level: &mut Level, player: &PlayerUuid) {
+pub fn leave(level: &mut Level, player: &PlayerUuid, leaver: Option<u64>) {
     let events = level.openers.leave(opener_key(player));
     let mut writes: Writes = Vec::new();
     for event in &events {
@@ -413,8 +418,11 @@ pub fn leave(level: &mut Level, player: &PlayerUuid) {
         if let Some(entities) = level.entities.as_mut() {
             let (cell, id, count) = outcome.block_event;
             entities.lid_event(&level.terrain.scene, cell, id, count);
-            if let Some((pos, viewers)) = outcome.trapped {
-                entities.chest_openers(pos, viewers);
+            if let (Some(leaver), Some(heard)) = (leaver, event.game_event()) {
+                entities.game_event(leaver, heard, minecraft_terrain::bucket::centre(event.pos), None);
+            }
+            if let Some((pos, viewers)) = outcome.chest_openers {
+                entities.chest_openers(leaver, pos, viewers);
             }
             if let Some(sound) = outcome.sound {
                 let pitch = minecraft_terrain::openers::pitch(entities.random_float());
@@ -648,7 +656,7 @@ mod tests {
         let trapped = |events: &[OpenerEvent]| -> Vec<_> {
             events
                 .iter()
-                .map(|event| opener_outcome(&scene, event).trapped)
+                .map(|event| opener_outcome(&scene, event).chest_openers)
                 .collect()
         };
         let opened = toggle_openers(&mut openers, &scene, &cells, &host(), true, false);
@@ -660,7 +668,7 @@ mod tests {
         let closed = toggle_openers(&mut openers, &scene, &cells, &friend(), false, false);
         assert_eq!(trapped(&closed), [Some(((0, 64, 0), 0)), Some(((1, 64, 0), 0))]);
         let plain = toggle_openers(&mut openers, &scene, &[(5, 64, 0)], &host(), true, false);
-        assert_eq!(trapped(&plain), [None]);
+        assert_eq!(trapped(&plain), [Some(((5, 64, 0), 1))], "a plain chest counts for cats");
     }
 
     #[test]
@@ -689,6 +697,7 @@ mod tests {
             outcome.state,
             Some(((3, 64, 3), barrel.clone().with("open", "true")))
         );
+        assert_eq!(outcome.chest_openers, None, "a barrel is no chest");
         assert_eq!(outcome.sound.map(|s| s.position), Some([4.0, 64.5, 3.5]));
         scene.set((3, 64, 3), Some(barrel.clone().with("open", "true")));
         assert!(leave_containers(&mut openers, &scene, &friend()).is_empty());
@@ -747,9 +756,9 @@ mod tests {
             entities.view.lids.lid_closed(chest)
         };
         assert!(!settle(&mut level), "both players opened it");
-        leave(&mut level, &friend());
+        leave(&mut level, &friend(), None);
         assert!(!settle(&mut level), "the host still has it open");
-        leave(&mut level, &host());
+        leave(&mut level, &host(), None);
         assert!(settle(&mut level), "the last player left");
         let heard: Vec<&str> = level
             .entities
@@ -942,6 +951,7 @@ mod tests {
                         jumping: false,
                         swirl: None,
                         omens: Default::default(),
+                        warden: Default::default(),
                     },
                     inventory: &mut *inventory,
                     selected: 0,

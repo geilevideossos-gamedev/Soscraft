@@ -407,6 +407,7 @@ impl Level<'_> {
             self.set_block(pos, extended_state, update::ALL | update::MOVE_BY_PISTON, update::LIMIT);
             // The extend sound's pitch draws from the level random.
             self.random.next_f32();
+            self.block_game_event_from("minecraft:block_activate", pos, None, Some(extended_state));
         } else if a == 1 || a == 2 {
             let arm = pos.relative(direction, 1);
             if self.moving.entities.contains_key(&arm) {
@@ -449,6 +450,7 @@ impl Level<'_> {
             }
             // The contract sound's pitch.
             self.random.next_f32();
+            self.block_game_event_from("minecraft:block_deactivate", pos, None, Some(state));
         }
     }
 
@@ -488,6 +490,7 @@ impl Level<'_> {
             let state = self.block(pos);
             self.drop_resources(state, pos);
             self.set_block(pos, BlockStateId::AIR, update::CLIENTS | update::KNOWN_SHAPE, update::LIMIT);
+            self.block_game_event_from("minecraft:block_destroy", pos, None, Some(state));
             to_update.push(state);
         }
         let facing_moving = self.with(self.moving_piston_default(), "facing", direction.name());

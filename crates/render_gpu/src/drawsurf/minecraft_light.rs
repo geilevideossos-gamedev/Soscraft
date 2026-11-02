@@ -283,6 +283,7 @@ fn mc_lightmap(sky_level: f32, block_level: f32) -> vec3<f32> {
     let parabolic = (2.0 * block - 1.0) * (2.0 * block - 1.0);
     let block_color = mix(block_tint.rgb, vec3<f32>(1.0), 0.9 * parabolic);
     color += block_color * (mc_light_brightness(block) * block_tint.w);
+    color = color - vec3<f32>(mc_light.environment[0].w);
     color = clamp(color, vec3<f32>(0.0), vec3<f32>(1.0));
     let greatest = max(color.r, max(color.g, color.b));
     let inverted = 1.0 - greatest;
@@ -467,4 +468,26 @@ fn validate(source: &str) -> Result<(), String> {
     .validate(&module)
     .map(|_| ())
     .map_err(|e| e.emit_to_string(source))
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn darkness_dims_models_from_a_lane_the_eye_light_leaves_alone() {
+        let source = super::HOOK_WGSL;
+        super::validate(source).unwrap();
+        let lightmap = &source[source.find("fn mc_lightmap(").unwrap()..];
+        let lightmap = &lightmap[..lightmap.find("\n}\n").unwrap()];
+        let pulse = lightmap.find("color = color - vec3<f32>(mc_light.environment[0].w);").unwrap();
+        let clamp = lightmap.find("color = clamp(color, vec3<f32>(0.0), vec3<f32>(1.0));").unwrap();
+        assert!(pulse < clamp);
+        assert!(source.contains("vec2<f32>(mc_light.environment[3].w, mc_light.block_origin.w)"));
+        let rust = include_str!("minecraft_light.rs");
+        let needle = concat!(" light.environment", "[");
+        let writes: Vec<&str> = rust
+            .match_indices(needle)
+            .map(|(at, _)| rust[at..at + rust[at..].find(';').unwrap()].trim())
+            .collect();
+        assert_eq!(writes, ["light.environment[3][3] = world.eye_light[0]"]);
+    }
 }

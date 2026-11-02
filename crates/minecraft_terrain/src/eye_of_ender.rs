@@ -694,7 +694,9 @@ mod tests {
             controls: Vec::new(),
             omens: Vec::new(),
             lodestones: Vec::new(),
+            warden_trackers: Vec::new(),
             view_distance: 8,
+            game_events: Vec::new(),
         }
     }
 

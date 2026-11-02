@@ -2672,6 +2672,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9e5e8f6c15a24b9a3ee5efec809ccd006d3b30e8b3bb63c39af737c7f87daa1d"
 
 [[package]]
+name = "elden_boss"
+version = "0.1.0"
+dependencies = [
+ "glam 0.29.3",
+]
+
+[[package]]
 name = "embedded-io"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3974,6 +3981,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "bytemuck",
+ "elden_boss",
  "glam 0.29.3",
  "image",
  "minecraft_net",
@@ -4004,6 +4012,7 @@ name = "minecraftoss-entities"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "elden_boss",
  "glam 0.29.3",
  "minecraftoss-player",
  "serde",

@@ -99,6 +99,8 @@ impl ShulkerEntity {
             Voice::Event("entity.shulker.teleport", 1.0, 1.0),
             self.position(),
         ));
+        let left = self.position();
+        self.shulker.body.game_events.push(("minecraft:teleport", left, None));
         self.shulker.move_to(to, face);
         self.shulker.raw_peek = 0;
         self.ai.state.clear_target();

@@ -13,7 +13,7 @@ const SIGNIFICANT_FALL: f32 = 5.0;
 const VICTIM: &str = "%1$s";
 const ATTACKER: &str = "%2$s";
 const WEAPON: &str = "%3$s";
-const ITEM_FORMS: [&str; 4] = [PLAYER_KILL, "death.fell.assist", "death.fell.finish", "death.attack.explosion.player"];
+const ITEM_FORMS: [&str; 5] = [PLAYER_KILL, "death.fell.assist", "death.fell.finish", "death.attack.explosion.player", "death.attack.fireworks"];
 const OWNERLESS_ARROW: &str = "minecraft:arrow";
 const DEATH_EXPERIENCE_PER_LEVEL: u32 = 7;
 const MAX_DEATH_EXPERIENCE: u32 = 100;
@@ -110,6 +110,9 @@ pub enum DamageCause {
     PlayerExplosion {
         client: u32,
     },
+    PlayerFireworks {
+        client: u32,
+    },
 }
 
 pub const IS_EXPLOSION: [&str; 4] = [
@@ -180,6 +183,7 @@ impl DamageCause {
             Self::Fireworks => "minecraft:fireworks",
             Self::Player { .. } => "minecraft:player_attack",
             Self::PlayerExplosion { .. } => "minecraft:player_explosion",
+            Self::PlayerFireworks { .. } => "minecraft:fireworks",
             Self::Mob { attack, .. } => match attack {
                 MobAttack::Melee => "minecraft:mob_attack",
                 MobAttack::Arrow => "minecraft:arrow",
@@ -221,6 +225,7 @@ impl DamageCause {
             Self::BadRespawnPoint => "badRespawnPoint",
             Self::Explosion => "explosion",
             Self::Fireworks
+            | Self::PlayerFireworks { .. }
             | Self::Mob {
                 attack: MobAttack::Fireworks,
                 ..
@@ -441,7 +446,7 @@ impl CombatTracker {
         });
         self.last_damage = tick;
         self.taking_damage = true;
-        if cause.living_attacker().is_some() || matches!(cause, DamageCause::Player { .. } | DamageCause::PlayerExplosion { .. }) {
+        if cause.living_attacker().is_some() || matches!(cause, DamageCause::Player { .. } | DamageCause::PlayerExplosion { .. } | DamageCause::PlayerFireworks { .. }) {
             self.in_combat = true;
         }
     }
@@ -450,7 +455,7 @@ impl CombatTracker {
         if let Some((id, type_id)) = cause.living_attacker() {
             self.hurt_by = Some((id, type_id, tick));
         }
-        if let DamageCause::Player { client } | DamageCause::PlayerExplosion { client } = cause {
+        if let DamageCause::Player { client } | DamageCause::PlayerExplosion { client } | DamageCause::PlayerFireworks { client } = cause {
             self.hurt_by_player = Some((client, tick));
         }
     }
@@ -540,7 +545,7 @@ impl CombatTracker {
                     player: None,
                 };
             }
-            if let DamageCause::Player { client } | DamageCause::PlayerExplosion { client } = fall.cause {
+            if let DamageCause::Player { client } | DamageCause::PlayerExplosion { client } | DamageCause::PlayerFireworks { client } = fall.cause {
                 return by_player(
                     "death.fell.assist",
                     client,
@@ -576,6 +581,9 @@ impl CombatTracker {
         }
         if let DamageCause::PlayerExplosion { client } = last.cause {
             return by_player(&key, client, last.cause, killer, "death.attack.explosion");
+        }
+        if let DamageCause::PlayerFireworks { client } = last.cause {
+            return by_player(&key, client, last.cause, killer, "death.attack.fireworks");
         }
         if let Some(attacker) = last.cause.entity() {
             return DeathKey {
@@ -675,7 +683,7 @@ impl CombatTracker {
         let death = self.death_key(present, killer);
         let mut args = vec![Text::literal(victim)];
         if let Some(type_id) = death.attacker {
-            args.push(Text::entity(type_id));
+            args.push(entity_text(type_id));
         } else if let Some(found) = &death.player {
             args.push(Text::literal(found.name.clone()));
             if let Some(weapon) = &found.weapon {
@@ -700,7 +708,17 @@ pub fn player_kill_text(victim: &str, attacker: &str, weapon: Option<&str>) -> T
     }
 }
 
+pub fn entity_text(type_id: &str) -> Text {
+    match minecraftoss_entities::world::families::display_name(type_id) {
+        Some(name) => Text::literal(name),
+        None => Text::entity(type_id),
+    }
+}
+
 fn entity_name(language: &HashMap<String, String>, type_id: &str) -> String {
+    if let Some(name) = minecraftoss_entities::world::families::display_name(type_id) {
+        return name.to_owned();
+    }
     let path = type_id.strip_prefix("minecraft:").unwrap_or(type_id);
     language
         .get(&format!("entity.minecraft.{path}"))
@@ -965,6 +983,22 @@ mod tests {
             assert_eq!(text, line(&tracker).message.replace(VICTIM, "Steve"));
             assert!(!text.contains('%'), "{text}");
         }
+    }
+
+    #[test]
+    fn a_death_by_margit_names_him() {
+        let language = language();
+        let lang = |key: &str| language.get(key).cloned();
+        let name = "Margit, the Fell Omen";
+        let blow = DamageCause::mob(MobAttack::Melee, Some(7), Some("iw4l:margit"));
+        let mut slain = CombatTracker::default();
+        slain.record(1, blow, 8.0, None, 0.0);
+        assert_eq!(line(&slain), says(&format!("%1$s was slain by {name}"), name));
+        let text = slain.death_text("Sos", |_| true, |_| None).resolve(&lang).text;
+        assert_eq!(text, format!("Sos was slain by {name}"));
+        assert_eq!(entity_text("iw4l:margit"), Text::literal(name));
+        assert_eq!(entity_text("minecraft:zombie"), Text::entity("minecraft:zombie"));
+        assert_eq!(entity_name(&language, "minecraft:zombie"), "Zombie");
     }
 
     #[test]
@@ -1263,6 +1297,33 @@ mod tests {
         assert_eq!((sting.damage_type(), sting.message_id()), ("minecraft:sting", "sting"));
         assert!(!sting.bypasses_armor());
         assert_eq!(DamageCause::mob(shriek, None, None), DamageCause::Generic);
+    }
+
+    #[test]
+    fn a_players_firework_makes_the_friend_go_off_with_a_bang_and_credits_the_player() {
+        let mut lang = language();
+        lang.insert("death.attack.fireworks".to_owned(), "%1$s went off with a bang".to_owned());
+        lang.insert("death.attack.fireworks.item".to_owned(), "%1$s went off with a bang due to a firework fired from %3$s by %2$s".to_owned());
+        let resolve = |key: &str| lang.get(key).cloned();
+        let bang = DamageCause::PlayerFireworks { client: 0 };
+        assert_eq!((bang.damage_type(), bang.message_id()), ("minecraft:fireworks", "fireworks"));
+        assert!(bang.is_explosion() && !bang.bypasses_armor());
+        let mut tracker = CombatTracker::default();
+        tracker.hurt_by(1, bang);
+        tracker.record(1, bang, 20.0, None, 0.0);
+        assert!(tracker.in_combat, "a player's rocket starts a fight");
+        assert_eq!(tracker.death_line(&lang, |_| true, host(None)), says("%1$s went off with a bang", "Host"));
+        assert_eq!(tracker.death_text("Friend", |_| true, host(None)).resolve(&resolve).text, "Friend went off with a bang");
+        assert_eq!(
+            tracker.death_text("Friend", |_| true, host(Some("Excalibur"))).resolve(&resolve).text,
+            "Friend went off with a bang due to a firework fired from [Excalibur] by Host"
+        );
+        assert_eq!(tracker.death_line(&lang, |_| true, |_| None).message, "%1$s went off with a bang", "a launcher who left");
+        let mut escaping = CombatTracker::default();
+        escaping.hurt_by(1, bang);
+        escaping.record(1, bang, 2.0, None, 0.0);
+        escaping.record(2, DamageCause::Hazard(Hazard::Lava), 4.0, None, 0.0);
+        assert_eq!(escaping.death_line(&lang, |_| true, host(None)).message, "%1$s tried to swim in lava to escape Host");
     }
 
     #[test]

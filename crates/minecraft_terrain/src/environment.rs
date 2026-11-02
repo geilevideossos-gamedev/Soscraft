@@ -94,6 +94,7 @@ pub struct View {
     pub render_distance: u32,
     pub rain_level: f32,
     pub thunder_level: f32,
+    pub darkness: f32,
 }
 
 impl DimensionEnvironment {
@@ -196,9 +197,7 @@ impl DimensionEnvironment {
         // FogRenderer.computeFogColor: darkness toward the void.
         let min_y = self.presentation.min_y as f32;
         let darkness = ((VOID_DARKNESS_ONSET_RANGE + min_y - view.camera_y) / VOID_DARKNESS_ONSET_RANGE).clamp(0.0, 1.0);
-        if darkness > 0.0 {
-            fog *= (1.0 - darkness) * (1.0 - darkness);
-        }
+        fog *= crate::darkness::fog_darkening(darkness, view.darkness);
 
         // AtmosphericFogEnvironment.setupFog.
         let fog_end = self.float(Used::FogEnd, t);
@@ -303,7 +302,7 @@ mod tests {
         let mut env = DimensionEnvironment::load(&registries, "minecraft:overworld").unwrap();
         for ticks in (0..24_000).step_by(250) {
             env.tick(ticks, 0.0, 0.0, [0.5, 80.0, 0.5], |_, _, _| plains, true, false);
-            let view = View { partial_tick: 1.0, forward: Vec3::Z, camera_y: 80.0, render_distance: 16, rain_level: 0.0, thunder_level: 0.0 };
+            let view = View { partial_tick: 1.0, forward: Vec3::Z, camera_y: 80.0, render_distance: 16, rain_level: 0.0, thunder_level: 0.0, darkness: 0.0 };
             let ours = env.sky_state(&view);
             let old = DayCycle { ticks: ticks as f64, paused: true }.sample_for_biome_at(crate::terrain::plains_sample(&registries), 16);
             assert!((ours.sky - old.sky).abs().max_element() < 1e-5, "sky at {ticks}: {:?} vs {:?}", ours.sky, old.sky);
@@ -326,7 +325,7 @@ mod tests {
         let biome = registries.biomes.id(biome).unwrap().0;
         let mut env = DimensionEnvironment::load(registries, dimension).unwrap();
         env.tick(clock_ticks, 0.0, 0.0, [0.5, 64.0, 0.5], |_, _, _| biome, true, false);
-        env.sky_state(&View { partial_tick: 1.0, forward: Vec3::Z, camera_y: 64.0, render_distance: 8, rain_level: 0.0, thunder_level: 0.0 })
+        env.sky_state(&View { partial_tick: 1.0, forward: Vec3::Z, camera_y: 64.0, render_distance: 8, rain_level: 0.0, thunder_level: 0.0, darkness: 0.0 })
     }
 
     #[test]
@@ -358,6 +357,19 @@ mod tests {
     }
 
     #[test]
+    fn darkness_darkens_the_fog_colour_by_the_square_of_its_blend() {
+        let Some(registries) = registries() else { return };
+        let plains = registries.biomes.id("minecraft:plains").unwrap().0;
+        let mut env = DimensionEnvironment::load(&registries, "minecraft:overworld").unwrap();
+        env.tick(6000, 0.0, 0.0, [0.5, 70.0, 0.5], |_, _, _| plains, true, false);
+        let fog = |darkness: f32| env.sky_state(&View { partial_tick: 1.0, forward: Vec3::Z, camera_y: 70.0, render_distance: 8, rain_level: 0.0, thunder_level: 0.0, darkness }).fog;
+        let clear = fog(0.0);
+        assert!(clear.min_element() > 0.0, "{clear:?}");
+        assert!((fog(0.5) - clear * 0.25).abs().max_element() < 1e-6);
+        assert_eq!(fog(1.0), Vec3::ZERO);
+    }
+
+    #[test]
     fn only_the_overworld_has_clouds() {
         let Some(registries) = registries() else { return };
         assert!(sky_in(&registries, "minecraft:overworld", "minecraft:plains", 6000).cloud_alpha > 0.0);
@@ -378,7 +390,7 @@ mod tests {
     fn only_the_end_flashes() {
         let Some(registries) = registries() else { return };
         let plains = registries.biomes.id("minecraft:plains").unwrap().0;
-        let view = View { partial_tick: 1.0, forward: Vec3::Z, camera_y: 70.0, render_distance: 8, rain_level: 0.0, thunder_level: 0.0 };
+        let view = View { partial_tick: 1.0, forward: Vec3::Z, camera_y: 70.0, render_distance: 8, rain_level: 0.0, thunder_level: 0.0, darkness: 0.0 };
         for (dimension, flashes) in [("minecraft:overworld", false), ("minecraft:the_nether", false), ("minecraft:the_end", true)] {
             let mut env = DimensionEnvironment::load(&registries, dimension).unwrap();
             let mut brightest = 0.0f32;

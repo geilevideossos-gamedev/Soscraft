@@ -56,6 +56,7 @@ pub struct DamageState {
     pub player_memory: i32,
     /// A death the world has not reported yet.
     pub death: Option<Death>,
+    pub damaged: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -113,6 +114,7 @@ impl DamageState {
         let dealt = absorb(dealt);
         if dealt != 0.0 {
             *health = (*health - dealt).clamp(0.0, max_health);
+            self.damaged = true;
         }
         let died = *health <= 0.0;
         if died {

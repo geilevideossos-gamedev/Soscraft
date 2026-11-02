@@ -69,6 +69,7 @@ pub struct Entities {
     /// Client drops handed to the server: the command count that sent each.
     server_handed: HashMap<u32, (u64, ItemEntity)>,
     players: PlayerQueues,
+    left_game_events: Vec<minecraft_terrain::game_events::PlayerEvent>,
     block_entity_changes: Vec<((i32, i32, i32), Option<minecraftoss_core::nbt::Tag>)>,
     server_snapshot: Option<EntitySnapshot>,
     server_handled: u64,
@@ -148,6 +149,7 @@ pub struct PlayerView {
     pub jumping: bool,
     pub swirl: Option<minecraft_terrain::spell_particles::SwirlView>,
     pub omens: minecraft_terrain::server::PlayerOmens,
+    pub warden: minecraft_terrain::warden_tracker::WardenSpawnTracker,
 }
 
 fn player_controls(id: u64, player: &PlayerView, inventory: &Inventory) -> minecraftoss_entities::controls::PlayerControls {
@@ -184,6 +186,8 @@ pub struct PlayerOutputs {
     pub item_uses_done: Vec<SentItemUse>,
     pub raid_omens: Vec<(i32, (i32, i32, i32))>,
     pub trial_omen: bool,
+    pub warden_tracker: Option<minecraft_terrain::warden_tracker::WardenSpawnTracker>,
+    pub effects: Vec<minecraft_terrain::warden_tracker::EffectGrant>,
     pub raid_heroes: Vec<i32>,
     pub raid_horns: Vec<DVec3>,
     pub raid_bars: Option<Vec<minecraft_terrain::raids::RaidBar>>,
@@ -214,6 +218,7 @@ pub(crate) struct PlayerQueue {
     merchant_waiting: usize,
     raid_omens_waiting: Vec<(i32, (i32, i32, i32))>,
     lodestones_gone: Vec<(i32, i32, i32)>,
+    game_events: Vec<minecraft_terrain::game_events::PlayerEvent>,
     pub(crate) out: PlayerOutputs,
 }
 
@@ -404,6 +409,16 @@ impl PlayerQueues {
                 queue.lodestones_gone.push(pos);
             }
         }
+        for (player, tracker) in std::mem::take(&mut output.warden_trackers) {
+            if let Some(queue) = self.0.get_mut(&player) {
+                queue.out.warden_tracker = Some(tracker);
+            }
+        }
+        for (player, grant) in std::mem::take(&mut output.player_effects) {
+            if let Some(queue) = self.0.get_mut(&player) {
+                queue.out.effects.push(grant);
+            }
+        }
         for (player, amplifier) in std::mem::take(&mut output.raid_heroes) {
             if let Some(queue) = self.0.get_mut(&player) {
                 queue.out.raid_heroes.push(amplifier);
@@ -489,6 +504,7 @@ impl Entities {
             broken_items: Vec::new(),
             server_handed: HashMap::new(),
             players: PlayerQueues::default(),
+            left_game_events: Vec::new(),
             block_entity_changes: Vec::new(),
             server_snapshot: None,
             server_handled: 0,
@@ -749,6 +765,10 @@ impl Entities {
         self.server.award_experience(at, amount);
     }
 
+    pub fn award_death_experience(&mut self, player: u64, at: [f64; 3], amount: i32) {
+        self.server.award_death_experience(player, at, amount);
+    }
+
     pub fn award_block_experience(&mut self, held: Option<&ItemStack>, broken: &[BrokenBlock], by_hand: &[(i32, i32, i32)]) {
         if !self.block_drops {
             return;
@@ -953,6 +973,29 @@ impl Entities {
     }
 
     pub fn mob_distance(&self, player: u64, eye: DVec3, look: DVec3, reach: f64) -> Option<f64> {
+        let knot = self.knot_on_ray(eye, look, reach).map(|(_, distance)| distance);
+        self.target_distance(player, eye, look, reach).into_iter().chain(knot).min_by(f64::total_cmp)
+    }
+
+    pub fn knot_target(&self, player: u64, eye: DVec3, look: DVec3, reach: f64, block: Option<f64>) -> Option<(i32, i32, i32)> {
+        let (pos, distance) = self.knot_on_ray(eye, look, reach)?;
+        let nearer = |other: Option<f64>| other.is_none_or(|other| distance < other);
+        (nearer(block) && nearer(self.target_distance(player, eye, look, reach))).then_some(pos)
+    }
+
+    pub fn punch_knot(&mut self, player: u64, eye: DVec3, look: DVec3, reach: f64, block: Option<f64>) -> bool {
+        let Some(pos) = self.knot_target(player, eye, look, reach, block) else {
+            return false;
+        };
+        self.server.knot_action(player, pos, minecraft_terrain::leash_render::KnotAction::Punch);
+        true
+    }
+
+    fn knot_on_ray(&self, eye: DVec3, look: DVec3, reach: f64) -> Option<((i32, i32, i32), f64)> {
+        minecraft_terrain::leash_render::knot_on_ray(&self.view.world.knots(), eye, look, reach)
+    }
+
+    fn target_distance(&self, player: u64, eye: DVec3, look: DVec3, reach: f64) -> Option<f64> {
         let frame = minecraft_terrain::item_frame::on_ray(&self.view.frames, eye, look, reach).map(|(_, distance)| distance);
         let other = crate::pvp::player_on_ray(&self.player_boxes, player, eye, look, reach).map(|(_, distance)| distance);
         self.entity_distance(player, eye, look, reach).into_iter().chain(frame).chain(other).min_by(f64::total_cmp)
@@ -1014,8 +1057,23 @@ impl Entities {
     }
 
     /// A block the player placed, for the level the mobs walk in.
-    pub fn placed(&mut self, scene: &HandcraftedScene, pos: (i32, i32, i32)) {
-        self.server.player_edit(scene, pos, PlayerEdit::Place);
+    pub fn placed(&mut self, player: Option<u64>, scene: &HandcraftedScene, pos: (i32, i32, i32)) {
+        self.server.player_edit(player, scene, pos, PlayerEdit::Place);
+    }
+
+    pub fn game_event(&mut self, player: u64, event: &'static str, pos: [f64; 3], affected: Option<String>) {
+        self.post_game_event(minecraft_terrain::game_events::PlayerEvent { player, event, pos, affected, projectile: false });
+    }
+
+    pub fn projectile_landed(&mut self, player: u64, pos: [f64; 3], affected: Option<String>) {
+        self.post_game_event(minecraft_terrain::game_events::PlayerEvent { player, event: minecraft_terrain::game_events::PROJECTILE_LAND, pos, affected, projectile: true });
+    }
+
+    fn post_game_event(&mut self, event: minecraft_terrain::game_events::PlayerEvent) {
+        match self.players.0.get_mut(&event.player) {
+            Some(queue) => queue.game_events.push(event),
+            None => self.left_game_events.push(event),
+        }
     }
 
     pub fn keep_dropped_contents(&mut self, pos: (i32, i32, i32), id: &str, components: &serde_json::Value) {
@@ -1026,16 +1084,16 @@ impl Entities {
         self.server.block_entity_components(pos, components);
     }
 
-    pub fn use_block(&mut self, scene: &HandcraftedScene, pos: (i32, i32, i32), facing: &'static str) -> bool {
-        self.server.use_block(scene, pos, facing)
+    pub fn use_block(&mut self, player: u64, scene: &HandcraftedScene, pos: (i32, i32, i32), facing: &'static str) -> bool {
+        self.server.use_block(player, scene, pos, facing)
     }
 
-    pub fn attack_block(&mut self, scene: &HandcraftedScene, pos: (i32, i32, i32)) -> bool {
-        self.server.attack_block(scene, pos)
+    pub fn attack_block(&mut self, player: u64, scene: &HandcraftedScene, pos: (i32, i32, i32)) -> bool {
+        self.server.attack_block(player, scene, pos)
     }
 
-    pub fn ring_bell(&mut self, pos: (i32, i32, i32), face: &'static str) {
-        self.server.ring_bell(pos, face);
+    pub fn ring_bell(&mut self, player: u64, pos: (i32, i32, i32), face: &'static str) {
+        self.server.ring_bell(player, pos, face);
     }
 
     pub fn item_on_block(&mut self, player: u64, pos: (i32, i32, i32), action: minecraft_terrain::server::ItemOnBlock, sent: SentItemUse) {
@@ -1045,6 +1103,11 @@ impl Entities {
 
     pub fn throw_eye(&mut self, player: u64, throw: minecraft_terrain::ender_eye::EyeThrow, sent: SentItemUse) {
         self.server.throw_eye(player, throw);
+        self.players.queue(player).item_use_waiting = Some(sent);
+    }
+
+    pub fn launch_rocket(&mut self, player: u64, launch: minecraft_terrain::firework::RocketLaunch, sent: SentItemUse) {
+        self.server.launch_rocket(player, launch);
         self.players.queue(player).item_use_waiting = Some(sent);
     }
 
@@ -1229,6 +1292,7 @@ impl Entities {
             }
             picked.splice(0..0, queue.picked);
             experience = experience.saturating_add(queue.experience);
+            self.left_game_events.append(&mut queue.game_events);
         }
         for rest in take_picked(inventory, selected, picked) {
             if let Some(feet) = feet {
@@ -1357,6 +1421,15 @@ impl Entities {
         self.view.world.has_knot(pos)
     }
 
+    pub fn shear_knot(&mut self, player: u64, pos: (i32, i32, i32)) -> bool {
+        let mut world = self.view.world.clone();
+        if !world.shear_knot(pos) {
+            return false;
+        }
+        self.server.knot_action(player, pos, minecraft_terrain::leash_render::KnotAction::Shear);
+        true
+    }
+
     pub fn totem_pop(&mut self, key: u128, feet: [f64; 3], width: f64, height: f64) {
         self.view.totem_pop(key, feet, width, height);
     }
@@ -1379,8 +1452,12 @@ impl Entities {
         stack
     }
 
-    pub fn chest_openers(&mut self, pos: (i32, i32, i32), count: u32) {
-        self.server.chest_openers(pos, count);
+    pub fn chest_openers(&mut self, player: Option<u64>, pos: (i32, i32, i32), count: u32) {
+        self.server.chest_openers(player, pos, count);
+    }
+
+    pub fn cat_on_chest(&self, pos: (i32, i32, i32)) -> bool {
+        self.view.world.cat_sits_on(pos)
     }
 
     pub fn campfire_douse(&mut self, pos: (i32, i32, i32), signal: bool) {
@@ -1409,14 +1486,14 @@ impl Entities {
     }
 
     /// Blocks the player's weapons broke, for the level the mobs walk in.
-    pub fn broke(&mut self, positions: &[(i32, i32, i32)]) {
-        self.server.player_breaks(positions);
+    pub fn broke(&mut self, player: Option<u64>, positions: &[(i32, i32, i32)]) {
+        self.server.player_breaks(player, positions);
     }
 
-    pub fn mined(&mut self, held: Option<&ItemStack>, broken: &[BrokenBlock], by_hand: &[(i32, i32, i32)], creative: bool) {
+    pub fn mined(&mut self, player: u64, held: Option<&ItemStack>, broken: &[BrokenBlock], by_hand: &[(i32, i32, i32)], creative: bool) {
         let silk_touch = Self::hand_has_silk_touch(held);
         let how: Vec<_> = broken.iter().map(|(pos, _, blast)| (*pos, how_broken(*pos, *blast, by_hand, silk_touch, creative))).collect();
-        self.server.player_mines(&how);
+        self.server.player_mines(player, &how);
     }
 
     pub fn anger_piglins(&mut self, player: u64, feet: [f64; 3], sight: bool) {
@@ -1597,7 +1674,9 @@ impl Entities {
                     })
                     .collect(),
                 lodestones: actors.iter().map(|actor| (actor.id, minecraft_terrain::lodestone::tracked_targets(actor.inventory, self.dimension))).filter(|(_, targets)| !targets.is_empty()).collect(),
+                warden_trackers: actors.iter().map(|actor| (actor.id, actor.view.warden)).collect(),
                 view_distance: self.view_distance,
+                game_events: std::mem::take(&mut self.left_game_events).into_iter().chain(actors.iter().flat_map(|actor| std::mem::take(&mut self.players.queue(actor.id).game_events))).collect(),
             }, batch.normal.clone());
         }
         let mut changes = Vec::new();
@@ -1933,6 +2012,7 @@ fn spared_by_blasts_without_pvp(hits: &mut Vec<minecraftoss_entities::world::Pla
             pushed.push((hit.player_id, knockback));
             false
         }
+        PlayerHitKind::Fireworks { by: Some(by), .. } => !is_player(by),
         _ => true,
     });
 }
@@ -1965,7 +2045,7 @@ pub(crate) fn mob_hit(
 ) -> Option<Hit> {
     let from = match hit.kind {
         PlayerHitKind::Melee { attacker, .. } => Some(attacker.to_array()),
-        PlayerHitKind::Fireworks { at } => Some(at.to_array()),
+        PlayerHitKind::Fireworks { at, .. } => Some(at.to_array()),
         PlayerHitKind::Typed { from, .. } => Some(from.to_array()),
         _ => None,
     };
@@ -1973,7 +2053,7 @@ pub(crate) fn mob_hit(
         PlayerHitKind::Melee { attacker, .. } => [attacker.x - feet[0], attacker.z - feet[2]],
         PlayerHitKind::Arrow { velocity, .. } | PlayerHitKind::Fireball { velocity, .. } | PlayerHitKind::WitherSkull { velocity, .. } | PlayerHitKind::ShulkerBullet { velocity } | PlayerHitKind::Trident { velocity } | PlayerHitKind::Spit { velocity } => [-velocity.x, -velocity.z],
         PlayerHitKind::Explosion { knockback, .. } | PlayerHitKind::BadRespawnPoint { knockback } => [-knockback.x, -knockback.z],
-        PlayerHitKind::Magic { at } | PlayerHitKind::Fireworks { at } => [at.x - feet[0], at.z - feet[2]],
+        PlayerHitKind::Magic { at } | PlayerHitKind::Fireworks { at, .. } => [at.x - feet[0], at.z - feet[2]],
         PlayerHitKind::Typed { from, .. } => [from.x - feet[0], from.z - feet[2]],
     };
     let ownerless_skull = matches!(hit.kind, PlayerHitKind::WitherSkull { .. }) && hit.source.is_none();
@@ -1996,6 +2076,7 @@ pub(crate) fn mob_hit(
     let cause = match hit.kind {
         PlayerHitKind::BadRespawnPoint { .. } => crate::death::DamageCause::BadRespawnPoint,
         PlayerHitKind::Magic { .. } | PlayerHitKind::WitherSkull { .. } if hit.source.is_none() => crate::death::DamageCause::Magic,
+        PlayerHitKind::Fireworks { by: Some(by), .. } => crate::death::DamageCause::PlayerFireworks { client: u32::try_from(by).unwrap_or(u32::MAX) },
         PlayerHitKind::Fireworks { .. } if hit.source.is_none() || type_id.is_none() => crate::death::DamageCause::Fireworks,
         PlayerHitKind::Explosion { by: Some(by), .. } => crate::death::DamageCause::PlayerExplosion { client: u32::try_from(by).unwrap_or(u32::MAX) },
         _ => crate::death::DamageCause::mob(attack, hit.source, type_id),
@@ -2290,6 +2371,7 @@ mod tests {
             jumping: false,
             swirl: None,
             omens: Default::default(),
+            warden: Default::default(),
         };
         let survival = player_candidate(HOST, &view(true, false));
         assert!(survival.alive && survival.attackable && !survival.spectator);
@@ -2446,7 +2528,7 @@ mod tests {
         entities.summon(minecraft_commands::PlayerId(0), "minecraft:pig".to_owned(), [0.5, 200.0, 2.5], Some(nbt));
         let mut inventory = Inventory::default();
         inventory.slots[3] = Some(ItemStack::new("minecraft:saddle", 1));
-        let view = PlayerView { feet: [0.5, 200.0, 0.5], alive: true, attackable: true, spectator: false, picks_up: false, health: 20.0, yaw: 0.0, pitch: 0.0, main_hand: None, offhand: None, sneaking: false, hero: None, sleeping: None, sleep_timer: 0, forward: 0.0, strafe: 0.0, jumping: false, swirl: None, omens: Default::default() };
+        let view = PlayerView { feet: [0.5, 200.0, 0.5], alive: true, attackable: true, spectator: false, picks_up: false, health: 20.0, yaw: 0.0, pitch: 0.0, main_hand: None, offhand: None, sneaking: false, hero: None, sleeping: None, sleep_timer: 0, forward: 0.0, strafe: 0.0, jumping: false, swirl: None, omens: Default::default(), warden: Default::default() };
         let started = std::time::Instant::now();
         let tick = |entities: &mut Entities, inventory: &mut Inventory| {
             assert!(started.elapsed().as_secs() < 60, "the server answers");
@@ -2536,7 +2618,7 @@ mod tests {
         let mut inventory = Inventory::default();
         inventory.slots[36] = Some(ItemStack::new("minecraft:golden_boots", 1));
         inventory.slots[39] = Some(ItemStack::new("minecraft:chainmail_helmet", 1));
-        let view = PlayerView { feet: [0.0; 3], alive: true, attackable: true, spectator: false, picks_up: true, health: 20.0, yaw: 0.0, pitch: 0.0, main_hand: None, offhand: None, sneaking: false, hero: None, sleeping: None, sleep_timer: 0, forward: 0.0, strafe: 0.0, jumping: false, swirl: None, omens: Default::default() };
+        let view = PlayerView { feet: [0.0; 3], alive: true, attackable: true, spectator: false, picks_up: true, health: 20.0, yaw: 0.0, pitch: 0.0, main_hand: None, offhand: None, sneaking: false, hero: None, sleeping: None, sleep_timer: 0, forward: 0.0, strafe: 0.0, jumping: false, swirl: None, omens: Default::default(), warden: Default::default() };
         let controls = player_controls(HOST, &view, &inventory);
         assert_eq!(controls.armor, [Some("minecraft:golden_boots".to_owned()), None, None, Some("minecraft:chainmail_helmet".to_owned())]);
     }
@@ -3117,7 +3199,7 @@ mod tests {
         for x in 8..17 {
             for z in 8..17 {
                 scene.set((x, 200, z), Some(Block::new("minecraft:stone")));
-                entities.placed(&scene, (x, 200, z));
+                entities.placed(None, &scene, (x, 200, z));
             }
         }
         Some((entities, scene))
@@ -3147,6 +3229,7 @@ mod tests {
             jumping: false,
             swirl: None,
             omens: Default::default(),
+            warden: Default::default(),
         };
         let batch = crate::tick_rate::TickBatch {
             normal: if entities.ready_for_ticks() { vec![true] } else { Vec::new() },
@@ -3158,6 +3241,56 @@ mod tests {
         ];
         let _ = entities.tick(&mut actors, 0.05, &batch, crate::tick_rate::ClientTiming::default(), minecraft_terrain::server::ClockTicks::default(), true);
         std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+
+    #[test]
+    fn a_leaving_player_s_vibrations_go_out_with_the_next_tick_and_leave_no_queue() {
+        use minecraft_terrain::game_events::{CONTAINER_CLOSE, STEP};
+        let Some(mut entities) = friend_world() else {
+            return;
+        };
+        let (mut host, mut friend) = (Inventory::default(), Inventory::default());
+        tick_both(&mut entities, &mut host, &mut friend);
+        entities.game_event(FRIEND, STEP, FRIEND_FEET, None);
+        entities.leave(FRIEND, &mut friend, 0, Some(FRIEND_FEET));
+        entities.game_event(FRIEND, CONTAINER_CLOSE, [12.5, 201.5, 13.5], None);
+        assert!(!entities.players.0.contains_key(&FRIEND), "no queue is made again for a player who left");
+        let left: Vec<(u64, &str)> = entities.left_game_events.iter().map(|event| (event.player, event.event)).collect();
+        assert_eq!(left, [(FRIEND, STEP), (FRIEND, CONTAINER_CLOSE)]);
+        let view = PlayerView {
+            feet: HOST_FEET,
+            alive: true,
+            attackable: true,
+            spectator: false,
+            picks_up: true,
+            health: 20.0,
+            yaw: 0.0,
+            pitch: 0.0,
+            main_hand: None,
+            offhand: None,
+            sneaking: false,
+            hero: None,
+            sleeping: None,
+            sleep_timer: 0,
+            forward: 0.0,
+            strafe: 0.0,
+            jumping: false,
+            swirl: None,
+            omens: Default::default(),
+            warden: Default::default(),
+        };
+        let started = std::time::Instant::now();
+        while !entities.left_game_events.is_empty() {
+            assert!(started.elapsed().as_secs() < 60, "a tick goes out");
+            let batch = crate::tick_rate::TickBatch {
+                normal: if entities.ready_for_ticks() { vec![true] } else { Vec::new() },
+                overload: None,
+            };
+            let mut actors = [TickActor { id: HOST, view: view.clone(), inventory: &mut host, selected: 0 }];
+            let _ = entities.tick(&mut actors, 0.05, &batch, crate::tick_rate::ClientTiming::default(), minecraft_terrain::server::ClockTicks::default(), true);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(!entities.players.0.contains_key(&FRIEND), "the host's tick takes them without the friend");
     }
 
     #[test]
@@ -3195,6 +3328,7 @@ mod tests {
                 jumping: false,
                 swirl,
                 omens: Default::default(),
+                warden: Default::default(),
             };
             let batch = crate::tick_rate::TickBatch {
                 normal: if entities.ready_for_ticks() { vec![true] } else { Vec::new() },
@@ -3439,9 +3573,9 @@ mod tests {
         };
         let bell = (12, 201, 12);
         scene.set(bell, Some(Block::new("minecraft:bell").with("attachment", "floor").with("facing", "north")));
-        entities.placed(&scene, bell);
+        entities.placed(None, &scene, bell);
         assert!(entities.heard.listen(true).is_empty());
-        entities.ring_bell(bell, "south");
+        entities.ring_bell(0, bell, "south");
         let (mut host, mut friend) = (Inventory::default(), Inventory::default());
         let started = std::time::Instant::now();
         let mut said = Vec::new();
@@ -3533,6 +3667,48 @@ mod tests {
             assert!(queue.out.hits.is_empty(), "no hearts lost");
             assert_eq!(queue.out.pushes.len(), 1, "pushed once");
         }
+    }
+
+    fn rocket_hit(player_id: u64, by: Option<u64>, source: Option<u64>) -> minecraftoss_entities::world::PlayerHit {
+        minecraftoss_entities::world::PlayerHit { player_id, damage: 7.0, kind: PlayerHitKind::Fireworks { at: DVec3::new(41.5, 64.0, 0.5), by }, source }
+    }
+
+    #[test]
+    fn with_pvp_off_a_players_rocket_spares_every_player_and_pushes_no_one() {
+        let queues = two_queues();
+        let all = vec![rocket_hit(HOST, Some(FRIEND), None), rocket_hit(FRIEND, Some(FRIEND), None), rocket_hit(FRIEND, Some(77), None), rocket_hit(HOST, None, Some(9)), rocket_hit(FRIEND, None, None)];
+        let is_player = |id: u64| queues.0.contains_key(&id);
+        let (mut kept, mut pushed) = (all.clone(), Vec::new());
+        spared_by_blasts_without_pvp(&mut kept, &mut pushed, true, is_player);
+        assert_eq!(kept.len(), 5, "pvp on");
+        spared_by_blasts_without_pvp(&mut kept, &mut pushed, false, is_player);
+        let left: Vec<_> = kept.iter().map(|hit| (hit.player_id, hit.source)).collect();
+        assert_eq!(left, [(FRIEND, None), (HOST, Some(9)), (FRIEND, None)], "a rocket by someone gone, a villager's and a dispenser's still hurt");
+        assert!(pushed.is_empty(), "a spared player is not pushed either");
+        let mut queues = two_queues();
+        let mut output = minecraft_terrain::server::Output { player_hits: all[..2].to_vec(), ..Default::default() };
+        let is_player = |id: u64| id == HOST || id == FRIEND;
+        spared_by_blasts_without_pvp(&mut output.player_hits, &mut output.players_pushed, false, is_player);
+        queues.route(&mut output, 2, |_| None);
+        for player in [HOST, FRIEND] {
+            let queue = queues.queue(player);
+            assert!(queue.out.hits.is_empty() && queue.out.pushes.is_empty(), "the owner included");
+        }
+    }
+
+    #[test]
+    fn with_pvp_on_a_players_rocket_names_the_player_and_does_not_scale_with_difficulty() {
+        let mut queues = two_queues();
+        let mut output = minecraft_terrain::server::Output { player_hits: vec![rocket_hit(FRIEND, Some(HOST), None), rocket_hit(HOST, None, Some(9)), rocket_hit(HOST, None, None)], ..Default::default() };
+        let villager = |id: u64| (id == 9).then_some("minecraft:villager");
+        queues.route(&mut output, 3, villager);
+        let friend = std::mem::take(&mut queues.queue(FRIEND).out.hits);
+        assert_eq!(friend.len(), 1);
+        assert_eq!((friend[0].0, friend[0].3), (7.0, crate::death::DamageCause::PlayerFireworks { client: 0 }), "the host's rocket names the host");
+        assert_eq!(friend[0].1, Some([41.5, 64.0, 0.5]), "pushed away from the burst");
+        assert_eq!(friend[0].3.damage_type(), "minecraft:fireworks");
+        let host = std::mem::take(&mut queues.queue(HOST).out.hits);
+        assert_eq!(host.iter().map(|hit| (hit.0, hit.3)).collect::<Vec<_>>(), [(10.5, crate::death::DamageCause::mob(crate::death::MobAttack::Fireworks, Some(9), Some("minecraft:villager"))), (7.0, crate::death::DamageCause::Fireworks)], "only a mob's rocket scales on Hard");
     }
 
     #[test]

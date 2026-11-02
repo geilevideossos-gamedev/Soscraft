@@ -1,11 +1,11 @@
 {
   "track": "e2",
-  "worktree": "C:\\Dev\\mc-wt\\track-e2",
+  "worktree": "C:\\Dev\\Soscraft\\mc-wt\\track-e2",
   "branch": "track-e2",
   "target": "D:\\iw4l-wt\\track-e2",
   "base": "r10-e2b-base",
   "round": 10,
-  "briefs": "docs/round10/track-e.md (read the overview first, then the E2 sections; E1 runs in parallel in C:\\Dev\\mc-wt\\track-e1 and owns the files the overview assigns to it)",
+  "briefs": "docs/round10/track-e.md (read the overview first, then the E2 sections; E1 runs in parallel in C:\\Dev\\Soscraft\\mc-wt\\track-e1 and owns the files the overview assigns to it)",
   "notes": "Round 10 runs several tracks at once, each in its own worktree: D0 (shared mob registry), D (trial spawners, vaults, lodestones, breezes), W (darkness, vibrations, sculk, warden), E1 and E2 (known limits), F (Elden Ring boss), later M1-M3 (remaining mobs). Never bump minecraft_net::PROTOCOL: the release step bumps it once when messages changed; if a commit changes a ToClient/ToServer message or the codec, add a line under '## Protocol' in the track log. Insert new enum variants, match arms and list entries next to related ones, not at the end of lists, to keep merges small. Record decisions in the track log. RESTARTS: if this run was started again after a stop (the PC crashed on 2026-10-28 at 20:27 with six tracks building), the worktree may hold the current group's half-done work as uncommitted or staged changes: read `git status` and `git diff` (and `git diff --cached`) first, keep what is correct, finish the group and commit it; discard only what is broken. If cargo reports invalid or corrupt metadata, a truncated .rlib/.rmeta or a link error on a file that should exist, run `& .\\scripts\\cargo-slot.ps1 +target=<this track's target> clean -p <crate>` for that crate and build again. LOAD: builds now run at -j 4 per slot to keep the laptop cool; never start a second cargo command, the game, or any other long CPU-heavy process.",
   "groups": [
     {

@@ -15,8 +15,16 @@ A MW2 bullet finds a mob through one number: the kind in the top byte, the entit
 | 48-63 | M1, group `land` |
 | 64-79 | M2, group `water` |
 | 80-95 | M3, group `night` (camels, camel husks and the undead horses use the cow store's byte 11) |
-| 96-99 | F, group `bosses` |
+| 96-99 | F, group `bosses`: 96 Elden Ring bosses |
 | 100-255 | free |
+
+## F: Elden Ring bosses (group `bosses`)
+
+Not a vanilla mob: the boss of track F (`docs/round10/track-f.md`, `docs/ELDEN-RING-BOSSES.md`). His fight logic is the pure crate `crates/elden_boss`; he is saved as a vanilla `minecraft:marker` carrying `data.iw4l`.
+
+| # | Mob | Where the player meets it | Exists beyond the default | Left | Size | Family | Hit key | Status | Commits |
+|---|---|---|---|---|---|---|---|---|---|
+| F1 | Margit, the Fell Omen | `/summon iw4l:margit`, and later the altar | the brain, moves, phases and arena rules (`elden_boss`, segment f1) | walking, model, strikes, reward, MW2 resistances, bar, friends' show, altar | XL | `elden_bosses` | 96 | live | 03534171, "Minecraft weapons hurt Margit with no hurt cooldown, and his stance breaks" |
 
 ## D0: the registry's proof (group `pests`)
 
@@ -29,7 +37,7 @@ A MW2 bullet finds a mob through one number: the kind in the top byte, the entit
 
 | # | Mob | Where the player meets it | Exists beyond the default | Left | Size | Family | Hit key | Status | Commits |
 |---|---|---|---|---|---|---|---|---|---|
-| 52 | Breeze | trial chambers | wind charge burst (`wind.rs`), wind charges trigger blocks (f142f9c1), `BreezeAnimation` readable | brain, wind charges, `BreezeModel`, keyframes | L | `breezes` | 40 | left | |
+| 52 | Breeze | trial chambers | wind charge burst (`wind.rs`), wind charges trigger blocks (f142f9c1), `BreezeAnimation` readable | | L | `breezes` | 40 | done | ae5bcf0e, 0c83047f, a1ddd5ae, fbf3b5cc, "Minecraft breezes are drawn with their wind and eyes" |
 
 ## W: the deep dark (group `deep_dark`)
 
@@ -41,14 +49,14 @@ A MW2 bullet finds a mob through one number: the kind in the top byte, the entit
 
 | # | Mob | Where the player meets it | Exists beyond the default | Left | Size | Family | Hit key | Status | Commits |
 |---|---|---|---|---|---|---|---|---|---|
-| 15 | Rabbit | taiga, snowy, desert, meadow, cherry (dormant today) | spawn row, rules and group variants | jump control, carrot raids, biome variants, killer bunny, keyframes | M | `rabbits` | 48 | left | |
+| 15 | Rabbit | taiga, snowy, desert, meadow, cherry | spawn row, rules and group variants; `rabbits` family: saved, loaded, hatched and seen by friends; jump control, fleeing, panic, carrot temptation, breeding with the biome's colour, growth and the golden dandelion lock; carrot raids; the killer bunny (armour, bite, leap, targets, hostile sounds, name); wild cats and wolves hunt them; adult and baby models, 16 textures, hop and head-tilt keyframes | the hop's dust, the bite's crumbs and sound (level event 2001), W's `block_change` for the bite, name tags and the egg's variant component | M | `rabbits` | 48 | done | 8ad4c103, 39d9b5bc, e862fc31, d7ae60a2, 8afa0650, d008fa7e, ed19a463, ee0a08da, 9bfbc35e (M1 `rabbits-live`, `rabbits-drawn`, `rabbits-behaviour`) |
 | 16 | Fox | taiga, snowy taiga, grove (dormant today) | spawn row and finalize; wolves hunt foxes | sleeping by day, pounce, trust, mouth item, berries, keyframes | L | `foxes` | 49 | left | |
 | 17 | Goat | peaks, snowy slopes (dormant today) | size row (rules missing, never spawns) | brain, ram, long jump, screaming, horns, milking | L | `goats` | 50 | left | |
 | 18 | Parrot | jungles (dormant today) | size row | flying (P3 from D0), imitation, dancing, cookies, shoulder | L | `parrots` | 51 | left | |
 | 19 | Panda | jungles (dormant today) | spawn row with the animal rules | genes and personalities, bamboo, sneeze, roll | L | `pandas` | 52 | left | |
 | 20 | Turtle | beaches (dormant today) | size row; zombies' baby-turtle target slot | home beach, eggs hatching, scute | L | `turtles` | 53 | left | |
 | 21 | Armadillo | savanna, badlands (dormant today) | spawn row and finalize | brain, roll up, scute and brushing, keyframes | M | `armadillos` | 54 | left | |
-| 22 | Polar bear | frozen biomes (dormant today) | size row | defends cubs, standing attack | M | `polar_bears` | 55 | left | |
+| 22 | Polar bear | frozen biomes, frozen oceans | spawn row with its sea-ice rule, also at chunk generation; `polar_bears` family: saved, loaded, hatched and seen by friends (standing through `FamilyShow`); panic (cubs from any hit, adults from fire), cubs following adults, the standing warning and the six-point swipe, hit cubs calling adults, attacking players near cubs, hunting foxes, `NeutralMob` anger saved with `angry_at`, the cub's own ambient sound, the golden dandelion lock; the adult model scaled 1.2 and the cub's own model with their two textures, the standing pose lerped by the partial tick, the same pose for friends | `mustReach`, the 0.98 water slow-down, the standing bear's taller box, freeze immunity | M | `polar_bears` | 55 | done | 4d6f6a32, feed5dab, fa44b301, 84d52a57, 1c672729 (M1 `polar-bears-live`, `polar-bears-drawn`) |
 | 46 | Sniffer | sniffer eggs | | egg hatching, digging seeds, brain, keyframes | M | `sniffers` | 56 | left | |
 | 44 | Bee | flower forests, plains, nests | generator places nests with bees | flying (P3 from D0), nests and hives, pollination, honey, anger | L | `bees` | 57 | left | |
 

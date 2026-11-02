@@ -2,7 +2,7 @@
 
 The owner's words for round 10 (`docs/PROGRESS.md`, round 10 brief):
 
-> F. Elden Ring bosses, first step (the next roadmap phase). Read the reference in C:\Dev\references\ELDEN-RING-Combat-Rewrite. If it's missing, clone Funny-Bones/ELDEN-RING-Combat-Rewrite there. Write docs/ELDEN-RING-BOSSES.md: how a boss fight fits into our game (Minecraft world, MW2 guns, multiplayer, saving), which boss to start with, assets, the boss bar, phases, and how players summon or find it. Then build that first boss as a playable proof of concept in a Minecraft world.
+> F. Elden Ring bosses, first step (the next roadmap phase). Read the reference in C:\Dev\Soscraft\references\ELDEN-RING-Combat-Rewrite. If it's missing, clone Funny-Bones/ELDEN-RING-Combat-Rewrite there. Write docs/ELDEN-RING-BOSSES.md: how a boss fight fits into our game (Minecraft world, MW2 guns, multiplayer, saving), which boss to start with, assets, the boss bar, phases, and how players summon or find it. Then build that first boss as a playable proof of concept in a Minecraft world.
 
 The reference was read (HEAD 606e6ec) and the design is written: **`docs/ELDEN-RING-BOSSES.md`** (called "the design doc" below). It picks Margit, the Fell Omen. This track builds him as a playable proof of concept. Every number Margit uses is in the design doc; the build agents read both files.
 
@@ -22,7 +22,7 @@ Track F has seven parts and nine commit groups, in this order (F1 and F2 are the
 
 **Segments.** F1 (`er-core`, `er-rules`) touches no shared game file and starts from `minecraft-survival` now (segment `f1`). F2 to F7 add a mob family and must use track D0's shared mob registry, so they run as segment `f2` after D0 is merged into `minecraft-survival` and `minecraft-survival` is merged into `track-f`.
 
-Paths and line numbers are as of 6e0e0573 (the track-d merge, checked out in `C:\Dev\mc-wt\track-d`). Re-check them before editing: tracks D0, D, W, M1-M3, E1 and E2 run at the same time, and D0 will move many of them. Vanilla facts were checked with javap on the 26.3 `client.jar` and in the 26.3 data inside it. Screenshots of this track are named `f01_...` and up.
+Paths and line numbers are as of 6e0e0573 (the track-d merge, checked out in `C:\Dev\Soscraft\mc-wt\track-d`). Re-check them before editing: tracks D0, D, W, M1-M3, E1 and E2 run at the same time, and D0 will move many of them. Vanilla facts were checked with javap on the 26.3 `client.jar` and in the 26.3 data inside it. Screenshots of this track are named `f01_...` and up.
 
 **Multiplayer rule for every item.** The host owns every level, every mob and every rule. Friends run no AI: they mirror mobs from look tags and per-tick `MobShow`, so every drawn Margit state goes through `MobShow`. Particles are drawn by each viewer from the shown state, so they need no message. Everything a player earns is keyed by player id on the host and goes to that player, friends included. Nothing keys on player 0.
 

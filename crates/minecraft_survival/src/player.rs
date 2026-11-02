@@ -52,6 +52,7 @@ pub struct Player {
     pub sleeping: Option<crate::sleep::Sleeping>,
     pub sleep_timer: i32,
     pub time_since_rest: i32,
+    pub warden_tracker: minecraft_terrain::warden_tracker::WardenSpawnTracker,
     pub saved_in_bed: Option<(i32, i32, i32)>,
     pub jump_bar: Option<f32>,
     pub vehicle_health: Option<(f32, f32)>,
@@ -90,6 +91,35 @@ pub struct Steps {
     pub move_dist: f32,
     pub next_step: f32,
     pub air_peak: Option<f64>,
+    pub hurts: u64,
+    pub worn: Option<[Option<String>; 4]>,
+    pub glides: u32,
+}
+
+impl Steps {
+    pub fn heard(&mut self, hurts: u64, inventory: &Inventory) -> Vec<&'static str> {
+        use minecraft_terrain::game_events::{ELYTRA_GLIDE, ENTITY_DAMAGE, EQUIP, UNEQUIP};
+        let mut heard = Vec::new();
+        if hurts > self.hurts {
+            heard.push(ENTITY_DAMAGE);
+        }
+        self.hurts = hurts;
+        let worn: [Option<String>; 4] = std::array::from_fn(|i| {
+            let slot = inventory.slots.get(crate::digging::FEET + i);
+            slot.cloned().flatten().map(|stack| stack.id)
+        });
+        if let Some(before) = &self.worn {
+            for (was, now) in before.iter().zip(&worn) {
+                if was != now {
+                    heard.push(if now.is_some() { EQUIP } else { UNEQUIP });
+                }
+            }
+        }
+        self.worn = Some(worn);
+        let glides = std::mem::take(&mut self.glides) as usize;
+        heard.extend(std::iter::repeat_n(ELYTRA_GLIDE, glides));
+        heard
+    }
 }
 
 impl Player {
@@ -137,6 +167,7 @@ impl Player {
             sleeping: None,
             sleep_timer: 0,
             time_since_rest: 0,
+            warden_tracker: Default::default(),
             saved_in_bed: None,
             jump_bar: None,
             vehicle_health: None,
@@ -293,6 +324,7 @@ impl Player {
                 .map(|sleeping| sleeping.head)
                 .or(self.saved_in_bed),
             raid_omen_position: self.survival.raid_omen_position,
+            warden_spawn_tracker: Some(self.warden_tracker),
             time_since_rest: Some(self.time_since_rest),
             tags: Some(self.tags.clone()),
             recipe_book: Some(self.recipe_book.saved(&self.inventory)),
@@ -798,5 +830,24 @@ mod tests {
         assert!(hold_off_death(&mut survival, &mut inventory, 2, true));
         assert!(inventory.slots[2].is_none());
         assert_eq!(survival.status.health, 1.0);
+    }
+
+    #[test]
+    fn a_helmet_put_on_is_heard_as_equip_and_taken_off_as_unequip() {
+        use minecraft_terrain::game_events::{ELYTRA_GLIDE, ENTITY_DAMAGE, EQUIP, UNEQUIP};
+        let mut steps = Steps::default();
+        let mut inventory = Inventory::default();
+        inventory.slots[crate::digging::HEAD] = Some(ItemStack::new("minecraft:iron_helmet", 1));
+        assert!(steps.heard(0, &inventory).is_empty(), "nothing is heard on the first tick");
+        inventory.slots[crate::digging::HEAD] = None;
+        assert_eq!(steps.heard(0, &inventory), vec![UNEQUIP]);
+        inventory.slots[crate::digging::HEAD] = Some(ItemStack::new("minecraft:diamond_helmet", 1));
+        assert_eq!(steps.heard(0, &inventory), vec![EQUIP]);
+        assert!(steps.heard(0, &inventory).is_empty());
+        assert_eq!(steps.heard(1, &inventory), vec![ENTITY_DAMAGE]);
+        assert!(steps.heard(1, &inventory).is_empty());
+        assert!(steps.heard(0, &inventory).is_empty(), "a counter that starts over is no hurt");
+        steps.glides = 2;
+        assert_eq!(steps.heard(0, &inventory), vec![ELYTRA_GLIDE, ELYTRA_GLIDE]);
     }
 }

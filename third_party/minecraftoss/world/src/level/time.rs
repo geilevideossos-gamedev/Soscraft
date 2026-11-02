@@ -475,6 +475,7 @@ impl Level<'_> {
         let inverted = self.registries().blocks.property(state, "inverted") == Some("true");
         let next = self.with(state, "inverted", if inverted { "false" } else { "true" });
         self.set_block(pos, next, super::update::CLIENTS, super::update::LIMIT);
+        self.block_game_event("minecraft:block_change", pos, Some(next));
         self.daylight_update(next, pos);
     }
 }

@@ -262,6 +262,17 @@ impl MoveSink {
         cant_reach: &mut Slot<i64>,
         ctx: &mut Walker,
     ) {
+        self.try_start_for(walk_target, cant_reach, ctx, 150, 250);
+    }
+
+    pub fn try_start_for(
+        &mut self,
+        walk_target: &mut Slot<WalkGoal>,
+        cant_reach: &mut Slot<i64>,
+        ctx: &mut Walker,
+        min: i64,
+        max: i64,
+    ) {
         let Some(goal) = walk_target.get().copied() else {
             return;
         };
@@ -272,7 +283,7 @@ impl MoveSink {
         let reached = Self::reached(&goal, ctx);
         if !reached && self.compute(cant_reach, ctx, &goal) {
             self.last_target = goal.target.block(ctx.others);
-            self.until = Some(ctx.time + 150 + i64::from(ctx.random.next_int(101)));
+            self.until = Some(ctx.time + min + i64::from(ctx.random.next_int((max - min + 1) as u32)));
             let path = self.path.clone();
             let position = ctx.position();
             ctx.navigation

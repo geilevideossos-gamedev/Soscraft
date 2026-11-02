@@ -515,7 +515,7 @@ impl Bedroom for LevelRoom<'_> {
             .collect();
         self.written.extend(writes.iter().map(|(pos, _)| *pos));
         match self.entities.as_deref_mut() {
-            Some(entities) => crate::level::write_blocks(terrain, entities, writes),
+            Some(entities) => crate::level::write_blocks(terrain, entities, None, writes),
             None => {
                 let positions: Vec<Pos> = writes.iter().map(|(pos, _)| *pos).collect();
                 for (pos, block) in writes {

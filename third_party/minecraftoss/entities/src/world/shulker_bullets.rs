@@ -261,6 +261,11 @@ impl EntityWorld {
         let Some(hit) = hit.filter(|_| entity.bullet.alive) else {
             return;
         };
+        if hit.entity.is_some_and(|target| target < PLAYER_TARGET && self.families.deflect(target, "minecraft:shulker_bullet")) {
+            entity.bullet.velocity *= -0.5;
+            entity.bullet.position += entity.bullet.velocity;
+            return;
+        }
         entity.bullet.alive = false;
         let bullet = entity.bullet.clone();
         self.shulker_bullet_hit(world, &bullet, hit, players);

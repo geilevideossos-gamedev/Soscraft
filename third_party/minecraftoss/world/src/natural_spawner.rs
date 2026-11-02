@@ -620,7 +620,7 @@ impl CreatureSpawns {
                         let fz = f64::from(z).clamp(f64::from(zo) + width, f64::from(zo) + 16.0 - width);
                         let y = f64::from(pos.y);
                         let at = BlockPos::new(fx.floor() as i32, pos.y, fz.floor() as i32);
-                        if !self.no_collision(level, spawn_aabb(&info, fx, y, fz)) || !self.check_spawn_rules(level, &info, at) {
+                        if !self.no_collision(level, spawn_aabb(&info, fx, y, fz)) || !families::generation_rule(self, level, &data.kind, &info, at) {
                             continue;
                         }
                         let Some(mut tag) = self.registries.entities.as_ref().and_then(|c| c.default_tag(&data.kind)) else {

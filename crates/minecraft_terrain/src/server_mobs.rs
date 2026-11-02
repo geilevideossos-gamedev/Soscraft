@@ -233,10 +233,18 @@ impl PlayerWorld for MobWorld<'_> {
             .collect()
     }
 
+    fn chest_open_count(&self, (x, y, z): (i32, i32, i32)) -> i32 {
+        self.level.borrow().chest_openers.get(&minecraftoss_core::BlockPos::new(x, y, z)).copied().unwrap_or(0)
+    }
+
     fn biome(&self, (x, y, z): (i32, i32, i32)) -> Option<String> {
         let level = self.level.borrow();
         let biome = minecraftoss_generator::feature::World::biome(&**level, x, y, z)?;
         Some(level.lib.registries.biomes.get(biome).name.as_str().to_owned())
+    }
+
+    fn biome_in_tag(&self, (x, y, z): (i32, i32, i32), tag: &str) -> bool {
+        self.level.borrow().biome_in_tag_at(minecraftoss_core::BlockPos::new(x, y, z), tag)
     }
 
     fn block(&self, pos: (i32, i32, i32)) -> Option<PlayerBlock> {
@@ -742,6 +750,7 @@ pub fn spawn_saved(world: &mut EntityWorld, tag: &Tag) -> Option<u64> {
             let saved = crate::wither_save::Saved { pos, yaw, health, persistent, no_ai, random };
             crate::wither_save::spawn(world, tag, saved)?
         }
+        "minecraft:marker" => crate::elden_save::spawn(world, tag, &crate::families::Common { pos, yaw, health, persistent, no_ai, random, fire, age })?,
         "minecraft:hoglin" | "minecraft:zoglin" => {
             use minecraftoss_entities::hoglin::{Hoglin, HoglinKind};
             let kind = HoglinKind::from_type(kind)?;

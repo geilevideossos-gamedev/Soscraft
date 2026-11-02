@@ -65,6 +65,20 @@ macro_rules! family_group {
                 false
             }
 
+            pub fn untargetable(kind: &str) -> bool {
+                $($(#[$attr])* if <$ty as $crate::world::families::Family>::KINDS.contains(&kind) {
+                    return !<$ty as $crate::world::families::Family>::targetable(kind);
+                })*
+                false
+            }
+
+            pub fn display_name(kind: &str) -> Option<&'static str> {
+                $($(#[$attr])* if <$ty as $crate::world::families::Family>::KINDS.contains(&kind) {
+                    return <$ty as $crate::world::families::Family>::display_name(kind);
+                })*
+                None
+            }
+
             pub fn is_vehicle(kind: &str) -> bool {
                 $($(#[$attr])* if <$ty as $crate::world::families::Family>::KINDS.contains(&kind) {
                     return <$ty as $crate::world::families::Family>::MOUNT;
@@ -126,6 +140,13 @@ macro_rules! family_group {
             pub fn hurt(&mut self, key: u8, id: u64, hurt: &$crate::world::families::Hurt) -> Option<$crate::health::DamageResult> {
                 $($(#[$attr])* if key == <$ty as $crate::world::families::Family>::KEY {
                     return self.$field.hurt(id, hurt);
+                })*
+                None
+            }
+
+            pub fn deflect(&mut self, key: u8, id: u64, projectile: &str) -> Option<bool> {
+                $($(#[$attr])* if key == <$ty as $crate::world::families::Family>::KEY {
+                    return self.$field.deflect(id, projectile);
                 })*
                 None
             }
@@ -507,6 +528,20 @@ pub struct MobTraits {
     pub vehicle_attachment: f64,
 }
 
+pub(in crate::world) type AiStep<W> = fn(
+    &mut MonsterAi,
+    &mut Body,
+    f32,
+    &mut LegacyRandom,
+    &mut Vec<(Voice, DVec3)>,
+    &mut i32,
+    DVec3,
+    i32,
+    u64,
+    &W,
+    &MonsterStep,
+) -> Option<f64>;
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct BaseTick {
     pub alive: bool,
@@ -583,6 +618,14 @@ pub trait Family: Clone + Send + Sized + 'static {
         false
     }
 
+    fn targetable(_kind: &str) -> bool {
+        true
+    }
+
+    fn display_name(_kind: &str) -> Option<&'static str> {
+        None
+    }
+
     fn leashable(_mob: &FamilyMob<Self>) -> bool {
         false
     }
@@ -593,6 +636,10 @@ pub trait Family: Clone + Send + Sized + 'static {
 
     fn knockback_resistance(_mob: &FamilyMob<Self>) -> f64 {
         0.0
+    }
+
+    fn deflect(_mob: &mut FamilyMob<Self>, _projectile: &str) -> bool {
+        false
     }
 
     fn voice(mob: &FamilyMob<Self>) -> (&'static str, f32, &'static str) {
@@ -711,6 +758,10 @@ impl<S: Family> FamilyStore<S> {
 
     pub fn traits(&self, id: u64) -> Option<MobTraits> {
         self.get(id).map(traits_of)
+    }
+
+    pub fn deflect(&mut self, id: u64, projectile: &str) -> Option<bool> {
+        self.get_mut(id).map(|mob| S::deflect(mob, projectile))
     }
 
     pub fn effects_mut(&mut self, id: u64) -> Option<(&mut MobEffects, bool, bool)> {
@@ -995,6 +1046,14 @@ pub fn enemy(kind: &str) -> bool {
     any_static!(enemy(kind))
 }
 
+pub fn targetable(kind: &str) -> bool {
+    !any_static!(untargetable(kind))
+}
+
+pub fn display_name(kind: &str) -> Option<&'static str> {
+    first_static!(display_name(kind))
+}
+
 pub fn is_vehicle(kind: &str) -> bool {
     any_static!(is_vehicle(kind))
 }
@@ -1107,6 +1166,13 @@ impl Families {
     pub fn traits(&self, id: u64) -> Option<MobTraits> {
         let key = self.key_of(id)?;
         any_group!(self.traits(key, id))
+    }
+
+    pub fn deflect(&mut self, id: u64, projectile: &str) -> bool {
+        let Some(key) = self.key_of(id) else {
+            return false;
+        };
+        any_group!(self.deflect(key, id, projectile)).unwrap_or(false)
     }
 
     pub fn effects_mut(&mut self, id: u64) -> Option<(&mut MobEffects, bool, bool)> {
@@ -1286,6 +1352,10 @@ impl EntityWorld {
         self.families.traits(id)
     }
 
+    pub fn deflects_projectile(&mut self, id: u64, projectile: &str) -> bool {
+        self.families.deflect(id, projectile)
+    }
+
     pub fn hurt_family(&mut self, id: u64, hurt: &Hurt) -> Option<DamageResult> {
         let key = self.families.key_of(id)?;
         self.families.hurt(key, id, hurt)
@@ -1403,6 +1473,18 @@ impl EntityWorld {
         movement_speed: f64,
         ai: fn(&mut S) -> &mut MonsterAi,
     ) -> Option<Target> {
+        self.family_goal_step_with::<S, W>(id, level, players, movement_speed, ai, monster_ai_step)
+    }
+
+    pub(in crate::world) fn family_goal_step_with<S: Registered, W: World>(
+        &mut self,
+        id: u64,
+        level: &W,
+        players: &[PlayerCandidate],
+        movement_speed: f64,
+        ai: fn(&mut S) -> &mut MonsterAi,
+        run: AiStep<W>,
+    ) -> Option<Target> {
         let (game_time, difficulty) = (self.game_time, self.difficulty);
         let (griefing, bright) = (self.mob_griefing, self.bright_outside);
         let mobs = self.mob_candidates();
@@ -1429,7 +1511,7 @@ impl EntityWorld {
             movement_speed: core.effects.movement_speed(movement_speed),
             sounds,
         };
-        let landed = monster_ai_step(
+        let landed = run(
             ai,
             &mut core.body,
             core.health,

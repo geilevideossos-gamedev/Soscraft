@@ -97,10 +97,15 @@ impl FireworkParticles {
     pub fn burst(&mut self, burst: &Burst, camera: DVec3) -> (&'static str, f32, f32) {
         let far = camera.distance_squared(burst.position) >= FAR_FROM_CAMERA_SQR;
         let pitch = 0.95 + self.random.next_float() * 0.1;
-        let colors = if burst.colors.is_empty() {
+        let colors: Vec<i32> = burst
+            .explosions
+            .iter()
+            .flat_map(|explosion| explosion.colors.iter().copied())
+            .collect();
+        let colors = if colors.is_empty() {
             vec![1973019]
         } else {
-            burst.colors.clone()
+            colors
         };
         let base_x = self.random.next_gaussian() * 0.05;
         let base_z = self.random.next_gaussian() * 0.05;
@@ -118,6 +123,16 @@ impl FireworkParticles {
         });
         let sound = if far { BLAST_FAR_SOUND } else { BLAST_SOUND };
         (sound, BLAST_VOLUME, pitch)
+    }
+
+    pub fn poofs(&mut self) -> Vec<DVec3> {
+        let mut motions = Vec::new();
+        while (motions.len() as u32) < self.random.next_int(3) + 2 {
+            let x = self.random.next_gaussian() * 0.05;
+            let z = self.random.next_gaussian() * 0.05;
+            motions.push(DVec3::new(x, 0.005, z));
+        }
+        motions
     }
 
     pub fn tick(&mut self, blocked: impl Fn((i32, i32, i32)) -> bool) {
@@ -262,8 +277,25 @@ mod tests {
         Burst {
             position: DVec3::new(0.5, 80.0, 0.5),
             velocity: DVec3::new(0.0, 0.8, 0.0),
-            colors: vec![11743532],
+            explosions: vec![crate::firework::Explosion::burst(11743532)],
         }
+    }
+
+    #[test]
+    fn a_starless_burst_puffs_two_to_four_times_and_rises_slowly() {
+        let mut particles = FireworkParticles::new(4);
+        let mut counts = std::collections::BTreeSet::new();
+        for _ in 0..200 {
+            let poofs = particles.poofs();
+            counts.insert(poofs.len());
+            assert!(
+                poofs
+                    .iter()
+                    .all(|m| m.y == 0.005 && m.x.abs() < 0.5 && m.z.abs() < 0.5)
+            );
+        }
+        assert_eq!(counts.into_iter().collect::<Vec<_>>(), vec![2, 3, 4]);
+        assert!(particles.is_empty());
     }
 
     #[test]

@@ -9,6 +9,7 @@ use minecraft_net::Dimension;
 use minecraft_terrain::level_storage::{
     ClockState, LevelData, LevelStorage, RespawnData, WeatherData, WorldSettings,
 };
+use minecraft_terrain::maps::{MapStore, MapWrites};
 use minecraftoss_core::nbt::Tag;
 use minecraftoss_player::Difficulty;
 use minecraftoss_player::crafting::RecipeBook;
@@ -216,6 +217,10 @@ impl WorldSave {
     pub fn write_weather(&self, weather: &WeatherData) -> Result<(), String> {
         self.storage.write_weather(weather)
     }
+
+    pub fn write_maps(&self, maps: &MapWrites) -> Result<(), String> {
+        maps.write(&self.storage)
+    }
 }
 
 pub fn time_since_rest(stats: &serde_json::Value) -> Option<i32> {
@@ -279,6 +284,7 @@ pub struct OpenedWorld {
     pub time_paused: bool,
     pub end_clock: DayCycle,
     pub weather: Option<WeatherData>,
+    pub maps: MapStore,
     pub game_rules: GameRules,
     pub difficulty: Difficulty,
     pub notes: Vec<String>,
@@ -295,6 +301,7 @@ impl OpenedWorld {
             time_paused: false,
             end_clock: END_CLOCK_START,
             weather: None,
+            maps: MapStore::default(),
             game_rules: GameRules::default(),
             difficulty: Difficulty::Normal,
             notes: vec![format!(
@@ -358,6 +365,8 @@ fn open_save(
         ));
         None
     });
+    let (maps, map_warnings) = MapStore::load(&storage);
+    warnings.extend(map_warnings);
     let game_rules = storage.read_game_rules().unwrap_or_else(|error| {
         warnings.push(format!(
             "Minecraft game_rules unreadable, using the defaults: {error}"
@@ -390,6 +399,7 @@ fn open_save(
         time_paused: clocks.get(OVERWORLD).is_some_and(|clock| clock.paused),
         end_clock: clocks.get(THE_END).map_or(END_CLOCK_START, day_cycle),
         weather,
+        maps,
         game_rules,
         difficulty: Difficulty::parse(&level.difficulty).unwrap_or(Difficulty::Normal),
         notes: vec![format!(

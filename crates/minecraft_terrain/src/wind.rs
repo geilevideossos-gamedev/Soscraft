@@ -21,6 +21,14 @@ pub enum Charge {
 }
 
 impl Charge {
+    pub fn of(item: &str) -> Self {
+        if item == crate::breeze_charge::ENTITY {
+            Self::Breeze
+        } else {
+            Self::Player
+        }
+    }
+
     pub fn radius(self) -> f32 {
         match self {
             Self::Player => RADIUS,
@@ -233,6 +241,25 @@ mod tests {
         assert!(Charge::Player.triggers_blocks(false));
         assert!(!Charge::Breeze.triggers_blocks(false));
         assert!(Charge::Breeze.triggers_blocks(true));
+    }
+
+    #[test]
+    fn a_burst_pushes_a_pillager_and_a_ravager() {
+        use minecraftoss_entities::illager::{Illager, IllagerKind};
+        use minecraftoss_entities::ravager::Ravager;
+        let mut mobs = EntityWorld::default();
+        let pillager = mobs.spawn_illager(
+            Illager::new(IllagerKind::Pillager, DVec3::new(1.5, 64.0, 0.5)),
+            true,
+        );
+        let ravager = mobs.spawn_ravager(Ravager::new(DVec3::new(-1.5, 64.0, 0.5)), true);
+        let center = DVec3::new(0.0, 64.0, 0.5);
+        let players = burst(&Blocks::default(), &mut mobs, center, &[], Charge::Player);
+        assert!(players.is_empty());
+        let pushed = mobs.body_mut(pillager).unwrap().velocity;
+        assert!(pushed.x > 0.0 && pushed.y > 0.0, "{pushed:?}");
+        let pushed = mobs.body_mut(ravager).unwrap().velocity;
+        assert!(pushed.x < 0.0 && pushed.y > 0.0, "{pushed:?}");
     }
 
     #[test]

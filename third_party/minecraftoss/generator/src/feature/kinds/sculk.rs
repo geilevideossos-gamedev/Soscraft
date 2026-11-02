@@ -23,6 +23,15 @@ const GROWTH_SPAWN_COST: i32 = 50;
 const NO_GROWTH_RADIUS: i32 = 1;
 const CHARGE_DECAY_RATE: i32 = 5;
 const ADDITIONAL_DECAY_RATE: i32 = 10;
+const LEVEL_GROWTH_SPAWN_COST: i32 = 10;
+const LEVEL_NO_GROWTH_RADIUS: i32 = 4;
+const LEVEL_CHARGE_DECAY_RATE: i32 = 10;
+const LEVEL_ADDITIONAL_DECAY_RATE: i32 = 5;
+pub const MAX_CHARGE: i32 = 1000;
+pub const MAX_CURSORS: usize = 32;
+pub const MAX_CURSOR_DISTANCE: i32 = 1024;
+pub const CHARGE_EVENT: i32 = 3006;
+pub const SPREAD_SOUND: &str = "minecraft:block.sculk.spread";
 
 #[derive(Debug)]
 struct SculkPatch {
@@ -31,14 +40,30 @@ struct SculkPatch {
     spread_attempts: i32,
     growth_rounds: i32,
     spread_rounds: i32,
+    spreader: SculkSpreader,
+}
+
+#[derive(Clone, Debug)]
+pub struct SculkSpreader {
+    world_generation: bool,
+    growth_spawn_cost: i32,
+    no_growth_radius: i32,
+    charge_decay_rate: i32,
+    additional_decay_rate: i32,
     sculk: BlockStateId,
     sculk_block: BlockId,
     vein: BlockId,
     sensor: BlockStateId,
     shrieker: BlockStateId,
-    replaceable_world_gen: TagId,
+    replaceable_spread: TagId,
     replaceable: TagId,
     growth_inhibitors: TagId,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SpreadEffects {
+    pub sounds: Vec<(BlockPos, &'static str)>,
+    pub level_events: Vec<(BlockPos, i32)>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -48,13 +73,38 @@ enum Behaviour {
     Default,
 }
 
-struct Cursor {
-    pos: BlockPos,
-    charge: i32,
-    update_delay: i32,
-    decay_delay: i32,
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Cursor {
+    pub pos: BlockPos,
+    pub charge: i32,
+    pub update_delay: i32,
+    pub decay_delay: i32,
     /// `MultifaceBlock.availableFaces` in `Direction` order, or `None`.
-    facings: Option<Vec<Direction>>,
+    pub facings: Option<Vec<Direction>>,
+}
+
+impl Cursor {
+    pub fn new(pos: BlockPos, charge: i32) -> Self {
+        Self { pos, charge, update_delay: 0, decay_delay: 1, facings: None }
+    }
+
+    fn unreasonable(&self, origin: BlockPos) -> bool {
+        (self.pos.x - origin.x).abs().max((self.pos.y - origin.y).abs()).max((self.pos.z - origin.z).abs()) > MAX_CURSOR_DISTANCE
+    }
+}
+
+pub fn add_cursors(cursors: &mut Vec<Cursor>, pos: BlockPos, mut charge: i32) {
+    while charge > 0 {
+        let current = charge.min(MAX_CHARGE);
+        if cursors.len() < MAX_CURSORS {
+            cursors.push(Cursor::new(pos, current));
+        }
+        charge -= current;
+    }
+}
+
+pub fn pack_facings(facings: &[Direction]) -> i32 {
+    facings.iter().fold(0, |packed, &direction| packed | 1 << Direction::ALL.iter().position(|&d| d == direction).unwrap_or(0))
 }
 
 /// `ChargeCursor.NON_CORNER_NEIGHBOURS` in `betweenClosed` order.
@@ -74,20 +124,49 @@ fn non_corner_neighbours() -> Vec<(i32, i32, i32)> {
 
 impl SculkPatch {
     fn parse(lib: &mut Library, json: &Value) -> Result<Self, String> {
-        let r = &lib.registries;
-        let s = |n: &str| r.blocks.parse_state(n);
         Ok(Self {
             charge_count: int(json, "charge_count")?,
             amount_per_charge: int(json, "amount_per_charge")?,
             spread_attempts: int(json, "spread_attempts")?,
             growth_rounds: int(json, "growth_rounds")?,
             spread_rounds: int(json, "spread_rounds")?,
+            spreader: SculkSpreader::new(&lib.registries, true)?,
+        })
+    }
+
+    fn can_spread_from(&self, ctx: &Ctx, origin: BlockPos) -> bool {
+        let start = ctx.block(origin);
+        if self.spreader.behaviour(ctx, start) != Behaviour::Default {
+            return true;
+        }
+        if !ctx.is_air(start) && !(start == ctx.lib.blocks.water) {
+            return false;
+        }
+        Direction::ALL.iter().any(|&d| ctx.registries().blocks.state(ctx.block(origin.relative(d, 1))).collision_full_block)
+    }
+}
+
+impl SculkSpreader {
+    pub fn new(r: &minecraftoss_core::Registries, world_generation: bool) -> Result<Self, String> {
+        let s = |n: &str| r.blocks.parse_state(n);
+        let (growth_spawn_cost, no_growth_radius, charge_decay_rate, additional_decay_rate) = if world_generation {
+            (GROWTH_SPAWN_COST, NO_GROWTH_RADIUS, CHARGE_DECAY_RATE, ADDITIONAL_DECAY_RATE)
+        } else {
+            (LEVEL_GROWTH_SPAWN_COST, LEVEL_NO_GROWTH_RADIUS, LEVEL_CHARGE_DECAY_RATE, LEVEL_ADDITIONAL_DECAY_RATE)
+        };
+        let spread_tag = if world_generation { "minecraft:sculk_replaceable_world_gen" } else { "minecraft:sculk_replaceable" };
+        Ok(Self {
+            world_generation,
+            growth_spawn_cost,
+            no_growth_radius,
+            charge_decay_rate,
+            additional_decay_rate,
             sculk: s("minecraft:sculk")?,
             sculk_block: r.blocks.block_by_name("minecraft:sculk").ok_or("no sculk")?,
             vein: r.blocks.block_by_name("minecraft:sculk_vein").ok_or("no sculk vein")?,
             sensor: s("minecraft:sculk_sensor")?,
-            shrieker: s("minecraft:sculk_shrieker[can_summon=true]")?,
-            replaceable_world_gen: r.block_tags.require("minecraft:sculk_replaceable_world_gen")?,
+            shrieker: s(if world_generation { "minecraft:sculk_shrieker[can_summon=true]" } else { "minecraft:sculk_shrieker[can_summon=false]" })?,
+            replaceable_spread: r.block_tags.require(spread_tag)?,
             replaceable: r.block_tags.require("minecraft:sculk_replaceable")?,
             growth_inhibitors: r.block_tags.require("minecraft:sculk_growth_inhibitors")?,
         })
@@ -116,24 +195,13 @@ impl SculkPatch {
         Direction::ALL.into_iter().filter(|&d| Spreader::has_face(ctx, state, d)).collect()
     }
 
-    fn can_spread_from(&self, ctx: &Ctx, origin: BlockPos) -> bool {
-        let start = ctx.block(origin);
-        if self.behaviour(ctx, start) != Behaviour::Default {
-            return true;
-        }
-        if !ctx.is_air(start) && !(start == ctx.lib.blocks.water) {
-            return false;
-        }
-        Direction::ALL.iter().any(|&d| ctx.registries().blocks.state(ctx.block(origin.relative(d, 1))).collision_full_block)
-    }
-
     fn attempt_spread_vein(&self, ctx: &mut Ctx, behaviour: Behaviour, pos: BlockPos, state: BlockStateId, facings: &Option<Vec<Direction>>) -> bool {
         match behaviour {
-            Behaviour::Sculk | Behaviour::Vein => self.vein_spreader().spread_all(ctx, state, pos, true) > 0,
+            Behaviour::Sculk | Behaviour::Vein => self.vein_spreader().spread_all(ctx, state, pos, self.world_generation) > 0,
             Behaviour::Default => match facings {
                 None => {
                     let current = ctx.block(pos);
-                    self.same_space_spreader().spread_all(ctx, current, pos, true) > 0
+                    self.same_space_spreader().spread_all(ctx, current, pos, self.world_generation) > 0
                 }
                 Some(faces) if !faces.is_empty() => {
                     if !ctx.is_air(state) && ctx.fluid(state) != FluidType::Water {
@@ -141,7 +209,7 @@ impl SculkPatch {
                     }
                     self.regrow(ctx, pos, state, faces)
                 }
-                Some(_) => self.vein_spreader().spread_all(ctx, state, pos, true) > 0,
+                Some(_) => self.vein_spreader().spread_all(ctx, state, pos, self.world_generation) > 0,
             },
         }
     }
@@ -188,7 +256,7 @@ impl SculkPatch {
         }
     }
 
-    fn use_charge(&self, ctx: &mut Ctx, random: &mut WorldgenRandom, behaviour: Behaviour, cursor: &Cursor, origin: BlockPos, spread_veins: bool) -> i32 {
+    fn use_charge(&self, ctx: &mut Ctx, random: &mut WorldgenRandom, behaviour: Behaviour, cursor: &Cursor, origin: BlockPos, spread_veins: bool, effects: &mut SpreadEffects) -> i32 {
         match behaviour {
             Behaviour::Default => {
                 if cursor.decay_delay > 0 {
@@ -198,9 +266,9 @@ impl SculkPatch {
                 }
             }
             Behaviour::Vein => {
-                if spread_veins && self.place_sculk(ctx, random, cursor.pos) {
+                if spread_veins && self.place_sculk(ctx, random, cursor.pos, effects) {
                     cursor.charge - 1
-                } else if random.next_i32_bound(CHARGE_DECAY_RATE) == 0 {
+                } else if random.next_i32_bound(self.charge_decay_rate) == 0 {
                     (cursor.charge as f32 * 0.5).floor() as i32
                 } else {
                     cursor.charge
@@ -208,25 +276,28 @@ impl SculkPatch {
             }
             Behaviour::Sculk => {
                 let charge = cursor.charge;
-                if charge == 0 || random.next_i32_bound(CHARGE_DECAY_RATE) != 0 {
+                if charge == 0 || random.next_i32_bound(self.charge_decay_rate) != 0 {
                     return charge;
                 }
                 let pos = cursor.pos;
-                let close = pos.dist_sqr(origin) < f64::from(NO_GROWTH_RADIUS * NO_GROWTH_RADIUS);
+                let close = pos.dist_sqr(origin) < f64::from(self.no_growth_radius * self.no_growth_radius);
                 if !close && self.can_place_growth(ctx, pos) {
-                    if random.next_i32_bound(GROWTH_SPAWN_COST) < charge {
+                    if random.next_i32_bound(self.growth_spawn_cost) < charge {
                         let growth = pos.above();
-                        let mut state = if random.next_i32_bound(11) == 0 { self.shrieker } else { self.sensor };
+                        let shrieker = random.next_i32_bound(11) == 0;
+                        let mut state = if shrieker { self.shrieker } else { self.sensor };
                         if ctx.property(state, "waterlogged").is_some() && ctx.fluid_at(growth) != FluidType::Empty {
                             state = ctx.with(state, "waterlogged", "true");
                         }
                         ctx.set_block_update(growth, state);
+                        let placed = if shrieker { "minecraft:block.sculk_shrieker.place" } else { "minecraft:block.sculk_sensor.place" };
+                        effects.sounds.push((pos, placed));
                     }
-                    (charge - GROWTH_SPAWN_COST).max(0)
-                } else if random.next_i32_bound(ADDITIONAL_DECAY_RATE) != 0 {
+                    (charge - self.growth_spawn_cost).max(0)
+                } else if random.next_i32_bound(self.additional_decay_rate) != 0 {
                     charge
                 } else {
-                    charge - if close { 1 } else { decay_penalty(pos, origin, charge) }
+                    charge - if close { 1 } else { decay_penalty(pos, origin, charge, self.no_growth_radius) }
                 }
             }
         }
@@ -254,7 +325,7 @@ impl SculkPatch {
     }
 
     /// `SculkVeinBlock.attemptPlaceSculk`.
-    fn place_sculk(&self, ctx: &mut Ctx, random: &mut WorldgenRandom, pos: BlockPos) -> bool {
+    fn place_sculk(&self, ctx: &mut Ctx, random: &mut WorldgenRandom, pos: BlockPos, effects: &mut SpreadEffects) -> bool {
         let state = ctx.block(pos);
         let mut supports = Direction::ALL;
         shuffle(&mut supports, random);
@@ -263,11 +334,12 @@ impl SculkPatch {
                 continue;
             }
             let support_pos = pos.relative(support, 1);
-            if !ctx.in_tag(ctx.block(support_pos), self.replaceable_world_gen) {
+            if !ctx.in_tag(ctx.block(support_pos), self.replaceable_spread) {
                 continue;
             }
             ctx.set_block_update(support_pos, self.sculk);
-            self.vein_spreader().spread_all(ctx, self.sculk, support_pos, true);
+            effects.sounds.push((support_pos, SPREAD_SOUND));
+            self.vein_spreader().spread_all(ctx, self.sculk, support_pos, self.world_generation);
             let skip = support.opposite();
             for dir in Direction::ALL {
                 if dir == skip {
@@ -320,7 +392,7 @@ impl SculkPatch {
         for (x, y, z) in offsets {
             let neighbour = pos.offset(x, y, z);
             let d2 = (origin.x - neighbour.x).pow(2) + (origin.z - neighbour.z).pow(2);
-            if d2 > 144 {
+            if self.world_generation && d2 > 144 {
                 continue;
             }
             let state = ctx.block(neighbour);
@@ -334,8 +406,7 @@ impl SculkPatch {
         (found != pos).then_some(found)
     }
 
-    /// `ChargeCursor.update` for the world-generation spreader.
-    fn update(&self, ctx: &mut Ctx, random: &mut WorldgenRandom, cursor: &mut Cursor, origin: BlockPos, spread_veins: bool) {
+    fn update(&self, ctx: &mut Ctx, random: &mut WorldgenRandom, cursor: &mut Cursor, origin: BlockPos, spread_veins: bool, effects: &mut SpreadEffects) {
         if cursor.charge <= 0 {
             return;
         }
@@ -345,11 +416,14 @@ impl SculkPatch {
         }
         let mut state = ctx.block(cursor.pos);
         let mut behaviour = self.behaviour(ctx, state);
-        if spread_veins && self.attempt_spread_vein(ctx, behaviour, cursor.pos, state, &cursor.facings) && behaviour != Behaviour::Sculk {
-            state = ctx.block(cursor.pos);
-            behaviour = self.behaviour(ctx, state);
+        if spread_veins && self.attempt_spread_vein(ctx, behaviour, cursor.pos, state, &cursor.facings) {
+            if behaviour != Behaviour::Sculk {
+                state = ctx.block(cursor.pos);
+                behaviour = self.behaviour(ctx, state);
+            }
+            effects.sounds.push((cursor.pos, SPREAD_SOUND));
         }
-        cursor.charge = self.use_charge(ctx, random, behaviour, cursor, origin, spread_veins);
+        cursor.charge = self.use_charge(ctx, random, behaviour, cursor, origin, spread_veins, effects);
         if cursor.charge <= 0 {
             self.discharged(ctx, behaviour, state, cursor.pos);
             return;
@@ -360,11 +434,12 @@ impl SculkPatch {
                 cursor.pos = transfer;
                 state = ctx.block(transfer);
             }
-            None => {
+            None if self.world_generation => {
                 self.discharged(ctx, behaviour, state, cursor.pos);
                 cursor.charge = 0;
                 return;
             }
+            None => {}
         }
         if self.behaviour(ctx, state) != Behaviour::Default {
             cursor.facings = Some(if ctx.registries().blocks.block_of(state) == self.vein { Self::faces(ctx, state) } else { Vec::new() });
@@ -372,12 +447,62 @@ impl SculkPatch {
         cursor.decay_delay = if behaviour == Behaviour::Default { (cursor.decay_delay - 1).max(0) } else { 1 };
         cursor.update_delay = 1;
     }
+
+    pub fn shrieker(&self) -> BlockStateId {
+        self.shrieker
+    }
+
+    pub fn update_cursors(&self, ctx: &mut Ctx, random: &mut WorldgenRandom, cursors: &mut Vec<Cursor>, origin: BlockPos, spread_veins: bool, effects: &mut SpreadEffects) {
+        let mut kept: Vec<Cursor> = Vec::new();
+        let mut first: Vec<(BlockPos, usize)> = Vec::new();
+        let mut charges: Vec<(BlockPos, i32)> = Vec::new();
+        for mut cursor in cursors.drain(..) {
+            if cursor.unreasonable(origin) {
+                continue;
+            }
+            self.update(ctx, random, &mut cursor, origin, spread_veins, effects);
+            if cursor.charge <= 0 {
+                effects.level_events.push((cursor.pos, 0));
+                continue;
+            }
+            match charges.iter_mut().find(|(pos, _)| *pos == cursor.pos) {
+                Some((_, charge)) => *charge += cursor.charge,
+                None => charges.push((cursor.pos, cursor.charge)),
+            }
+            let Some(index) = first.iter().find(|(pos, _)| *pos == cursor.pos).map(|&(_, index)| index) else {
+                first.push((cursor.pos, kept.len()));
+                kept.push(cursor);
+                continue;
+            };
+            if !self.world_generation && cursor.charge + kept[index].charge <= MAX_CHARGE {
+                let existing = &mut kept[index];
+                existing.charge += cursor.charge;
+                existing.update_delay = existing.update_delay.min(cursor.update_delay);
+                continue;
+            }
+            let lighter = cursor.charge < kept[index].charge;
+            kept.push(cursor);
+            if lighter {
+                let at = kept.len() - 1;
+                if let Some(entry) = first.iter_mut().find(|(pos, _)| *pos == kept[at].pos) {
+                    entry.1 = at;
+                }
+            }
+        }
+        for (pos, charge) in charges {
+            let facings = first.iter().find(|(at, _)| *at == pos).and_then(|&(_, index)| kept[index].facings.as_ref());
+            if let Some(facings) = facings.filter(|_| charge > 0) {
+                let size = ((f64::from(charge)).ln_1p() / 2.299999952316284) as i32 + 1;
+                effects.level_events.push((pos, (size << 6) + pack_facings(facings)));
+            }
+        }
+        *cursors = kept;
+    }
 }
 
-/// `SculkBlock.getDecayPenalty` for the world-generation spreader.
-fn decay_penalty(pos: BlockPos, origin: BlockPos, charge: i32) -> i32 {
-    let outer = (pos.dist_sqr(origin).sqrt() as f32 - NO_GROWTH_RADIUS as f32).powi(2);
-    let max_reach = ((24 - NO_GROWTH_RADIUS) * (24 - NO_GROWTH_RADIUS)) as f32;
+fn decay_penalty(pos: BlockPos, origin: BlockPos, charge: i32, no_growth_radius: i32) -> i32 {
+    let outer = (pos.dist_sqr(origin).sqrt() as f32 - no_growth_radius as f32).powi(2);
+    let max_reach = ((24 - no_growth_radius) * (24 - no_growth_radius)) as f32;
     let factor = 1.0f32.min(outer / max_reach);
     1.max((charge as f32 * factor * 0.5) as i32)
 }
@@ -388,13 +513,14 @@ impl Placeable for SculkPatch {
             return false;
         }
         let mut cursors: Vec<Cursor> = Vec::new();
+        let mut effects = SpreadEffects::default();
         for round in 0..self.spread_rounds + self.growth_rounds {
             for _ in 0..self.charge_count {
                 let mut charge = self.amount_per_charge;
                 while charge > 0 {
                     let current = charge.min(1000);
-                    if cursors.len() < 32 {
-                        cursors.push(Cursor { pos: origin, charge: current, update_delay: 0, decay_delay: 1, facings: None });
+                    if cursors.len() < MAX_CURSORS {
+                        cursors.push(Cursor::new(origin, current));
                     }
                     charge -= current;
                 }
@@ -410,7 +536,7 @@ impl Placeable for SculkPatch {
                     if far {
                         continue;
                     }
-                    self.update(ctx, random, &mut cursor, origin, spread_veins);
+                    self.spreader.update(ctx, random, &mut cursor, origin, spread_veins, &mut effects);
                     if cursor.charge > 0 {
                         kept.push(cursor);
                     }

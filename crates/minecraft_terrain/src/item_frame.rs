@@ -53,6 +53,14 @@ impl FrameSound {
             (Self::Break, true) => "minecraft:entity.glow_item_frame.break",
         }
     }
+
+    pub fn game_event(self) -> &'static str {
+        match self {
+            Self::Place => crate::game_events::ENTITY_PLACE,
+            Self::AddItem | Self::RotateItem | Self::RemoveItem => crate::game_events::BLOCK_CHANGE,
+            Self::Break => crate::game_events::ENTITY_DIE,
+        }
+    }
 }
 
 pub fn step(facing: Direction) -> DVec3 {

@@ -170,6 +170,7 @@ fn fits(body: &mut Body, world: &dyn World, ground: (i32, i32, i32), x: f64, y: 
     if world.block(below).is_some_and(|b| holds_water(&b)) {
         return false;
     }
+    body.game_events.push(("minecraft:teleport", body.position, None));
     body.position = DVec3::new(x, y, z);
     true
 }

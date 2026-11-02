@@ -1,4 +1,5 @@
 use crate::ambient_particles::AmbientParticles;
+use crate::block_particles::BlockDust;
 use crate::client_mobs::{ClientMobs, ServerMob};
 use crate::lighting::SkyLight;
 use crate::mesh::{Atlas, ChunkMesh, HeldItem};
@@ -148,6 +149,15 @@ macro_rules! terrain_group {
         ) {
             $($(#[$attr])* <$ty as $crate::families::TerrainFamily>::client_effects(world.family::<$ty>(), poses, fx);)*
         }
+
+        #[allow(unused_variables, clippy::ptr_arg)]
+        pub fn block_dust(
+            world: &minecraftoss_entities::world::EntityWorld,
+            poses: &$crate::client_mobs::ClientMobs,
+            out: &mut Vec<$crate::block_particles::BlockDust>,
+        ) {
+            $($(#[$attr])* <$ty as $crate::families::TerrainFamily>::block_dust(world.family::<$ty>(), poses, out);)*
+        }
     };
 }
 
@@ -237,6 +247,8 @@ pub trait TerrainFamily: Registered {
     }
 
     fn client_effects(_mobs: &[FamilyMob<Self>], _poses: &ClientMobs, _fx: &mut ClientFx<'_>) {}
+
+    fn block_dust(_mobs: &[FamilyMob<Self>], _poses: &ClientMobs, _out: &mut Vec<BlockDust>) {}
 }
 
 pub fn kinds() -> Vec<&'static str> {
@@ -420,6 +432,16 @@ pub fn client_effects(world: &EntityWorld, poses: &ClientMobs, fx: &mut ClientFx
     water::client_effects(world, poses, fx);
     night::client_effects(world, poses, fx);
     bosses::client_effects(world, poses, fx);
+}
+
+pub fn block_dust(world: &EntityWorld, poses: &ClientMobs, out: &mut Vec<BlockDust>) {
+    pests::block_dust(world, poses, out);
+    trial::block_dust(world, poses, out);
+    deep_dark::block_dust(world, poses, out);
+    land::block_dust(world, poses, out);
+    water::block_dust(world, poses, out);
+    night::block_dust(world, poses, out);
+    bosses::block_dust(world, poses, out);
 }
 
 fn names(kinds: &[&str], kind: &str) -> bool {

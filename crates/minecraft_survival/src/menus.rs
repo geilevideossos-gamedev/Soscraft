@@ -1,4 +1,5 @@
 use std::collections::{HashMap, VecDeque};
+use std::sync::{Arc, PoisonError};
 
 use minecraft_commands::Text;
 use minecraft_net::messages::{
@@ -9,6 +10,7 @@ use minecraft_terrain::containers::{Containers, Opened, Station};
 use minecraft_terrain::crafting::{self, Grid, Spot};
 use minecraft_terrain::mount_inventory::MountInventory;
 use minecraft_terrain::gun_mods::GunRules;
+use minecraft_terrain::maps::{LootExplorer, SEARCH_TIME};
 use minecraft_terrain::openers::RECHECK_TICKS;
 use minecraft_terrain::scene::{BlockPos, HandcraftedScene, Scene};
 use minecraft_terrain::server::{MerchantOp, MerchantView};
@@ -297,7 +299,10 @@ pub fn open_station(
     if let Some(opened) = block {
         let storage = matches!(opened.station, Station::Chest | Station::Barrel);
         for &pos in opened.cells.iter().filter(|_| storage) {
-            if containers.is_new(pos)
+            let explorer = containers
+                .is_new(pos)
+                .then(|| loot_explorer(terrain, globals, player.dimension));
+            if let Some(explorer) = &explorer
                 && let Some(chunk) = terrain
                     .scene
                     .generated_chunk((pos.0.div_euclid(16), pos.2.div_euclid(16)))
@@ -316,8 +321,10 @@ pub fn open_station(
                     Some(terrain.stream.states.biome_name(pos, |at| {
                         terrain.scene.generated_chunk(at).map(|c| &**c)
                     })),
+                    Some(explorer.clone()),
                 )
             {
+                keep_explored(globals, explorer);
                 containers.fill(pos, items, seed);
             }
         }
@@ -355,6 +362,33 @@ pub fn open_station(
         Text::translate(bench_title(kind), Vec::new()),
         shelves,
     )
+}
+
+fn loot_explorer(terrain: &Terrain, globals: &Globals, dimension: Dimension) -> Arc<LootExplorer> {
+    let maps = globals.maps.lock().unwrap_or_else(PoisonError::into_inner);
+    let dimension = dimension.dimension_type();
+    Arc::new(
+        LootExplorer::new(terrain.stream.world_gen(), dimension, maps.next_id())
+            .with_claims(maps.claims(dimension)),
+    )
+}
+
+fn keep_explored(globals: &Globals, explorer: &LootExplorer) {
+    let explored = explorer.take();
+    for destination in &explored.timed_out {
+        diag::warn!(
+            World,
+            "Minecraft explorer map search for {destination} stopped after {} s",
+            SEARCH_TIME.as_secs()
+        );
+    }
+    let mut maps = globals.maps.lock().unwrap_or_else(PoisonError::into_inner);
+    for (id, map) in explored.maps {
+        maps.insert(id, map);
+    }
+    if let Some(claims) = explored.claims {
+        maps.set_claims(explorer.dimension(), claims);
+    }
 }
 
 pub fn still_valid(menu: &Menu, scene: &HandcraftedScene, eye: [f64; 3]) -> bool {
@@ -1850,7 +1884,7 @@ pub fn lids(
             spectator,
         ));
     }
-    lid_effects(lids.entities, lids.terrain, lids.body, events)
+    lid_effects(lids.entities, lids.terrain, lids.body, Some(player), events)
 }
 
 pub fn recheck_lids(
@@ -1863,13 +1897,14 @@ pub fn recheck_lids(
     let events = lids
         .openers
         .recheck(|player, pos| open_cells(player).is_none_or(|cells| cells.contains(&pos)));
-    lid_effects(lids.entities, lids.terrain, lids.body, events)
+    lid_effects(lids.entities, lids.terrain, lids.body, None, events)
 }
 
 fn lid_effects(
     entities: &mut Entities,
     terrain: &mut Terrain,
     body: &mut dyn Body,
+    player: Option<u64>,
     events: Vec<minecraft_terrain::openers::OpenerEvent>,
 ) -> Vec<Effect> {
     let mut effects = Vec::new();
@@ -1877,8 +1912,11 @@ fn lid_effects(
         let outcome = crate::level::opener_outcome(&terrain.scene, &event);
         let (cell, id, count) = outcome.block_event;
         entities.lid_event(&terrain.scene, cell, id, count);
-        if let Some((pos, viewers)) = outcome.trapped {
-            entities.chest_openers(pos, viewers);
+        if let (Some(player), Some(heard)) = (player, event.game_event()) {
+            entities.game_event(player, heard, minecraft_terrain::bucket::centre(event.pos), None);
+        }
+        if let Some((pos, viewers)) = outcome.chest_openers {
+            entities.chest_openers(player, pos, viewers);
         }
         if let Some(sound) = outcome.sound {
             let pitch = minecraft_terrain::openers::pitch(entities.random_float());

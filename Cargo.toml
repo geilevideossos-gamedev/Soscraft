@@ -30,6 +30,7 @@ members = [
     "crates/d3d9_state",
     "crates/diag",
     "crates/dpvs_iw4",
+    "crates/elden_boss",
     "crates/entity_iw4",
     "crates/fastfile_iw4",
     "crates/fastfile_t5",
@@ -78,7 +79,7 @@ members = [
 
 [workspace.package]
 edition = "2024"
-license = "Apache-2.0"
+license = "GPL-3.0-only"
 
 [workspace.dependencies]
 bevy = { version = "0.19", default-features = false, features = [

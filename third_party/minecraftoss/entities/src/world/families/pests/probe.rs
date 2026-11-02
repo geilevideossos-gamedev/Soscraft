@@ -14,6 +14,8 @@ use minecraftoss_player::inventory::ItemStack;
 
 pub const KIND: &str = "minecraft:registry_probe";
 pub const ANIMAL: &str = "minecraft:registry_probe_animal";
+pub const SHY: &str = "minecraft:registry_probe_shy";
+pub const SHY_NAME: &str = "Shy Probe";
 pub const WIDTH: f32 = 0.6;
 pub const HEIGHT: f32 = 0.9;
 pub const EYE_HEIGHT: f32 = 0.7;
@@ -134,12 +136,14 @@ pub struct Probe {
     pub jumped: Vec<i32>,
     pub orders: Vec<(DVec3, f64)>,
     pub attachment: f64,
+    pub deflects: bool,
+    pub deflected: Vec<String>,
     pub ai: Box<MonsterAi>,
 }
 
 impl Family for Probe {
     const KEY: u8 = 39;
-    const KINDS: &'static [&'static str] = &[KIND, ANIMAL];
+    const KINDS: &'static [&'static str] = &[KIND, ANIMAL, SHY];
     const MOUNT: bool = true;
 
     fn spawn(kind: &'static str, position: DVec3) -> Option<FamilyMob<Self>> {
@@ -167,6 +171,8 @@ impl Family for Probe {
                 jumped: Vec::new(),
                 orders: Vec::new(),
                 attachment: 0.0,
+                deflects: false,
+                deflected: Vec::new(),
                 ai: Box::new(ai),
             },
         })
@@ -230,7 +236,15 @@ impl Family for Probe {
     }
 
     fn enemy(kind: &str) -> bool {
-        kind == KIND
+        kind == KIND || kind == SHY
+    }
+
+    fn targetable(kind: &str) -> bool {
+        kind != SHY
+    }
+
+    fn display_name(kind: &str) -> Option<&'static str> {
+        (kind == SHY).then_some(SHY_NAME)
     }
 
     fn undead(mob: &FamilyMob<Self>) -> bool {
@@ -259,6 +273,13 @@ impl Family for Probe {
 
     fn knockback_resistance(mob: &FamilyMob<Self>) -> f64 {
         mob.state.knockback_resistance
+    }
+
+    fn deflect(mob: &mut FamilyMob<Self>, projectile: &str) -> bool {
+        if mob.state.deflects {
+            mob.state.deflected.push(projectile.to_owned());
+        }
+        mob.state.deflects
     }
 
     fn death_drops(mob: &mut FamilyMob<Self>) -> Vec<ItemStack> {

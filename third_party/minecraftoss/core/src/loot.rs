@@ -21,6 +21,10 @@ pub trait Enchanting: Send + Sync + std::fmt::Debug {
     fn enchant_randomly(&self, random: &mut dyn RandomSource, item: &str, options: Option<&Json>, only_compatible: bool) -> Option<(String, i32)>;
 }
 
+pub trait Exploring: Send + Sync + std::fmt::Debug {
+    fn explore(&self, destination: &[String], origin: [i32; 3], radius: i32, skip_known: bool, zoom: u8) -> Option<(i32, [i32; 3])>;
+}
+
 /// What a loot evaluation knows (`LootParams`).
 #[derive(Clone, Debug, Default)]
 pub struct LootParams {
@@ -35,6 +39,7 @@ pub struct LootParams {
     pub explosion_radius: Option<f32>,
     pub luck: f32,
     pub enchanting: Option<Arc<dyn Enchanting>>,
+    pub exploring: Option<Arc<dyn Exploring>>,
     pub biome: Option<String>,
 }
 
@@ -836,6 +841,27 @@ impl Context<'_> {
                 let branch = if self.item_predicate(&stack, filter)? { function.get("on_pass") } else { function.get("on_fail") };
                 stack = self.apply_modifier(branch, stack)?;
             }
+            "exploration_map" => {
+                let params = self.params;
+                if let (false, Some(origin), Some(exploring)) = (stack.is_empty(), params.origin, &params.exploring) {
+                    let destination = self.holder_set("tags/worldgen/structure", function.get("destination").ok_or("exploration_map without destination")?)?;
+                    let decoration = id_of(function.get("decoration").and_then(Json::as_str).unwrap_or("minecraft:mansion"));
+                    let zoom = function.get("zoom").and_then(Json::as_i64).unwrap_or(2) as u8;
+                    let radius = function.get("search_radius").and_then(Json::as_i64).unwrap_or(50) as i32;
+                    let skip = function.get("skip_existing_chunks").and_then(Json::as_bool).unwrap_or(true);
+                    if let Some((id, target)) = exploring.explore(&destination, origin.map(|v| v.floor() as i32), radius, skip, zoom) {
+                        use crate::nbt::Tag;
+                        set_component(&mut stack, "minecraft:map_id", Some(Tag::Int(id)));
+                        let mut decorations = match stack.components.as_ref().and_then(|c| c.get("minecraft:map_decorations")) {
+                            Some(Tag::Compound(map)) => map.clone(),
+                            _ => Default::default(),
+                        };
+                        let entry = [("type", Tag::String(decoration)), ("x", Tag::Double(f64::from(target[0]))), ("z", Tag::Double(f64::from(target[2]))), ("rotation", Tag::Float(180.0))];
+                        decorations.insert("+".to_owned(), Tag::Compound(entry.into_iter().map(|(key, value)| (key.to_owned(), value)).collect()));
+                        set_component(&mut stack, "minecraft:map_decorations", Some(Tag::Compound(decorations)));
+                    }
+                }
+            }
             "discard" => stack = ItemStack::empty(),
             other => return Err(format!("loot function {other} is not supported")),
         }
@@ -992,11 +1018,91 @@ mod tests {
         let Ok(paths) = DataPaths::discover() else { return };
         let Ok(registries) = Registries::load(&paths) else { return };
         let params = LootParams::default();
-        let map = serde_json::json!({"type": "minecraft:exploration_map", "destination": "#minecraft:on_treasure_maps"});
-        assert!(apply(&registries, &params, map, ItemStack::new("minecraft:map", 1)).is_err());
+        let smelt = serde_json::json!({"type": "minecraft:furnace_smelt"});
+        assert!(apply(&registries, &params, smelt, ItemStack::new("minecraft:porkchop", 1)).is_err());
         let levels = serde_json::json!({"type": "minecraft:enchant_with_levels", "levels": 30});
         let sword = apply(&registries, &params, levels, ItemStack::new("minecraft:iron_sword", 1)).unwrap();
         assert!(sword.components.is_none(), "without an engine the stack passes through");
+    }
+
+    type Asked = (Vec<String>, [i32; 3], i32, bool, u8);
+
+    #[derive(Debug, Default)]
+    struct Charted {
+        asked: Mutex<Vec<Asked>>,
+        found: Option<[i32; 3]>,
+    }
+
+    impl Exploring for Charted {
+        fn explore(&self, destination: &[String], origin: [i32; 3], radius: i32, skip_known: bool, zoom: u8) -> Option<(i32, [i32; 3])> {
+            let mut asked = self.asked.lock().unwrap();
+            asked.push((destination.to_vec(), origin, radius, skip_known, zoom));
+            self.found.map(|target| (6 + asked.len() as i32, target))
+        }
+    }
+
+    fn charted(found: Option<[i32; 3]>) -> Arc<Charted> {
+        Arc::new(Charted { found, ..Charted::default() })
+    }
+
+    #[test]
+    fn exploration_maps_ask_the_explorer_and_mark_its_target() {
+        use crate::nbt::Tag;
+        let Ok(paths) = DataPaths::discover() else { return };
+        let Ok(registries) = Registries::load(&paths) else { return };
+        let explorer = charted(Some([1009, 64, -300]));
+        let params = LootParams { origin: Some([10.7, 63.2, -4.5]), exploring: Some(explorer.clone()), ..LootParams::default() };
+        let treasure = serde_json::json!({"type": "minecraft:exploration_map", "decoration": "minecraft:red_x", "destination": "#minecraft:on_treasure_maps", "skip_existing_chunks": false, "zoom": 1});
+        let map = apply(&registries, &params, treasure, ItemStack::new("minecraft:buried_treasure_map", 1)).unwrap();
+        assert_eq!((map.id.as_str(), map.count), ("minecraft:buried_treasure_map", 1));
+        assert_eq!(component(&map, "minecraft:map_id"), Some(&Tag::Int(7)));
+        let mark = component(&map, "minecraft:map_decorations").and_then(|d| d.get("+")).expect("the target mark");
+        assert_eq!(mark.get("type").and_then(Tag::as_str), Some("minecraft:red_x"));
+        assert_eq!((mark.get("x"), mark.get("z")), (Some(&Tag::Double(1009.0)), Some(&Tag::Double(-300.0))));
+        assert_eq!(mark.get("rotation"), Some(&Tag::Float(180.0)));
+        assert_eq!(explorer.asked.lock().unwrap()[0], (vec!["minecraft:buried_treasure".to_owned()], [10, 63, -5], 50, false, 1));
+        let mut marked = ItemStack::new("minecraft:woodland_mansion_map", 1);
+        let old = Tag::Compound([("type".to_owned(), Tag::String("minecraft:banner_red".to_owned()))].into_iter().collect());
+        set_component(&mut marked, "minecraft:map_decorations", Some(Tag::Compound([("banner".to_owned(), old.clone())].into_iter().collect())));
+        let mansion = serde_json::json!({"type": "minecraft:exploration_map", "destination": "#minecraft:on_woodland_mansion_maps"});
+        let map = apply(&registries, &params, mansion, marked).unwrap();
+        assert_eq!(explorer.asked.lock().unwrap()[1], (vec!["minecraft:mansion".to_owned()], [10, 63, -5], 50, true, 2), "the defaults");
+        assert_eq!(component(&map, "minecraft:map_id"), Some(&Tag::Int(8)));
+        let decorations = component(&map, "minecraft:map_decorations").unwrap();
+        assert_eq!(decorations.get("banner"), Some(&old), "other marks stay");
+        assert_eq!(decorations.get("+").and_then(|mark| mark.get("type")).and_then(Tag::as_str), Some("minecraft:mansion"));
+    }
+
+    #[test]
+    fn an_exploration_map_with_nothing_found_or_no_origin_is_filtered_out() {
+        let Ok(paths) = DataPaths::discover() else { return };
+        let Ok(registries) = Registries::load(&paths) else { return };
+        let treasure = serde_json::json!({"type": "minecraft:exploration_map", "decoration": "minecraft:red_x", "destination": "#minecraft:on_treasure_maps"});
+        let filtered = serde_json::json!({"type": "minecraft:filtered", "item_filter": {"predicates": {"minecraft:map_id": {}}}, "on_fail": {"type": "minecraft:discard"}});
+        let roll = |params: &LootParams| {
+            let map = apply(&registries, params, treasure.clone(), ItemStack::new("minecraft:buried_treasure_map", 1)).unwrap();
+            apply(&registries, params, filtered.clone(), map).unwrap()
+        };
+        let lost = charted(None);
+        let nothing = LootParams { origin: Some([0.5, 64.5, 0.5]), exploring: Some(lost.clone()), ..LootParams::default() };
+        assert!(roll(&nothing).is_empty(), "nothing found discards the map");
+        assert_eq!(lost.asked.lock().unwrap().len(), 1);
+        let nowhere = LootParams { exploring: Some(lost.clone()), ..LootParams::default() };
+        assert!(roll(&nowhere).is_empty(), "no origin discards the map");
+        assert!(roll(&LootParams { origin: Some([0.5, 64.5, 0.5]), ..LootParams::default() }).is_empty(), "no explorer discards the map");
+        assert!(apply(&registries, &nothing, treasure.clone(), ItemStack::empty()).unwrap().is_empty());
+        assert_eq!(lost.asked.lock().unwrap().len(), 1, "no origin and an empty stack never search");
+        for (found, maps) in [(None, 0), (Some([40, 0, 72]), 1)] {
+            let explorer = charted(found);
+            let params = LootParams { origin: Some([0.5, 40.5, 0.5]), exploring: Some(explorer.clone()), ..LootParams::default() };
+            let mut sequences = RandomSequences::new(3);
+            let mut random = LegacyRandom::new(3);
+            let loot = registries.loot.roll_seeded(&registries, "minecraft:chests/shipwreck_map", &params, 11, &mut sequences, &mut random).unwrap();
+            let drawn: Vec<&ItemStack> = loot.iter().filter(|stack| stack.id == "minecraft:buried_treasure_map").collect();
+            assert_eq!(drawn.len(), maps, "{loot:?}");
+            assert!(drawn.iter().all(|map| component(map, "minecraft:map_id").is_some()));
+            assert!(loot.iter().any(|stack| stack.id == "minecraft:paper" || stack.id == "minecraft:feather" || stack.id == "minecraft:book" || stack.id == "minecraft:map" || stack.id == "minecraft:compass" || stack.id == "minecraft:clock"), "the rest of the chest still rolls: {loot:?}");
+        }
     }
 
     fn apply_seeded(registries: &Registries, params: &LootParams, function: &Json, stack: ItemStack, seed: i64) -> Result<ItemStack> {
@@ -1213,11 +1319,13 @@ mod tests {
     fn every_chest_spawner_equipment_and_gameplay_table_rolls_without_an_unsupported_function() {
         let Ok(paths) = DataPaths::discover() else { return };
         let Ok(registries) = Registries::load(&paths) else { return };
+        let explorer = charted(Some([300, 64, -200]));
         let params = LootParams {
             origin: Some([0.5, 64.5, 0.5]),
             this_entity: true,
             tool: Some(ItemStack::new("minecraft:fishing_rod", 1)),
             enchanting: Some(Arc::new(Any)),
+            exploring: Some(explorer.clone()),
             biome: Some("minecraft:plains".to_owned()),
             ..LootParams::default()
         };
@@ -1236,17 +1344,15 @@ mod tests {
                 for function in &functions {
                     for item in ["minecraft:iron_sword", "minecraft:book", "minecraft:suspicious_stew", "minecraft:map"] {
                         if let Err(error) = apply(&registries, &params, function.clone(), ItemStack::new(item, 1)) {
-                            assert!(!error.starts_with("loot function") || kind(function) == "minecraft:exploration_map", "{id}: {error}");
+                            assert!(!error.starts_with("loot function"), "{id} {}: {error}", kind(function));
                         }
                     }
                 }
-                let maps = functions.iter().any(|f| kind(f) == "minecraft:exploration_map");
                 for seed in 0..8 {
                     let mut sequences = RandomSequences::new(seed);
                     let mut random = LegacyRandom::new(seed);
                     match registries.loot.roll(&registries, &id, &params, &mut sequences, &mut random) {
                         Ok(_) => {}
-                        Err(error) if maps && error.contains("exploration_map") => {}
                         Err(error) if folder == "gameplay" && !error.starts_with("loot function") => {}
                         Err(error) => panic!("{id}: {error}"),
                     }
@@ -1255,5 +1361,8 @@ mod tests {
             }
         }
         assert!(tables > 90, "{tables} tables");
+        let asked = explorer.asked.lock().unwrap();
+        assert!(asked.len() > 18, "{} searches", asked.len());
+        assert!(asked.iter().all(|(destination, ..)| !destination.is_empty()), "every destination names a structure");
     }
 }
