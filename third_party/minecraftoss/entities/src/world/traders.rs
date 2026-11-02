@@ -142,6 +142,7 @@ impl TraderEntity {
         self.trader.wander_target = ai.state.trader.wander_target;
         if let Some(drink) = ai.state.trader.drink.take() {
             self.trader.held = Some(drink);
+            body.equipment_changed(false);
             self.trader.drinking = Some((drink, trader::DRINK_TICKS));
         }
         if std::mem::take(&mut ai.state.trader.stop_trading) {
@@ -211,6 +212,7 @@ impl TraderEntity {
         self.trader.yaw = ai.yaw;
         if let Some(drink) = finished {
             self.trader.held = None;
+            self.trader.body.equipment_changed(false);
             self.trader.drinking = None;
             let pitch = self.random.next_float() * 0.2 + 0.9;
             let at = self.position();

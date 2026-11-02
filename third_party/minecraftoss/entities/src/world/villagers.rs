@@ -515,9 +515,11 @@ impl EntityWorld {
             }
         } else if !entity.no_ai && entity.ai.is_some() {
             let trades = TradeArgs { book: self.trades.as_deref(), sequences: &mut self.trade_sequences };
+            let held = entity.held_item.clone();
             if let Some(damage) = villager_ai_step(entity, world, &seen, &nearby, &mut level_random, game_time, day_time, &mut remote, &mut self.pois, &mut door_updates, trades, griefing, &mut trampled, &raids) {
                 entity.hurt_from(damage, "minecraft:fall", None, game_time);
             }
+            entity.held_item_changed(self.recipes.as_deref(), held.as_ref());
             // The items its memories now name, as seen this tick.
             entity.tracked_items = entity
                 .ai
@@ -836,6 +838,7 @@ fn villager_ai_step<W: World>(
             door_updates.push(DoorUpdate { pos, other });
             let center = DVec3::new(f64::from(pos.0) + 0.5, f64::from(pos.1) + 0.5, f64::from(pos.2) + 0.5);
             entity.voices.push((Voice::Event(event, 1.0, pitch), center));
+            entity.villager.body.game_events.push((if open { "minecraft:block_open" } else { "minecraft:block_close" }, center, None));
         }
     }
     if let Some(target) = look_at {

@@ -14645,6 +14645,63 @@ mod tests {
         assert_eq!(landed, [(None, None)], "the spawner's wind charge lands with no player behind it");
     }
 
+    fn holding_one(item: &str) -> minecraftoss_player::inventory::Inventory {
+        let mut inventory = minecraftoss_player::inventory::Inventory::default();
+        inventory.slots[0] = Some(minecraftoss_player::inventory::ItemStack::new(item, 1));
+        inventory
+    }
+
+    fn until_the_sensor_hears(sim: &mut ServerSim, input: &mut TickInput) -> Option<i64> {
+        for _ in 0..60 {
+            run_ticks(sim, input, true, 1);
+            if sensor_phase(sim) == "active" {
+                return last_frequency(sim);
+            }
+        }
+        None
+    }
+
+    #[test]
+    fn a_saddled_pig_beside_a_sensor_is_five_and_gold_given_to_a_piglin_four() {
+        let Some((mut sim, _)) = sensor_world("minecraft:sculk_sensor") else { return };
+        let mut input = walker_input([20.5, 200.0, 20.5]);
+        let still = minecraftoss_core::snbt::parse_compound("{NoAI:1b}").unwrap();
+        sim.summon("minecraft:pig", [12.5, 200.0, 8.5], Some(&still), 0.0).unwrap();
+        sim.summon("minecraft:piglin", [8.5, 200.0, 12.5], Some(&still), 0.0).unwrap();
+        run_ticks(&mut sim, &mut input, true, 45);
+        assert_eq!(sensor_phase(&sim), "inactive");
+        let pig = sim.mobs.pigs()[0].id;
+        sim.mobs.pig_mut(pig).unwrap().pig.interact_saddle(&mut holding_one("minecraft:saddle"), 0, false);
+        assert_eq!(until_the_sensor_hears(&mut sim, &mut input), Some(5), "a saddle is equipment");
+        run_ticks(&mut sim, &mut input, true, 45);
+        let piglin = sim.mobs.piglins()[0].id;
+        assert!(sim.mobs.piglin_admire_held(piglin, &mut holding_one("minecraft:gold_ingot"), 0, false).is_some());
+        assert_eq!(until_the_sensor_hears(&mut sim, &mut input), Some(4), "gold in its hand is not");
+    }
+
+    #[test]
+    fn a_silverfish_breaking_out_of_infested_stone_beside_a_sensor_is_twelve() {
+        use minecraftoss_entities::world::families::pests::silverfish::Silverfish;
+        let Some((mut sim, mut scene)) = sensor_world("minecraft:sculk_sensor") else { return };
+        let infested = (8, 200, 14);
+        place(&mut sim, &mut scene, infested, Block::new("minecraft:infested_stone"));
+        place(&mut sim, &mut scene, (8, 199, 24), Block::new("minecraft:dirt"));
+        for (x, z) in [(7, 24), (9, 24), (8, 23), (8, 25)] {
+            for y in [200, 201] {
+                place(&mut sim, &mut scene, (x, y, z), Block::new("minecraft:dirt"));
+            }
+        }
+        sim.summon("minecraft:silverfish", [8.5, 200.0, 24.5], None, 0.0).unwrap();
+        let mut input = idle_input();
+        run_ticks(&mut sim, &mut input, true, 45);
+        assert_eq!(sensor_phase(&sim), "inactive");
+        let fish = sim.mobs.family::<Silverfish>()[0].core.id;
+        let magic = minecraftoss_entities::world::families::Hurt::new(1.0, "minecraft:magic", minecraftoss_entities::world::DamageSourceKind::Magic);
+        assert!(sim.mobs.hurt_family(fish, &magic).unwrap().applied, "too far for the sensor to hear its hurt");
+        assert_eq!(until_the_sensor_hears(&mut sim, &mut input), Some(12));
+        assert!(sim.command_registries().blocks.is_air(sim.command_block(infested)), "it broke the block");
+    }
+
     #[test]
     fn a_frozen_tick_holds_items_and_falling_blocks() {
         let Some((mut sim, mut scene)) = frozen_sim() else { return };
