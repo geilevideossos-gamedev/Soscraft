@@ -30,8 +30,8 @@ Not a vanilla mob: the boss of track F (`docs/round10/track-f.md`, `docs/ELDEN-R
 
 | # | Mob | Where the player meets it | Exists beyond the default | Left | Size | Family | Hit key | Status | Commits |
 |---|---|---|---|---|---|---|---|---|---|
-| 42 | Silverfish | strongholds, infested blocks | stronghold spawner shows one; strongholds place infested stone bricks; sleep list; the `infested` potion is listed | the puff when one merges into stone; the Infested effect | M | `silverfish` | 36 | done | bdbc8852, 757bfed8, 2842608b, 126b07a1, f8f03659, "Minecraft silverfish hide in stone and wake their friends" |
-| 43 | Endermite | ender pearls | sleep list; the enderman's endermite target slot rolls with no prey | 5% pearl roll | S | `endermites` | 37 | drawn | bdbc8852, 757bfed8, 2842608b, 126b07a1, "Minecraft silverfish and endermites are drawn like vanilla" |
+| 42 | Silverfish | strongholds, infested blocks | stronghold spawner shows one; strongholds place infested stone bricks; sleep list; the `infested` potion is listed | the puff when one merges into stone; the Infested effect | M | `silverfish` | 36 | done | bdbc8852, 757bfed8, 2842608b, 126b07a1, f8f03659, 85917c3c |
+| 43 | Endermite | ender pearls | sleep list; the enderman's endermite target slot rolls with no prey | none | S | `endermites` | 37 | done | bdbc8852, 757bfed8, 2842608b, 126b07a1, f8f03659, "Endermites come from ender pearls" |
 
 ## D: trial chambers (group `trial`)
 

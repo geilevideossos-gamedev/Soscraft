@@ -165,7 +165,7 @@ mod bosses;
 mod deep_dark;
 mod land;
 mod night;
-mod pests;
+pub(crate) mod pests;
 mod trial;
 mod water;
 

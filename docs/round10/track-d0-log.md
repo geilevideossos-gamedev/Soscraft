@@ -666,3 +666,73 @@ After 6efedf5f.
 ```
 IW4L_MINECRAFT_KIT=minecraft:silverfish_spawn_egg*8,minecraft:infested_stone*32,minecraft:infested_stone_bricks*32,minecraft:infested_deepslate*16,minecraft:stone_bricks*64,minecraft:diamond_pickaxe,minecraft:diamond_pickaxe+silk_touch,minecraft:tnt*8,minecraft:flint_and_steel,minecraft:creeper_spawn_egg*2,minecraft:iron_sword,minecraft:shield,minecraft:cooked_beef*32,minecraft:torch*64
 ```
+
+### 2. Endermites come from ender pearls
+
+After 85917c3c.
+
+- **Changed (vendored entities crate, `world/families/pests/endermites.rs`):** `PEARL_CHANCE` (0.05) and `player_rotation(world, player)`, the player's head yaw and pitch from the views the endermen read (0 and 0 for a player with no view).
+- **Changed (`minecraft_terrain`):**
+  - `families/pests/endermites.rs` (the family's own glue):
+    - `pearl_leaves_one(random)` first draws the 32 portal specks' values from the pearl's own random (`thrown::pearl_portal`: a double and two gaussians each), because vanilla's server evaluates `addParticle`'s arguments before the roll, then rolls `nextFloat() < 0.05`.
+    - `from_pearls(level, mobs, tags, throwers, players)` does nothing in peaceful or without `spawn_mobs` and `spawn_monsters` (`ServerLevel.isSpawningMonsters`). Otherwise, for each thrower still alive, it spawns an endermite from the tag `{id, Pos: the thrower's feet, Rotation: its yaw and pitch, UUID from the level}` through `spawn_saved_all` and keeps the tag. It is a `TRIGGERED` spawn: no finalize and no poof.
+  - `families.rs` and `families/pests.rs`: the `pests` and `endermites` modules are `pub(crate)`, so the server reaches the glue.
+  - `server.rs` `tick_thrown`: a `mites` list beside the other per-tick lists; the `EnderPearl` landing arm reports the landing as before and then rolls with the pearl's random; one `from_pearls` call right after the thrown loop.
+- **Tests added:**
+  - `families::pests::endermites::tests::a_landing_pearl_draws_its_portal_specks_then_rolls_one_in_twenty`: for 20000 seeds the answer equals a replay of 32 times a double and two gaussians and then a float below 0.05, the random ends in the same state, and 900 to 1100 seeds leave an endermite.
+  - `families::pests::endermites::tests::a_pearl_endermite_takes_its_thrower_s_place_and_turn`: the tag loads as an endermite at the thrower's feet with its yaw, life 0 and not persistent.
+  - `server::tests::about_one_pearl_in_twenty_leaves_an_endermite_where_its_thrower_stood`: 400 seeded pearls all still teleport their thrower, and 8 to 35 endermites stand at the thrower's feet with its yaw of 135, each with its tag kept. None come in peaceful, and none with `spawn_monsters` off.
+- **javap this round (26.3):**
+  - `ThrownEnderpearl.onHit`: 32 `PORTAL` particles from the pearl's random. On the server, with an owner allowed to teleport: for a `ServerPlayer` whose connection accepts messages, `random.nextFloat() < 0.05`, then `isSpawningMonsters` and not peaceful, then an endermite from `EntityTypes.ENDERMITE.create(level, TRIGGERED)` with `snapTo(owner x, y, z, yRot, xRot)` and `addFreshEntity`. The portal cooldown and the teleport come after it.
+  - `ServerLevel.isSpawningMonsters`: the `spawn_mobs` and `spawn_monsters` game rules.
+- **Decisions:**
+  - **Where the thrower stood.** The endermite takes the thrower's feet at the landing tick. Survival applies the teleport afterwards (`take_pearl_teleports`), so this is the spot before the teleport, as in vanilla.
+  - **Its turn** comes from the views each player sends for the endermen's stares (`PlayerView.head_yaw` and `pitch`). The fork has no other server-side record of a player's yaw.
+  - **The pearl's random.** The roll uses the pearl's own random, after the draws for its 32 portal specks, which the client still makes with its own random. Vanilla's pearl random is unseeded, so only the order of the draws can match.
+  - **Who gets one.** Only a pearl that lands rolls (a pearl through an end gateway never lands, as in vanilla). Pearls only have player throwers (dispensers do not throw pearls, `thrown.rs`), and a thrower who died before the landing gets none: vanilla needs a connected owner.
+- **Protocol:** no message or codec change.
+- **Runs:** `test -p minecraftoss-entities -p minecraft_terrain --locked --lib` (entities 558 passed, terrain 1705 passed, 3 ignored), `check -p launcher --locked` (green; only the old render_frame and skate warnings). The changed `families/pests/endermites.rs` (terrain) and `world/families/pests/endermites.rs` (entities) pass `rustfmt --check --edition 2021` with empty output on their staged content.
+- **Test steps.** Release build, survival, Normal, by day, flat open ground in the Overworld. Step 4 needs two windows (`scripts\mp-local.ps1`). Name each screenshot by its label, `D0-15-1.png`, and for both windows `D0-15-4-host.png` and `D0-15-4-friend.png`.
+  1. Stand still and throw ender pearls one at a time at the ground 10 blocks away. On average one pearl in twenty leaves a small purple endermite with purple sparkles where you stood when it landed; keep throwing until one appears. It comes after you and bites for a heart. **Screenshot D0-15-1** with the endermite.
+  2. Leave it alone (step away from it and wait about two minutes, 2400 ticks from the landing): it vanishes without dying.
+  3. `/difficulty peaceful`: any endermite vanishes. Throw 40 more pearls: none leaves an endermite. `/difficulty normal`. `/gamerule spawn_monsters false` and throw 40 more: none. `/gamerule spawn_monsters true`.
+  4. Two windows: the friend throws pearls until an endermite appears where the friend stood. The host sees it at the same spot, and both see it bite the friend. **Screenshots D0-15-4-host and D0-15-4-friend.**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:ender_pearl*16,minecraft:ender_pearl*16,minecraft:ender_pearl*16,minecraft:ender_pearl*16,minecraft:ender_pearl*16,minecraft:ender_pearl*16,minecraft:iron_sword,minecraft:shield,minecraft:cooked_beef*32
+```
+
+### The owner's steps for silverfish and endermites (D0-10)
+
+All of track D0's silverfish and endermite steps in one run, from the brief's D0-10, as they stand after segment d0b. Setup: release build, survival, **Normal** difficulty, by day, flat open ground in the Overworld, `/gamerule mob_griefing true` (the default). The kit below goes in the `.env`; the class loadout's M4A1 is used. Steps R-14 to R-17 need two windows (`scripts\mp-local.ps1`). Name each screenshot by its label, `R1.png`; for both windows `R14-host.png` and `R14-friend.png`.
+
+Silverfish and endermites:
+- **R-1.** Use a silverfish egg three times on the ground 6 blocks away. Three small grey segmented silverfish wiggle towards you and bite (half a heart). **Screenshot R1.**
+- **R-2.** Punch one once without killing it: it flashes red and is knocked back, and the other two also turn on you. Kill one with the sword: it leaves experience. Shoot one with the bow and one with the M4A1: both flash and die.
+- **R-3.** Use an endermite egg: a small purple mite with purple sparkles around it comes at you (a heart a bite). Use an enderman egg 5 blocks away: the enderman goes for the endermite and kills it. **Screenshot R3.**
+- **R-4.** Use an endermite egg in a cobblestone pen and wait two minutes without touching it: it vanishes.
+- **R-5.** Stand still and throw ender pearls one by one at the ground 10 blocks away. On average one pearl in twenty leaves an endermite where you stood before the teleport; keep throwing until one appears. **Screenshot R5.** `/difficulty peaceful`: no endermite, and the silverfish and endermites vanish. `/difficulty normal`.
+- **R-6.** Build a wall of infested stone bricks and infested stone 3 high and 5 wide. Hatch a silverfish beside it and hit it once without killing it: within a second some of the wall's blocks crack and more silverfish crawl out, each with a small white puff. **Screenshot R6.** Mine an infested stone block with the pickaxe: a silverfish pops out.
+- **R-7.** Build a pen of stone bricks 4 x 4 x 2 with a silverfish inside, step back and `/gamemode creative`. Within about a minute the silverfish dives into a wall block and is gone (without a puff for now, see "Left for later" of 85917c3c). `/gamemode survival`, mine the blocks of that wall: one of them releases it again, with a puff.
+- **R-8.** Pour lava beside two silverfish: they burn, flash and die. Light TNT among three silverfish: the blast throws and kills them. Dig a hole 1 wide and 2 deep, hatch a silverfish in it, pour water in and put a block on top: after about 15 seconds it flashes red every second and drowns.
+- **R-9.** Throw a splash potion of harming on a silverfish: it dies. Throw the poison splash on another: green swirls, it drops to half a heart and keeps biting.
+- **R-10.** Use an iron golem egg near three silverfish: the golem walks to them and kills them.
+- **R-11.** Place a spawner and use a silverfish egg on it: a tiny silverfish turns in the cage, and silverfish spawn around it. **Screenshot R11.** Break the spawner.
+- **R-12.** Leave two silverfish and one endermite alive, save and quit, load the world: they are still there and move. The endermite still vanishes two minutes after it hatched.
+- **R-13 (optional).** `/locate structure minecraft:stronghold`, `/tp` there and dig down to the portal room: silverfish come out of its spawner. **Screenshot R13.**
+
+Friend (two windows):
+- **R-14.** The host hatches two silverfish and an endermite. The friend sees them in the same places with the same wiggle and the endermite's sparkles. The friend shoots one with the M4A1 and hits another with the sword: both windows show the red flash and the kills. **Screenshots R14-host and R14-friend.**
+- **R-15.** The friend throws pearls until an endermite appears where the friend stood; the host sees it too. The friend mines infested stone: a silverfish comes out in both windows, with its puff.
+
+Existing mobs still work (regression, two windows):
+- **R-16.** Hatch a zombie, a creeper, a cow and a villager. The zombie comes at you and burns in daylight, the creeper hisses and blows up, the cow wanders, and the villager walks about. Shoot the zombie and the cow with the M4A1 and the bow, and light TNT near the others: they all flash, are pushed and die like before. **Screenshot R16.**
+- **R-17.** Save and quit with a zombie and a cow alive, load: both are there, and the friend sees them and can hit them.
+
+Snowballs, eggs and tridents hit silverfish and endermites too, since E2's group `ti1` is merged.
+
+```
+IW4L_MINECRAFT_KIT=minecraft:silverfish_spawn_egg*16,minecraft:endermite_spawn_egg*16,minecraft:infested_stone*32,minecraft:infested_stone_bricks*32,minecraft:infested_deepslate*16,minecraft:stone_bricks*64,minecraft:spawner*2,minecraft:ender_pearl*16,minecraft:enderman_spawn_egg*2,minecraft:iron_golem_spawn_egg*2,minecraft:villager_spawn_egg*2,minecraft:zombie_spawn_egg*4,minecraft:cow_spawn_egg*4,minecraft:creeper_spawn_egg*2,minecraft:iron_sword,minecraft:bow,minecraft:arrow*64,minecraft:diamond_pickaxe,minecraft:tnt*8,minecraft:flint_and_steel,minecraft:lava_bucket,minecraft:water_bucket,minecraft:splash_potion@harming,minecraft:splash_potion@poison,minecraft:shield,minecraft:cooked_beef*32,minecraft:torch*64
+```
+
+27 stacks, the brief's D0-10 kit. R-15's friend needs the same kit (it reads the `.env` on join).

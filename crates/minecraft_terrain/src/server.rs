@@ -2522,6 +2522,7 @@ impl ServerSim {
         let mut bursts = Vec::new();
         let mut aged = Vec::new();
         let mut landings = Vec::new();
+        let mut mites = Vec::new();
         {
             let Self { level, states, mob_tables, thrown, pearl_landings, potion_breaks, thrown_hits, gateways, pearl_gateways, mobs, .. } = self;
             let world = crate::server_mobs::MobWorld { level: std::cell::RefCell::new(level), states, tables: mob_tables };
@@ -2580,7 +2581,12 @@ impl ServerSim {
                             hatched.push((crate::thrown::hatch_point(landed.at, landed.before).to_array(), t.yaw(), crate::thrown::chick_variant(&t.item)));
                         }
                     }
-                    Throwable::EnderPearl => pearl_landings.push((t.owner, landed.before.to_array())),
+                    Throwable::EnderPearl => {
+                        pearl_landings.push((t.owner, landed.before.to_array()));
+                        if crate::families::pests::endermites::pearl_leaves_one(t.random()) {
+                            mites.push(t.owner);
+                        }
+                    }
                     Throwable::Snowball => {}
                     Throwable::ExperienceBottle => {
                         let at = t.position();
@@ -2622,6 +2628,7 @@ impl ServerSim {
             }
             thrown.retain(crate::thrown::Thrown::alive);
         }
+        crate::families::pests::endermites::from_pearls(&mut self.level, &mut self.mobs, &mut self.mob_tags, &mites, players);
         for (pos, age) in aged {
             crate::end_gateway::write_age(&mut self.level, pos, age);
         }
@@ -8099,6 +8106,41 @@ mod tests {
             teleports.extend(server.take_pearl_teleports());
         }
         assert_eq!(teleports.iter().map(|t| t.0).collect::<Vec<_>>(), vec![1]);
+    }
+
+    fn pearl_mites(server: &mut ServerSim, pearls: u64) -> Vec<(u64, [f64; 3], f32)> {
+        use minecraftoss_entities::enderman::PlayerView;
+        use minecraftoss_entities::world::families::pests::endermites::Endermite;
+        server.mobs.set_player_views(vec![(0, PlayerView { head_yaw: 135.0, pitch: 20.0, disguised: false })]);
+        for seed in 0..pearls {
+            server.throw(thrown_down("minecraft:ender_pearl", seed));
+        }
+        let mut teleports = 0;
+        for _ in 0..20 {
+            server.tick_thrown(&[player_at(0, [8.5, 200.0, 20.5], true)]);
+            teleports += server.take_pearl_teleports().len();
+        }
+        assert_eq!(teleports as u64, pearls, "every pearl still teleports");
+        server.mobs.family::<Endermite>().iter().map(|mob| (mob.core.id, mob.core.body.position.to_array(), mob.core.yaw)).collect()
+    }
+
+    #[test]
+    fn about_one_pearl_in_twenty_leaves_an_endermite_where_its_thrower_stood() {
+        let Some((mut server, _)) = door_world() else { return };
+        server.level.difficulty = 2;
+        let mites = pearl_mites(&mut server, 400);
+        assert!((8..=35).contains(&mites.len()), "{} of 400", mites.len());
+        for (id, feet, yaw) in &mites {
+            assert_eq!((*feet, *yaw), ([8.5, 200.0, 20.5], 135.0), "at the thrower before the teleport, facing its way");
+            assert!(server.mob_tags.contains_key(id));
+        }
+        let Some((mut server, _)) = door_world() else { return };
+        server.level.difficulty = 0;
+        assert!(pearl_mites(&mut server, 400).is_empty(), "none in peaceful");
+        let Some((mut server, _)) = door_world() else { return };
+        server.level.difficulty = 2;
+        server.level.natural_spawning.as_mut().unwrap().spawn_monsters = false;
+        assert!(pearl_mites(&mut server, 400).is_empty(), "none without spawn_monsters");
     }
 
     type PearlTrips = (Vec<(u64, BlockPos)>, Vec<(u64, [f64; 3])>);
