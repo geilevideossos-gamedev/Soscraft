@@ -935,3 +935,18 @@ After 8f2a8074.
 ```
 IW4L_MINECRAFT_KIT=minecraft:gold_block*16,minecraft:lantern*8,minecraft:cobblestone*64,minecraft:iron_pickaxe,minecraft:netherite_sword+sharpness=5,minecraft:golden_apple*8,minecraft:cooked_beef*32
 ```
+
+### 27. Registered Minecraft mobs can show effects on the blocks around the viewer
+
+After 1bd91900.
+
+- **Why:** brief F7, commit 2 draws a golden ring on the ground at Margit's 24-block leash, only on the part within 20 blocks of the viewer and at the ground's height there. D0's `client_effects` hook (called from `EntityView::advance`) knows neither the viewer nor the blocks, and D0's checklist lists survival `entity_view.rs` among the files never edited for one family and says a missing hook goes into the registry's root file in a commit of its own. This is that hook.
+- **Changed:**
+  - `minecraft_terrain`, root `families.rs`: `ViewerFx` (the viewer's feet, the view's tick, the blocks' collision boxes as a lookup, and the view's ambient and spell particles and random), `TerrainFamily::viewer_effects(mobs, poses, fx)` next to `client_effects` (doing nothing by default), the macro's per-group `viewer_effects` next to `client_effects`, and the root `viewer_effects(world, poses, fx)` that calls every group. The group files are unchanged.
+  - `minecraft_survival`, `entity_view.rs`: `EntityView::animate_tick`, which the host's and the friend's views already call once per client tick with the viewer's feet and the level's blocks (`render_anim` `minecraft_world.rs` and `minecraft_remote.rs`, unchanged), ends with one generic call to `families::viewer_effects`, the boxes read from the scene (`World::collision_boxes`). Its scene must therefore be a `minecraftoss_player::World` as well, which the only scene passed there, `HandcraftedScene`, is; `Entities::animate_tick` (`entities.rs`), which hands the scene through, takes the same bound.
+- **Tests:** `families::tests::a_registered_mob_shows_nothing_around_the_viewer_unless_its_family_does` (a silverfish and an endermite over eight ticks: no particle, no block read and no random drawn). `test -p minecraft_terrain --locked --lib families`: 22 passed. `test -p minecraft_survival --locked --lib entity_view`: 12 passed. `check -p launcher --locked`: green, with only the old render_frame and skate warnings.
+- **Decisions:**
+  - **The hook hangs on `animate_tick`,** not on `advance`: `animate_tick` is vanilla's `ClientLevel.animateTick` place, run once per client tick for the player who looks, and it already has the blocks and the feet, for the host and for a friend alike.
+  - **The blocks are a lookup of collision boxes,** the same boxes walking and Margit's arena use, so a family can find the ground under a point without knowing the scene type.
+  - **The tick is the view's own client tick count,** so a family can space its effects out (Margit's ring every 4 ticks) without keeping a clock of its own.
+- **Owner's steps:** nothing changes in game until the next commit uses the hook. No kit line.

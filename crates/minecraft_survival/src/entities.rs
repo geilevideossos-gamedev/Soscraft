@@ -1349,7 +1349,7 @@ impl Entities {
         self.server.spawn_item(&stack.id, i32::from(stack.count), components.as_deref(), feet, [0.0; 3], 0, 0);
     }
 
-    pub fn animate_tick<S: minecraft_terrain::scene::Scene + ?Sized>(&mut self, scene: &S, feet: [f64; 3]) -> Vec<minecraft_terrain::display_ticks::AmbientSound> {
+    pub fn animate_tick<S: minecraft_terrain::scene::Scene + minecraftoss_player::World + ?Sized>(&mut self, scene: &S, feet: [f64; 3]) -> Vec<minecraft_terrain::display_ticks::AmbientSound> {
         self.view.animate_tick(scene, feet)
     }
 

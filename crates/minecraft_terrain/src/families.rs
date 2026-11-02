@@ -148,6 +148,15 @@ macro_rules! terrain_group {
         ) {
             $($(#[$attr])* <$ty as $crate::families::TerrainFamily>::client_effects(world.family::<$ty>(), poses, fx);)*
         }
+
+        #[allow(unused_variables)]
+        pub fn viewer_effects(
+            world: &minecraftoss_entities::world::EntityWorld,
+            poses: &$crate::client_mobs::ClientMobs,
+            fx: &mut $crate::families::ViewerFx<'_>,
+        ) {
+            $($(#[$attr])* <$ty as $crate::families::TerrainFamily>::viewer_effects(world.family::<$ty>(), poses, fx);)*
+        }
     };
 }
 
@@ -198,6 +207,15 @@ pub struct ClientFx<'a> {
     pub seen: &'a mut HashMap<u64, i32>,
 }
 
+pub struct ViewerFx<'a> {
+    pub feet: DVec3,
+    pub tick: u64,
+    pub boxes: &'a dyn Fn((i32, i32, i32)) -> Vec<[f64; 6]>,
+    pub ambient: &'a mut AmbientParticles,
+    pub spell: &'a mut SpellParticles,
+    pub random: &'a mut LegacyRandom,
+}
+
 pub trait TerrainFamily: Registered {
     const TRACKING_RANGE: i32;
     const VOLATILE: &'static [&'static str] = &[];
@@ -241,6 +259,8 @@ pub trait TerrainFamily: Registered {
     }
 
     fn client_effects(_mobs: &[FamilyMob<Self>], _poses: &ClientMobs, _fx: &mut ClientFx<'_>) {}
+
+    fn viewer_effects(_mobs: &[FamilyMob<Self>], _poses: &ClientMobs, _fx: &mut ViewerFx<'_>) {}
 }
 
 pub fn kinds() -> Vec<&'static str> {
@@ -424,6 +444,16 @@ pub fn client_effects(world: &EntityWorld, poses: &ClientMobs, fx: &mut ClientFx
     water::client_effects(world, poses, fx);
     night::client_effects(world, poses, fx);
     bosses::client_effects(world, poses, fx);
+}
+
+pub fn viewer_effects(world: &EntityWorld, poses: &ClientMobs, fx: &mut ViewerFx<'_>) {
+    pests::viewer_effects(world, poses, fx);
+    trial::viewer_effects(world, poses, fx);
+    deep_dark::viewer_effects(world, poses, fx);
+    land::viewer_effects(world, poses, fx);
+    water::viewer_effects(world, poses, fx);
+    night::viewer_effects(world, poses, fx);
+    bosses::viewer_effects(world, poses, fx);
 }
 
 fn names(kinds: &[&str], kind: &str) -> bool {

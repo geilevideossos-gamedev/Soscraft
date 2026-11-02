@@ -438,7 +438,7 @@ impl EntityView {
         self.ticks
     }
 
-    pub fn animate_tick<S: Scene + ?Sized>(
+    pub fn animate_tick<S: Scene + minecraftoss_player::World + ?Sized>(
         &mut self,
         scene: &S,
         feet: [f64; 3],
@@ -455,6 +455,8 @@ impl EntityView {
         for (kind, start, motion) in tick.particles {
             self.ambient.add(kind, start, motion);
         }
+        let boxes = |cell| minecraftoss_player::World::collision_boxes(scene, cell);
+        minecraft_terrain::families::viewer_effects(&self.world, &self.client, &mut minecraft_terrain::families::ViewerFx { feet: DVec3::from_array(feet), tick: self.ticks, boxes: &boxes, ambient: &mut self.ambient, spell: &mut self.spell, random: &mut self.random });
         tick.sounds
     }
 
