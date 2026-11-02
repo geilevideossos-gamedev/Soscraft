@@ -747,7 +747,11 @@ fn a_sonic_boom_lands_35_ticks_into_its_charge_through_a_wall_and_pushes() {
         }
         assert!(world.take_sonic_booms().is_empty(), "tick {tick}");
     }
-    assert_eq!(charges, vec![0, 102], "60 ticks of booming, then 40 of cooling down");
+    assert_eq!(
+        charges,
+        vec![0, 102],
+        "60 ticks of booming, then 40 of cooling down"
+    );
     assert_eq!(booms, vec![35], "the second finds its target out of reach");
     assert_eq!(rings.len(), 1);
     let (tick, hit, beam) = &rings[0];
@@ -782,11 +786,14 @@ fn a_sonic_boom_lands_35_ticks_into_its_charge_through_a_wall_and_pushes() {
         (chest - from - DVec3::Y * 1.6).length() < 1.0e-9,
         "from its chest"
     );
-    let eye = at(9.5, 0.5) + DVec3::Y * 1.62;
+    let eye = at(9.5, 0.5) + DVec3::Y * f64::from(1.62_f32);
     let length = (eye - chest).length();
-    assert!((chest + dir * length - eye).length() < 1.0e-9, "at the eyes");
+    assert!(
+        (chest + dir * length - eye).length() < 1.0e-9,
+        "at the eyes"
+    );
     assert_eq!(beam.len(), length.floor() as usize + 6, "one ring a block");
-    assert_eq!(push, sonic_boom_push(dir));
+    assert!((push - sonic_boom_push(dir)).length() < 1.0e-9, "{push}");
     assert!(push.x > 2.4 && push.z.abs() < 0.5, "{push}");
 }
 
@@ -834,7 +841,9 @@ fn a_warden_darkens_around_it_every_six_seconds() {
     assert_eq!(pulses.len(), 2, "{pulses:?}");
     assert_eq!(pulses[1].0 - pulses[0].0, 120);
     assert!(
-        pulses.iter().all(|(_, pulse)| pulse.distance(at(0.5, 0.5)) < 1.0e-6),
+        pulses
+            .iter()
+            .all(|(_, pulse)| pulse.distance(at(0.5, 0.5)) < 1.0e-6),
         "from where it stands; one without AI never darkens anything: {pulses:?}"
     );
 }

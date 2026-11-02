@@ -13854,7 +13854,8 @@ mod tests {
         let mut hits = Vec::new();
         let mut rings = Vec::new();
         for _ in 0..40 {
-            let out = run_ticks(&mut sim, &mut input, true, 1);
+            let mut out = run_ticks(&mut sim, &mut input, true, 1);
+            finish_batch(&mut sim, &input, &mut out);
             hits.extend(out.player_hits);
             rings.extend(out.entities.expect("a snapshot").sonic_booms);
         }
