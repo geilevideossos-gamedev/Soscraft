@@ -1276,6 +1276,16 @@ Commit: "Minecraft starting kits keep the quotes inside their components", the o
 IW4L_MINECRAFT_KIT=written_book[written_book_content={title:"Kit",author:"Owner",pages:["One, two"]}]
 ```
 
+### A test line of the player looks goes back to its own spacing
+
+Commit: "A Minecraft gear test keeps its original spacing", the one after `02ef03e2`.
+
+- **Defect** (found in the review of segment e1b): commit `c70815b6` ("Minecraft players and friends show loaded crossbows and patterned banners in their hands") only needed to add `look: String::new()` to the gear items of `render_anim` `anim/minecraft_gear.rs`, but it also rewrote an untouched line of the test `gear_is_drawn_only_on_bodies_in_the_viewers_band` from `let moved = |z: f32| {` to `let moved =|z: f32| {`. That breaks the rule that edits change only the lines they need, in the surrounding style.
+- **Changed:** the line is back to `let moved = |z: f32| {`, exactly as at `r10-e1b-base`. No code change.
+- **Tests:** none new. The 22 `render_anim` `anim::minecraft_gear` tests pass, and `check -p launcher` passes.
+- **Owner's test steps:** nothing to test in game; the line is in a unit test.
+- **Kit:** none.
+
 ## Final verification
 
 ### Clippy on the touched crates
