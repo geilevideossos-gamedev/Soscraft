@@ -24,6 +24,8 @@ Files under `third_party/minecraftoss` this track patched or added.
 - Patched (squids-live 1): `entities/src/world/families.rs` (`Family::OWN_DYING_TRAVEL` and its test in `family_base_tick`). Changed again: the probe and the water tests.
 - Patched (squids-live 2): `entities/src/movement.rs` (`Body::move_self` split out of `travel_air_flying`). Changed again: `entities/src/world/families/water.rs` (the squids' registration).
 - Added (squids-live 2): `entities/src/world/families/water/squids.rs`, `entities/src/world/families/water/squids/tests.rs` (test only).
+- Patched (squids-live 3): `world/src/natural_spawner.rs` (the `InWater` line in `check_spawn_obstruction`). Changed again: `world/src/natural_spawner/families/water.rs` (the squid rows and their rules).
+- Added (squids-live 3): `world/src/natural_spawner/families/water/tests.rs` (test only).
 
 ## Hooks
 
@@ -43,6 +45,7 @@ No commit of this track has changed a `ToClient`/`ToServer` message or the codec
 ## State doc changes
 
 - `docs/MINECRAFT-SURVIVAL.md` (water-buckets 1): "Cod, salmon, tropical fish, pufferfish, axolotl and tadpole buckets pour their water with their own splash (a hiss in the Nether; in creative the mob bucket stays in the hand); the sulfur cube bucket pours nothing. Each lets out its mob with the bucket's data and `FromBucket`; until the mob's family is live it is kept in the world but not shown."
+- `docs/MINECRAFT-SURVIVAL.md` (squids-live 3): "Squids spawn near the surface of oceans and rivers (up to 13 blocks below sea level) and glow squids in unlit water 33 or more blocks below it; both wait in the world, not yet shown, until `squids-drawn`."
 
 ## Game events still to add
 
@@ -60,10 +63,10 @@ None yet. The mob bucket posts `entity_place` at the block the mob comes out in 
 
 ## Combined kit
 
-Everything this track's test steps need so far (27 stacks; water-buckets 1 counted 24 where its line held 23).
+Everything this track's test steps need so far (27 stacks; water-buckets 1 counted 24 where its line held 23). The kit is full, so squids-live 2's regression steps with the chicken and spider eggs keep their own kit line; squids-live 3's glass platform takes the glass up to 64.
 
 ```
-IW4L_MINECRAFT_KIT=minecraft:rabbit_spawn_egg*4,minecraft:polar_bear_spawn_egg*2,minecraft:silverfish_spawn_egg*2,minecraft:zombie_spawn_egg*2,minecraft:drowned_spawn_egg*2,minecraft:cow_spawn_egg*2,minecraft:water_bucket,minecraft:glass*16,minecraft:stone*64,minecraft:iron_shovel,minecraft:iron_sword,minecraft:cod_bucket,minecraft:salmon_bucket,minecraft:tropical_fish_bucket,minecraft:pufferfish_bucket,minecraft:axolotl_bucket,minecraft:tadpole_bucket,minecraft:sulfur_cube_bucket,minecraft:sulfur_cube_bucket,minecraft:lava_bucket,minecraft:bucket*16,minecraft:cauldron,minecraft:campfire,minecraft:obsidian*10,minecraft:flint_and_steel,minecraft:dispenser*2,minecraft:lever*2
+IW4L_MINECRAFT_KIT=minecraft:rabbit_spawn_egg*4,minecraft:polar_bear_spawn_egg*2,minecraft:silverfish_spawn_egg*2,minecraft:zombie_spawn_egg*2,minecraft:drowned_spawn_egg*2,minecraft:cow_spawn_egg*2,minecraft:water_bucket,minecraft:glass*64,minecraft:stone*64,minecraft:iron_shovel,minecraft:iron_sword,minecraft:cod_bucket,minecraft:salmon_bucket,minecraft:tropical_fish_bucket,minecraft:pufferfish_bucket,minecraft:axolotl_bucket,minecraft:tadpole_bucket,minecraft:sulfur_cube_bucket,minecraft:sulfur_cube_bucket,minecraft:lava_bucket,minecraft:bucket*16,minecraft:cauldron,minecraft:campfire,minecraft:obsidian*10,minecraft:flint_and_steel,minecraft:dispenser*2,minecraft:lever*2
 ```
 
 ## Segment m2a
@@ -509,4 +512,42 @@ After 2c0d74bf.
 
 ```
 IW4L_MINECRAFT_KIT=minecraft:zombie_spawn_egg*2,minecraft:chicken_spawn_egg*2,minecraft:spider_spawn_egg*2,minecraft:cow_spawn_egg*2,minecraft:stone*64,minecraft:water_bucket,minecraft:iron_shovel,minecraft:iron_sword
+```
+
+#### 3. Minecraft squids spawn in oceans and rivers, and glow squids in dark water underground
+
+After ddb173f4.
+
+- **javap (26.3 `client.jar`):**
+  - `SpawnPlacements`: `SQUID` and `GLOW_SQUID` are `IN_WATER` with `MOTION_BLOCKING_NO_LEAVES`; the squid's predicate is `AgeableWaterCreature.checkSurfaceAgeableWaterCreatureSpawnRules`, the glow squid's `GlowSquid.checkGlowSquidSpawnRules`.
+  - `checkSurfaceAgeableWaterCreatureSpawnRules`: `seaLevel − 13 ≤ y ≤ seaLevel`, the fluid below in `#water`, and the block above `Blocks.WATER`. It reads no reason, so spawners use it too; `WaterAnimal.checkSurfaceWaterAnimalSpawnRules` is the same test.
+  - `checkGlowSquidSpawnRules`: `y ≤ seaLevel − 33`, `getRawBrightness(pos, 0) == 0` and the block `Blocks.WATER`, with no random draw.
+  - `AgeableWaterCreature.checkSpawnObstruction` (and `WaterAnimal`'s, `Axolotl`'s, `Guardian`'s, `Drowned`'s) is `isUnobstructed` alone: water in the box never blocks a spawn of these types.
+  - `Squid.finalizeSpawn`: `AgeableMobGroupData(0.05)`. `PathfinderMob.getWalkTargetValue` 0, `getMaxSpawnClusterSize` 4, `removeWhenFarAway` true; the follow range is `Mob`'s 16.
+- **Changed (vendored world crate):**
+  - `natural_spawner/families/water.rs`: the rows of `minecraft:squid` (`WaterCreature`, the rule `surface_water_animal`) and `minecraft:glow_squid` (`UndergroundWaterCreature`, the rule `dark_deep_water`), both 0.8 by 0.8, `InWater`, `MotionBlockingNoLeaves`, `Rules::Family { creature: true }`, `Walk::Neutral`, removed far away, clusters of 4, follow range 16, baby chance 0.05, no finalize of their own. `surface_water_animal` is the shared rule for the fish and dolphins to come (M2-3, M2-4); both rules read the level's sea level.
+  - `natural_spawner.rs` `check_spawn_obstruction`: `|| info.placement == Placement::InWater` beside `Rules::Strider | Rules::Drowned` (one changed line), so every water row and the built-in axolotl skip the fluid test.
+- **What changes in the game:** squids now spawn in their oceans and rivers and glow squids in unlit water below y 30, and `/summon` finalizes both as creatures. They wait dormant (counted toward their caps, saved, despawned when far) until `squids-drawn` registers them in terrain. The glow squid's rule was already ported, but the fluid in its box refused every spawn and its finalize fell into the monster catch-all with a note; the row fixes both. The built-in axolotl row keeps `Rules::Other`, so axolotls still do not spawn until their family's row (M2-7).
+- **Tests added** (`natural_spawner::families::water::tests`, a new test file beside the rows):
+  - `surface_water_animals_spawn_from_thirteen_below_sea_level_up_to_it`: the squid's row; y 50 to 63 with water above and below, by the level's sea level; not with air above or stone below; spawners the same.
+  - `squids_spawn_in_the_top_thirteen_blocks_of_open_water`: natural spawning in a lukewarm ocean from starts at y 50, 56 and 62, none from 35, 49 or 63; nothing unsupported noted.
+  - `glow_squids_spawn_only_in_unlit_water_thirty_three_below_sea_level`: y 30 and not 31, not in stone, not in light 1; natural spawning at y 20 and none at 40.
+  - `a_squid_group_starts_with_an_adult_and_has_babies_one_time_in_twenty`: 300 natural calls in a warm ocean; each call's first squid is an adult, at most four a call, babies (`Age` −24000) under one in ten.
+  - `water_spawns_ignore_the_water_in_their_box`: the squid, glow squid, axolotl and drowned rows pass `check_spawn_obstruction` in water; a cow does not, and does above the sea.
+  - `summoning_a_squid_notes_nothing_unsupported`: both kinds summon as adults with no note.
+- **Decisions:**
+  - **One `InWater` test** in `check_spawn_obstruction` rather than a flag per row (brief decision 6): javap shows `isUnobstructed` for every `IN_WATER` type.
+  - **The built-in glow squid lines stay** (`type_info`, `Rules::GlowSquid`, `MobCategory::of_type`): rows are read first, so they are never reached, and leaving them keeps the merge small.
+  - **The tests' level** is a column of water over stone (`Ocean`) with its own light and sea level, in M2's own test file.
+- **Protocol:** none.
+- **Game events still to add:** none.
+- **Runs:** `test -p minecraftoss-world --locked --lib`: 148 passed, among them the 6 new tests, which also passed in a run that fails when the game data is missing (so none skipped). `check -p launcher --locked`: green, with only the old render_frame and skate warnings. The new test file passes `rustfmt --check` with empty output.
+- **Test steps** (nothing new to see: the squids spawn but wait dormant until `squids-drawn`). Release build, survival, Normal, by day. Name each screenshot by its label.
+  1. `/locate biome minecraft:lukewarm_ocean`, `/tp` there and build a 5 x 5 glass platform on the sea surface. Stand on it for a minute: the game runs as before and no message about squids appears. **m2-squids-3**
+  2. `/summon minecraft:squid ~ ~-2 ~4` and `/summon minecraft:glow_squid ~ ~-3 ~4`: both commands are answered as summoned, and nothing is drawn yet.
+  3. Save, quit and load the world: it loads as before.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:glass*64
 ```
