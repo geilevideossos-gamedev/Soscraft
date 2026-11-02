@@ -201,6 +201,7 @@ pub struct PlayerOutputs {
 #[derive(Default)]
 pub(crate) struct PlayerQueue {
     uuid: Option<u128>,
+    time_since_rest: i32,
     feet: Option<[f64; 3]>,
     picked: Vec<Picked>,
     pub(crate) pearl_gateways: Vec<(i32, i32, i32)>,
@@ -283,6 +284,10 @@ struct PlayerQueues(HashMap<u64, PlayerQueue>);
 impl PlayerQueues {
     fn queue(&mut self, id: u64) -> &mut PlayerQueue {
         self.0.entry(id).or_default()
+    }
+
+    fn rest(&mut self, ids: impl Iterator<Item = u64>) -> Vec<(u64, i32)> {
+        ids.map(|id| (id, self.queue(id).time_since_rest)).collect()
     }
 
     fn route(&mut self, output: &mut minecraft_terrain::server::Output, difficulty: i32, entity_type: impl Fn(u64) -> Option<&'static str>) -> Unclaimed {
@@ -610,6 +615,13 @@ impl Entities {
                 queue.uuid = Some(key);
                 self.server.set_player_uuid(*id, key);
             }
+        }
+    }
+
+    pub fn set_time_since_rest(&mut self, uuid: &minecraft_net::PlayerUuid, ticks: i32) {
+        let key = crate::level::opener_key(uuid);
+        if let Some(queue) = self.players.0.values_mut().find(|queue| queue.uuid == Some(key)) {
+            queue.time_since_rest = ticks;
         }
     }
 
@@ -1687,6 +1699,7 @@ impl Entities {
                         )
                     })
                     .collect(),
+                rest: self.players.rest(actors.iter().map(|actor| actor.id)),
                 bright_outside,
                 tracking: (presenter_feet, 160.0),
                 watchers: self.watchers.clone(),
@@ -3475,6 +3488,37 @@ mod tests {
         assert!((1..=3).contains(&friend_experience), "a cow leaves 1 to 3 points: {friend_experience}");
         assert_eq!(host_experience, 0, "the host stood far away");
         assert!(!entities.boxes().iter().any(|(key, _)| *key == cow), "the cow died");
+    }
+
+    #[test]
+    fn each_player_time_since_rest_reaches_the_server_tick() {
+        let Some((mut level, mut globals)) = crate::actions::tests::level_and_globals() else {
+            return;
+        };
+        let uuid = |n: u32| minecraft_net::PlayerUuid(format!("00000000-0000-0000-0000-00000000000{n}"));
+        let player = |n: u32, dimension, awake: i32| {
+            let mut player = crate::the_end::tests::player(dimension);
+            player.uuid = uuid(n);
+            player.time_since_rest = awake;
+            player
+        };
+        let host = player(1, minecraft_net::Dimension::Overworld, 100);
+        let friend = player(5, minecraft_net::Dimension::Overworld, 1_000_000);
+        let away = player(7, minecraft_net::Dimension::Nether, 50);
+        let entities = level.entities.as_mut().expect("the level's entities");
+        entities.set_players(&[(HOST, uuid(1)), (FRIEND, uuid(5)), (7, uuid(7))]);
+        assert_eq!(entities.players.rest([HOST, FRIEND, 7].into_iter()), [(HOST, 0), (FRIEND, 0), (7, 0)]);
+        let mut players: std::collections::BTreeMap<_, _> = [host, friend, away].into_iter().map(|player| (player.uuid.clone(), player)).collect();
+        crate::sleep::tick(&mut globals, &mut level, &mut players, false);
+        crate::sleep::tick(&mut globals, &mut level, &mut players, false);
+        let entities = level.entities.as_mut().expect("the level's entities");
+        assert_eq!(entities.players.rest([HOST, FRIEND, 7].into_iter()), [(HOST, 102), (FRIEND, 1_000_002), (7, 0)], "each player of this level, keyed by UUID; the Nether's player is not here");
+        players.get_mut(&uuid(5)).unwrap().dead = true;
+        crate::sleep::tick(&mut globals, &mut level, &mut players, false);
+        let entities = level.entities.as_mut().expect("the level's entities");
+        assert_eq!(entities.players.rest([FRIEND, HOST].into_iter()), [(FRIEND, 0), (HOST, 103)], "death resets the friend's clock only");
+        entities.set_time_since_rest(&uuid(9), 9);
+        assert_eq!(entities.players.0.len(), 3, "a player without a queue gets none");
     }
 
     const MARGIT_FEET: [f64; 3] = [16.5, 201.0, 16.5];

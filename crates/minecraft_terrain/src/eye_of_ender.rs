@@ -686,6 +686,7 @@ mod tests {
             heroes: Vec::new(),
             mob_views: Vec::new(),
             mob_vitals: Vec::new(),
+            rest: Vec::new(),
             bright_outside: true,
             tracking: (feet.to_array(), 64.0),
             watchers: Vec::new(),

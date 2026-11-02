@@ -1569,6 +1569,23 @@ impl ServerSim {
         }
     }
 
+    pub fn tick_phantom_spawner(&mut self, players: &[minecraftoss_entities::tempt::PlayerCandidate], rest: &[(u64, i32)]) {
+        let Some(natural) = self.level.natural_spawning.as_ref() else { return };
+        if !natural.spawn_mobs || !natural.spawn_monsters || !self.custom_spawners.spawn_phantoms {
+            return;
+        }
+        let Some(phantoms) = self.custom_spawners.phantoms.as_mut() else { return };
+        if !phantoms.due(&mut self.level.random) {
+            return;
+        }
+        let rest_of = |id: u64| rest.iter().find(|(player, _)| *player == id).map_or(0, |&(_, ticks)| ticks);
+        let feet = |p: glam::DVec3| minecraftoss_core::BlockPos::new(p.x.floor() as i32, p.y.floor() as i32, p.z.floor() as i32);
+        let players: Vec<(minecraftoss_core::BlockPos, bool, i32)> = players.iter().map(|p| (feet(p.position), p.spectator, rest_of(p.id))).collect();
+        for phantom in self.level.spawn_phantoms(&players) {
+            self.add_saved_entity(phantom);
+        }
+    }
+
     pub fn tick_trader_spawner(&mut self, players: &[minecraftoss_entities::tempt::PlayerCandidate]) {
         let spawn_mobs = self.level.natural_spawning.as_ref().is_some_and(|natural| natural.spawn_mobs);
         let rule = self.custom_spawners.spawn_wandering_traders;
@@ -3615,6 +3632,7 @@ impl ServerSim {
         }
         self.custom_spawners.spawn_wandering_traders = rules.bool("spawn_wandering_traders");
         self.custom_spawners.spawn_patrols = rules.bool("spawn_patrols");
+        self.custom_spawners.spawn_phantoms = rules.bool("spawn_phantoms");
         self.raids_rule = rules.bool("raids");
     }
 
@@ -4276,6 +4294,7 @@ pub struct TickInput {
     /// Each of those players' health, effects and motion (witches pick
     /// their potions by them).
     pub mob_vitals: Vec<(u64, minecraftoss_entities::monster_ai::PlayerVitals)>,
+    pub rest: Vec<(u64, i32)>,
     /// `Level.isBrightOutside`.
     pub bright_outside: bool,
     /// The player's position and how far away it tracks mobs.
@@ -4322,6 +4341,7 @@ impl TickInput {
         self.heroes.retain(|(id, _)| *id != player);
         self.mob_views.retain(|(id, _)| *id != player);
         self.mob_vitals.retain(|(id, _)| *id != player);
+        self.rest.retain(|(id, _)| *id != player);
         self.player_hurts.retain(|(id, _, _)| *id != player);
         self.controls.retain(|controls| controls.id != player);
         self.omens.retain(|(id, _)| *id != player);
@@ -5005,6 +5025,7 @@ fn run_tick(sim: &mut ServerSim, input: &mut TickInput, normal: bool, out: &mut 
         out.trial_omens.extend(sim.tick_trial_spawners(&input.mob_players, &mut input.omens));
         sim.tick_vaults(&input.mob_players);
         sim.tick_catalysts();
+        sim.tick_phantom_spawner(&input.mob_players, &input.rest);
         sim.tick_patrol_spawner(&input.mob_players, input.bright_outside);
         sim.tick_custom_spawners(&input.mob_players);
         sim.tick_trader_spawner(&input.mob_players);
@@ -13295,6 +13316,7 @@ mod tests {
             heroes: Vec::new(),
             mob_views: Vec::new(),
             mob_vitals: Vec::new(),
+            rest: Vec::new(),
             bright_outside: true,
             tracking: ([8.5, 120.0, 8.5], 64.0),
             watchers: Vec::new(),
@@ -15442,6 +15464,79 @@ mod tests {
         let dropped: Vec<String> = server.items().into_iter().map(|item| item.item).collect();
         assert!(dropped.iter().any(|item| item == "minecraft:ominous_bottle"), "{dropped:?}");
         assert!(dropped.iter().any(|item| item == "minecraft:white_banner"), "{dropped:?}");
+    }
+
+    #[test]
+    fn a_sleepless_player_draws_phantoms_and_a_rested_one_does_not() {
+        use minecraftoss_entities::tempt::PlayerCandidate;
+        use minecraftoss_entities::world::families::night::phantoms::Phantom;
+        let Some((mut server, _)) = door_world() else { return };
+        let (me, friend) = (candidate(0, [8.5, 200.0, 8.5]), candidate(1, [-8.5, 200.0, -8.5]));
+        let feet = [me.position.to_array(), friend.position.to_array()];
+        server.set_players(&feet, 2);
+        let phantoms = |server: &ServerSim| server.mobs.family::<Phantom>().len();
+        let looks = |server: &mut ServerSim, players: &[PlayerCandidate], rest: &[(u64, i32)]| {
+            for _ in 0..100 {
+                if phantoms(server) > 0 {
+                    return;
+                }
+                server.custom_spawners.phantoms.as_mut().unwrap().next_tick = 1;
+                server.tick_phantom_spawner(players, rest);
+            }
+        };
+        let at_time = |server: &mut ServerSim, overworld: i64| {
+            server.set_clocks(ClockTicks { overworld, the_end: 0 });
+            server.level.update_sky_brightness();
+        };
+        let awake = 1_000_000;
+        at_time(&mut server, 6_000);
+        looks(&mut server, &[me], &[(0, awake)]);
+        assert_eq!(phantoms(&server), 0, "never by day");
+        at_time(&mut server, 18_000);
+        looks(&mut server, &[me, friend], &[(0, 72_000), (1, 0)]);
+        assert_eq!(phantoms(&server), 0, "three days awake are not enough and a rested player draws none");
+        looks(&mut server, &[me], &[]);
+        assert_eq!(phantoms(&server), 0, "a player without a clock is rested");
+        looks(&mut server, &[PlayerCandidate { spectator: true, ..me }], &[(0, awake)]);
+        assert_eq!(phantoms(&server), 0, "spectators draw none");
+        let mut rules = crate::game_rules::GameRules::default();
+        rules.set("spawn_phantoms", "false").unwrap();
+        server.apply_game_rules(&rules);
+        looks(&mut server, &[me], &[(0, awake)]);
+        assert_eq!(phantoms(&server), 0, "the rule turns them off");
+        rules.set("spawn_phantoms", "true").unwrap();
+        server.apply_game_rules(&rules);
+        server.set_players(&feet, 0);
+        looks(&mut server, &[me], &[(0, awake)]);
+        assert_eq!(phantoms(&server), 0, "none on Peaceful");
+        server.set_players(&feet, 2);
+        looks(&mut server, &[me, friend], &[(1, 0), (0, awake)]);
+        let came = server.mobs.family::<Phantom>();
+        assert!((1..=3).contains(&came.len()), "{}", came.len());
+        let at = came[0].core.body.position;
+        assert!((at.x - 8.5).abs() <= 10.0 && (at.z - 8.5).abs() <= 10.0, "only above the sleepless player: {at}");
+        assert!((220.0..=234.0).contains(&at.y), "{at}");
+        for phantom in came {
+            assert_eq!(phantom.core.body.position, at, "the group shares one spot");
+            assert_eq!(phantom.state.size, 0);
+            assert!(!phantom.core.persistent, "natural phantoms despawn");
+            let anchor = phantom.state.goals().and_then(|goals| goals.anchor);
+            assert_eq!(anchor, Some((at.x.floor() as i32, at.y as i32 + 5, at.z.floor() as i32)));
+        }
+        let Ok(paths) = DataPaths::discover() else { return };
+        let Ok(registries) = Registries::load(&paths) else { return };
+        let registries = Arc::new(registries);
+        let worldgen = Arc::new(WorldGen::for_dimension(Arc::new(TerrainGenerator::nether(registries.clone(), 0).unwrap()), "minecraft:the_nether").unwrap());
+        let states = Arc::new(BlockStates::new(registries.clone(), 0, 0, 256).unwrap());
+        let mut map = ChunkMap::with_worldgen(worldgen.clone(), 2, 4);
+        let mut nether = ServerSim::new(worldgen, states, "minecraft:the_nether");
+        nether.load_chunk(&map.load_now(ChunkPos::new(0, 0)));
+        nether.set_players(&[[8.5, 100.0, 8.5]], 2);
+        assert!(nether.custom_spawners.phantoms.is_none());
+        for _ in 0..100 {
+            nether.tick_phantom_spawner(&[candidate(0, [8.5, 100.0, 8.5])], &[(0, awake)]);
+        }
+        assert!(nether.mobs.family::<Phantom>().is_empty(), "never in the Nether");
     }
 
     #[test]

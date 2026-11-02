@@ -15,6 +15,7 @@ Files under `third_party/minecraftoss` this track patched or added.
 - Added (phantoms-live 1): `entities/src/world/families/night/phantoms.rs`, `entities/src/world/families/night/phantoms/goals.rs`, `entities/src/world/families/night/phantoms/tests.rs`.
 - Patched (phantoms-live 1): `entities/src/world/families/night.rs` (`pub mod phantoms;` and the `family_group!` entry), `world/src/natural_spawner/families/night.rs` (the phantom row, its rule, its finalize and its test).
 - Changed again (phantoms-live 2): `entities/src/world/families/night/phantoms.rs`, `night/phantoms/goals.rs` and `night/phantoms/tests.rs` (burning, the cat search and their tests).
+- Changed again (phantoms-spawner 1): `world/src/natural_spawner/families/night.rs` (`CreatureSpawns::spawn_phantoms` and its test; the test level gains darkness, sky light, sea level and a block layer up high). Patched: `world/src/level/spawning.rs` (`Level::spawn_phantoms` after `spawn_patrol`).
 
 ## Hooks
 
@@ -27,6 +28,7 @@ Root hooks this track added (M30, "M3's root hooks").
 `minecraft_net::PROTOCOL` is not bumped here. `Output.players_lightning` is the server thread's output to the host, not a network message; `Hazard` and `DamageCause` are not on the wire. `ThunderOutcome` (lightning-turns) stays on the host; the charged creeper and the mooshroom's colour reach friends through the look tag (`powered`, `Type`), which is not a message change.
 
 - lightning-drawn 1 ("Minecraft lightning bolts flash and thunder for every player", after 82a5cd0b): `EntitySnapshot` gains `lightning: Vec<minecraft_terrain::lightning::BoltView>` after `crystals`, with `BoltView { id: i32, position: DVec3, seed: i64, life: i32 }`. It rides in `StateFrame.entities`, so old and new builds cannot read each other's entity snapshots.
+- phantoms-spawner 1: no message change. `TickInput.rest` is the host's own input to its server thread; friends' clocks stay on the host with their saved player.
 
 ## Cow-store one-liners outside D0-3's list
 
@@ -45,6 +47,7 @@ For the orchestrator to copy at the merge of segment m3a:
 - Under Mobs in `docs/MINECRAFT-SURVIVAL.md`, after the phantom line (phantoms-live 2): "Phantoms catch fire under the open day sky (not in rain or water), with or without AI. While a phantom dives it looks for cats every second: every cat within 16 blocks of it hisses, and the dive breaks off as if it had bitten. Ocelots do not count."
 - Under Mobs in `docs/MINECRAFT-SURVIVAL.md`, after the burning line (phantoms-drawn 1): "Phantoms are drawn as vanilla draws them: the eight-part model with two glowing green eyes that stay lit in the dark, wings that beat 16 degrees up and down with the tail curling at each beat, a model 15 percent larger for each size, and the body pitched with its climbs and dives. They also show in monster spawner cages, wingtips poking out. Friends see the same."
 - Under Mobs in `docs/MINECRAFT-SURVIVAL.md`, after the model line (phantoms-drawn 2): "Phantoms beat their wings with a soft flap sound every 2.4 seconds and trail small dark grey specks from both wingtips, for the host and every friend."
+- Under Mobs in `docs/MINECRAFT-SURVIVAL.md`, after the flap line (phantoms-spawner 1): "Phantoms come for players who have not slept: in the Overworld, while the `spawn_phantoms` rule and monster spawning are on, the game looks once when the world loads and then every one to two minutes. At night (sky darkness 5 or more) each player standing in the open sky at or above sea level, not spectating, may draw them: a roll against the local difficulty (about half the looks on Normal, three in four on Hard, none on Peaceful), then a roll against the ticks since that player last slept or died (never within 72000 ticks, three days; half the time after six days, and more the longer they stay awake). Then 1 to difficulty + 1 phantoms appear together 20 to 34 blocks above, up to 10 blocks to each side, in air. Each player's clock is their own `minecraft:time_since_rest` stat, friends' too."
 
 ## Left for later
 
@@ -455,6 +458,47 @@ After 240d4d55 ("Minecraft phantoms are drawn like vanilla").
 
 ```
 IW4L_MINECRAFT_KIT=minecraft:phantom_spawn_egg*8,minecraft:cooked_beef*16
+```
+
+### Group phantoms-spawner
+
+#### 1. Phantoms come for Minecraft players who have not slept in three days
+
+After 6b7491c7 ("Minecraft phantoms flap and trail specks from their wings like vanilla").
+
+- **javap (26.3 `client.jar`):**
+  - `PhantomSpawner.tick(level, spawnEnemies)`: returns without `spawnEnemies` or the `spawn_phantoms` rule; `--nextTick > 0` returns, else `nextTick += (60 + nextInt(60)) * 20` from the level random; returns when `getSkyDarken() < 5` and the dimension has sky light. Then for each player of `level.players()`: spectators are skipped; with sky light the block position needs `y >= getSeaLevel()` and `canSeeSky`; `getCurrentDifficultyAt(pos).isHarderThan(nextFloat * 3)`; `nextInt(Mth.clamp(TIME_SINCE_REST, 1, MAX_VALUE)) >= 72000`; the spot is `pos.above(20 + nextInt(15)).east(-10 + nextInt(21)).south(-10 + nextInt(21))` (drawn in that order) and must pass `NaturalSpawner.isValidEmptySpawnBlock(.., PHANTOM)`; then `1 + nextInt(difficulty.getDifficulty().getId() + 1)` phantoms, each `EntityType.create(NATURAL)`, `snapTo(spot, 0, 0)` (the spot's bottom centre), `finalizeSpawn(level, difficulty, NATURAL, groupData)` and `addFreshEntityWithPassengers`.
+  - `BlockAndLightGetter.canSeeSky(pos)`: `getBrightness(SKY, pos) >= 15`. `DifficultyInstance.isHarderThan(f)`: `effectiveDifficulty > f`.
+  - `ServerChunkCache.tickChunks` ticks the custom spawners only while mobs spawn, with `spawnEnemies` from `ServerLevel.isSpawningMonsters()` (the `spawn_mobs` and `spawn_monsters` rules; no difficulty check). `MinecraftServer.createLevels` gives only the Overworld its custom spawners, in the order `PhantomSpawner`, `PatrolSpawner`, `CatSpawner`, `VillageSiege`, `WanderingTraderSpawner`.
+- **Changed:**
+  - World crate (`natural_spawner/families/night.rs`): `CreatureSpawns::spawn_phantoms(level, context, players, sky_light)` runs the loop above for `(block, spectator, time_since_rest)` players; each phantom is `summon(.., "minecraft:phantom", spot centre, None, 0.0)`, which finalizes through the row (anchor five up, size 0, `Mob.finalizeSpawn`'s follow-range bonus). `level/spawning.rs`: `Level::spawn_phantoms(players)` after `spawn_patrol`, built the same way, passing the dimension's `has_sky_light`.
+  - Terrain: `custom_spawners.rs` gains `PHANTOM_DELAY` and `PHANTOM_DELAY_SPREAD` (60 and 60 seconds), `PhantomSpawner { next_tick }` with `due(random)` after `PatrolSpawner`, and the fields `phantoms` (Overworld only) and `spawn_phantoms` after the patrol's. `server.rs`: `ServerSim::tick_phantom_spawner(players, rest)` after `tick_patrol_spawner` (gates `spawn_mobs`, `spawn_monsters` and the rule, `due` on the level random, the players' feet blocks with their clocks, `add_saved_entity` for each phantom); its call in `run_tick` right before the patrol's; the rule line after `spawn_patrols`; `TickInput.rest: Vec<(u64, i32)>` after `mob_vitals`, dropped in `remove_player`, and `rest: Vec::new()` in the test inputs `idle_input` and `eye_of_ender.rs`'s `tick_input` (`two_players` and the others build on `idle_input`).
+  - Survival: `PlayerQueue.time_since_rest` after `uuid`; `PlayerQueues::rest(ids)` (each player's clock, by entity id); `Entities::set_time_since_rest(uuid, ticks)` after `set_players`, matching the queue by `opener_key`; the `rest:` line after `mob_vitals` in `Entities::tick`'s `TickInput`; and in `sleep::tick`, after `events.written.extend(written)`, every awake or sleeping player of that level hands their clock to that level's `Entities`.
+- **Tests added:**
+  - Terrain `custom_spawners::tests::the_phantom_spawner_looks_at_once_then_every_one_to_two_minutes`: due on the first tick; the first wait 1199 to 2379 ticks, then 1200 to 2380 in steps of 20, some under 1400 and some over 2200 in 200 looks; only the Overworld has one.
+  - World `natural_spawner::families::night::tests::phantoms_come_for_the_sleepless_at_night_under_open_sky` (400 looks per case): none by day or at darkness 4; about half the looks on Normal (140 to 240) and most on Hard (240 to 320); groups of 1 to 3 on Normal and 1 to 4 on Hard, all seen, each group at one spot centre 20 to 34 up and within 10, finalized with the anchor five above the spot, size 0 and their own UUIDs; none at exactly 72000 ticks awake, rested, spectating, on Peaceful, with sky light 14, below sea level, or with stone or water at the spots; with a rested and a sleepless player only the sleepless one draws them.
+  - Terrain `server::tests::a_sleepless_player_draws_phantoms_and_a_rested_one_does_not`: none by day, at 72000 ticks, for a rested player or one without a clock, for a spectator, with the rule off, or on Peaceful; then 1 to 3 phantoms around the sleepless player only, 220 to 234 up, sharing their spot, size 0, not persistent, anchored five above; never in the Nether (no spawner).
+  - Survival `entities::tests::each_player_time_since_rest_reaches_the_server_tick`: two `sleep::tick`s hand 102 and 1000002 to the host's and friend's queues by UUID, the Nether player's stays 0; the friend's death resets only theirs; an unknown UUID makes no queue.
+- **Decisions:**
+  - The phantom spawner ticks right before the patrol spawner in `run_tick` (the brief said after it), so the level random is drawn in vanilla's spawner order (phantoms, patrols, cats, traders). The method sits after `tick_patrol_spawner` as the brief says.
+  - `CreatureSpawns::spawn_phantoms` takes the dimension's sky light flag, as vanilla skips the darkness and open-sky checks without it. Only the Overworld has the spawner, so it is always true in play.
+  - Players are rolled in `TickInput.mob_players` order (the host, then friends), the fork's stand-in for `level.players()`. Dead players are rolled too, as vanilla's list keeps them, and draw nothing because death resets their clock.
+  - A player with no entry in `TickInput.rest` counts as 0 ticks awake, as an unset vanilla stat reads 0. A friend who just joined has no queue for one tick and so draws nothing that tick.
+  - The group's difficulty for the count is the player's, as in vanilla; `summon` works out the spot's own difficulty for the finalize, which the phantom's finalize does not read.
+  - The countdown is not saved, as vanilla's `nextTick` is not: after a load the spawner looks on the first tick.
+  - On Peaceful the countdown still runs (vanilla's `spawnEnemies` has no difficulty check), but the effective difficulty is 0, so no roll passes.
+- **Runs:** `test -p minecraftoss-world -p minecraft_terrain -p minecraft_survival --locked --lib --no-fail-fast` (143, 1762 with 3 ignored, and 837 passed), `check -p launcher --locked` (green; only the old render_frame and skate warnings).
+- **Test steps:** release build, survival, Normal, flat open ground above y 63 (plains), no roof nearby, the kit below, the host is op. On Normal each look of the spawner brings phantoms about half the time, and the spawner looks every one to two minutes, so allow up to about 5 minutes per step. Name each screenshot by its label.
+  1. Save and quit. In the world folder, open `players\stats\<your UUID>.json` in Notepad (in single player it is the only file there). Find `"minecraft:time_since_rest":` and change the number after it to `1000000`, then save. Load the world, `/weather clear`, `/time set midnight`, and stand still in the open: 1 to 3 phantoms appear together high above you (20 to 34 blocks up), screech and dive at you. **m3p-insomnia-1**
+  2. `/time set noon` and wait until every phantom has burned, then `/time set midnight`. Build a 5 x 5 cobblestone roof 3 blocks high on four pillars and stand under it for 5 minutes: no phantom comes. Step out into the open: they come again within about 5 minutes. **m3p-insomnia-2**
+  3. Burn them by day again, `/gamerule spawn_phantoms false`, `/time set midnight` and stand in the open for 5 minutes: none come. `/gamerule spawn_phantoms true`. **m3p-insomnia-3**
+  4. `/difficulty peaceful` with phantoms around: they vanish and none come for 5 minutes. `/difficulty normal`.
+  5. Place the bed and sleep in it at night until morning. The next night, stand in the open for 5 minutes: no phantom comes (the clock started again at 0; it takes three days awake). **m3p-insomnia-4**
+  6. Friend, two windows (`scripts\mp-local.ps1`), after the friend has joined the host's world once: with both games closed, set the number in the friend's stats file (the other file in the host's `players\stats`) to `1000000` and in yours to `0`. Load, `/time set midnight`; the friend stands in the open 40 blocks away from the host. Phantoms appear above the friend, not above the host, and dive at the friend; both windows see them. **m3p-insomnia-friend**
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:red_bed,minecraft:cobblestone*64,minecraft:diamond_sword+looting=3,minecraft:shield,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:golden_apple*8,minecraft:cooked_beef*32,minecraft:water_bucket
 ```
 
 ## Combined kit
