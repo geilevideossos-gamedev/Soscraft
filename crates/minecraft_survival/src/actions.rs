@@ -1367,6 +1367,32 @@ pub fn act(
                     }
                     None => HandUse::Failed,
                 }
+            } else if held
+                .as_ref()
+                .is_some_and(|stack| stack.id == minecraft_terrain::maps::EMPTY_MAP)
+            {
+                let mut maps = globals
+                    .maps
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let here = (feet, dimension.dimension_type());
+                let infinite = !game_mode.consumes_items();
+                if let Some(rest) = minecraft_terrain::maps::use_empty_map(
+                    &mut maps, inventory, slot, here, infinite,
+                ) {
+                    entities
+                        .view
+                        .world_items
+                        .toss(rest, eye_block, mc_yaw, pitch);
+                }
+                effects.push(sound(
+                    minecraft_terrain::maps::TAKE_RESULT_SOUND,
+                    Some(feet),
+                    1.0,
+                    1.0,
+                ));
+                hand.swing = Some(0.0);
+                HandUse::Consumed
             } else if let Some((stack, kind)) = held
                 .as_ref()
                 .and_then(|s| minecraft_terrain::thrown::Throwable::of(&s.id).map(|k| (s, k)))
@@ -3116,5 +3142,52 @@ pub(crate) mod tests {
         }
         let again = use_once(&mut level, &globals, &mut player, press());
         assert!(again.open_book.is_some(), "a new press opens it again");
+    }
+
+    #[test]
+    fn right_clicking_an_empty_map_makes_a_map_of_where_the_player_stands() {
+        use minecraft_terrain::maps::{
+            CarriedMap, EMPTY_MAP, FILLED_MAP, MapData, TAKE_RESULT_SOUND,
+        };
+        let Some((mut level, globals)) = level_and_globals() else {
+            return;
+        };
+        let mut player = holding(EMPTY_MAP, 3);
+        let acted = use_once(&mut level, &globals, &mut player, press());
+        assert_eq!(count(&player), Some(2), "one empty map is used");
+        let made: Vec<_> = player
+            .inventory
+            .slots
+            .iter()
+            .flatten()
+            .filter(|stack| stack.id == FILLED_MAP)
+            .filter_map(CarriedMap::of)
+            .map(|map| map.id)
+            .collect();
+        assert_eq!(made, [0], "a filled map with the first map id");
+        let fresh = MapData::create_fresh(4.0, 4.0, 0, "minecraft:overworld", true, false);
+        assert_eq!(globals.maps.lock().unwrap().get(0), Some(&fresh));
+        assert_eq!((fresh.x_center, fresh.z_center), (0, 0));
+        assert!(
+            acted
+                .effects
+                .contains(&sound(TAKE_RESULT_SOUND, Some(FEET), 1.0, 1.0)),
+            "{:?}",
+            acted.effects
+        );
+        assert_eq!(player.hand.swing, Some(0.0));
+        player.inventory.slots[0] = Some(ItemStack::new(EMPTY_MAP, 1));
+        use_once(&mut level, &globals, &mut player, press());
+        let held = player.inventory.slots[0].as_ref().expect("the map in hand");
+        assert_eq!(
+            CarriedMap::of(held).map(|map| (map.item, map.id)),
+            Some((FILLED_MAP.to_owned(), 1)),
+            "the last empty map turns into the map in the hand"
+        );
+        player.mode = PlayerMode::new(GameMode::Creative);
+        player.inventory.slots[0] = Some(ItemStack::new(EMPTY_MAP, 1));
+        use_once(&mut level, &globals, &mut player, press());
+        assert_eq!(count(&player), Some(1), "creative keeps its empty map");
+        assert_eq!(globals.maps.lock().unwrap().last_id(), 2);
     }
 }

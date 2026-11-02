@@ -1323,3 +1323,38 @@ After ef4fae51.
 ```
 IW4L_MINECRAFT_KIT=minecraft:potion@long_water_breathing,minecraft:potion@long_water_breathing,minecraft:potion@long_water_breathing,minecraft:potion@night_vision,minecraft:potion@night_vision,minecraft:oak_boat,minecraft:iron_shovel,minecraft:diamond_shovel,minecraft:diamond_pickaxe,minecraft:compass,minecraft:torch*64,minecraft:cobblestone*64,minecraft:cooked_beef*32,minecraft:turtle_helmet,minecraft:diamond_sword,minecraft:shield,minecraft:spyglass
 ```
+
+### 2. Minecraft empty maps turn into maps of where you stand
+
+After bde09f23.
+
+- **Vanilla (26.3, checked with javap):**
+  - `EmptyMapItem.use` (an item use, so after any block the player clicks has taken the click): `stack.consume(1, player)` (nothing is used up with infinite materials, that is in creative), `ITEM_USED` is awarded, `level.playSound(null, player, UI_CARTOGRAPHY_TABLE_TAKE_RESULT, player.getSoundSource(), 1, 1)` plays the sound at the player for everyone, and `MapItem.create(level, player.getBlockX(), player.getBlockZ(), 0, true, false)` makes the map. When the stack is now empty the map becomes the held item (`heldItemTransformedTo`); otherwise `Inventory.add` takes it, and what does not fit is dropped like a Q drop (`drop(stack, false)`). The result is `SUCCESS`, so the hand swings.
+  - `MapItem.create`: a new `filled_map` stack; `createFresh(x, z, scale, tracking, unlimited, dimension)` of the player's level, then `getFreeMapId()` and `setMapData`, and the stack gets `minecraft:map_id`. Holding the right button repeats the use, so a stack of empty maps turns into maps every four ticks.
+  - The sound event is `ui.cartography_table.take_result` (`SoundEvents.<clinit>`), in the 26.3 `sounds.json`.
+- **Changed:**
+  - `minecraft_terrain/src/maps.rs`: `EMPTY_MAP`, `FILLED_MAP` and `TAKE_RESULT_SOUND`; `MapStore::create` ports `MapItem.create` (fresh data on the vanilla grid, the next free id, saved with the index); `use_empty_map(store, inventory, slot, (feet, dimension), infinite)` ports `EmptyMapItem.use` on the inventory and returns the map that did not fit.
+  - `minecraft_survival/src/actions.rs` `act`: right-clicking with an empty map, after the spyglass, locks `globals.maps`, uses the map at the player's feet in their level, drops a map that did not fit in the look direction, plays the sound at the feet and swings the hand. It runs on the host for the host and for friends.
+  - `docs/MINECRAFT-SURVIVAL.md`: the maps paragraph.
+- **Tests:**
+  - `maps::tests::an_empty_map_turns_into_a_map_of_where_its_user_stands`: three empty maps at (1000.7, -300.2) leave two and add a `filled_map` with id 0 in the next free slot, whose data is `create_fresh(1000, -301, 0)` centred on (1024, -256) with tracking on and unlimited tracking off, written with `last_id` 0; the last empty map is replaced in the hand by map 1 of the Nether; creative uses nothing up; a full inventory hands the new map back to be dropped; any other item makes no map.
+  - `actions::tests::right_clicking_an_empty_map_makes_a_map_of_where_the_player_stands` (26.3 data): one empty map fewer, the filled map with id 0, its data centred by `create_fresh` at the player's block, the take sound at the feet and the swing; the last empty map turns into the map in the hand; creative keeps its empty map.
+  - Run on this commit: `test -p minecraft_terrain --lib maps::` 26 passed, `test -p minecraft_survival` 809 passed; `check -p launcher` clean.
+- **Decisions:**
+  - The fork keeps no statistics, so `ITEM_USED` is not counted.
+  - The map goes into the inventory with the same `add_item` the bottles use (the used slot first for stacking, then the first free slot of 0-35), as vanilla's `Inventory.add`; a new map never stacks with another, since its id differs.
+  - The sound plays at the player's feet for everyone, as `playSound(null, player, …)`; the fork's heard sounds have no sound source category.
+- **Protocol:** no message change.
+- **Test steps** (survival, Normal, by day; steps MX-1 to MX-4 and MX-F1 of the previous commit come first):
+  1. **MX-5. A new map.** Move the 8 empty maps to the hotbar, select them and right-click the air: one empty map is used (7 left), the cartography table's take sound plays and a Map appears in the first free slot, the hotbar first (**MX-5_new_map**).
+  2. **MX-6. It fills in.** Select the new Map with nothing in the offhand: your arrow is in it and the land around you fills in, a few columns a moment, out to the map's edges; walk 30 blocks and the arrow moves while new land fills in (**MX-6_filled**).
+  3. **MX-7. The last one.** Select the empty maps again and press Q until one is left, then right-click: the new map replaces it in the hand straight away.
+  4. **MX-8. Creative.** Run `/gamemode creative`, put an empty map in the hand and right-click: the empty map stays and a new map appears each time. Run `/gamemode survival`.
+  5. **MX-9. Nether.** Run `/execute in minecraft:the_nether run tp @s 0 128 0` (the Nether roof), right-click an empty map and hold the new map: it fills in with vanilla's brown and grey speckle in a smaller circle, and your arrow spins (**MX-9_nether**).
+  6. **MX-10. Saved.** Save and quit, load the world again and hold each new map: they keep their pictures, and the world's `data/minecraft/maps/` folder holds one numbered file per map.
+  7. **MX-F2. Friend.** In the friend's window, put an empty map in the hand and right-click: the friend gets a map, the host hears the take sound from the friend, and the friend's map fills in as they walk.
+- **Kit** (18 backpack slots, the `maps-view` kit with 8 empty maps):
+
+```
+IW4L_MINECRAFT_KIT=minecraft:potion@long_water_breathing,minecraft:potion@long_water_breathing,minecraft:potion@long_water_breathing,minecraft:potion@night_vision,minecraft:potion@night_vision,minecraft:oak_boat,minecraft:iron_shovel,minecraft:diamond_shovel,minecraft:diamond_pickaxe,minecraft:map*8,minecraft:compass,minecraft:torch*64,minecraft:cobblestone*64,minecraft:cooked_beef*32,minecraft:turtle_helmet,minecraft:diamond_sword,minecraft:shield,minecraft:spyglass
+```

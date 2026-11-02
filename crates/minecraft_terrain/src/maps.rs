@@ -36,6 +36,9 @@ pub const PLAYER_OFF_LIMITS: &str = "minecraft:player_off_limits";
 pub const MAP_ID: &str = "minecraft:map_id";
 pub const MAP_DECORATIONS: &str = "minecraft:map_decorations";
 pub const MAP_INVISIBILITY_EQUIPMENT: &str = "minecraft:map_invisibility_equipment";
+pub const EMPTY_MAP: &str = "minecraft:map";
+pub const FILLED_MAP: &str = "minecraft:filled_map";
+pub const TAKE_RESULT_SOUND: &str = "minecraft:ui.cartography_table.take_result";
 pub const MAP_ITEMS: [&str; 17] = [
     "minecraft:filled_map",
     "minecraft:ocean_monument_map",
@@ -596,6 +599,30 @@ pub fn wears_map_invisibility(inventory: &Inventory) -> bool {
         })
 }
 
+pub fn use_empty_map(
+    store: &mut MapStore,
+    inventory: &mut Inventory,
+    slot: usize,
+    (feet, dimension): ([f64; 3], &str),
+    infinite: bool,
+) -> Option<ItemStack> {
+    let held = inventory.slots.get_mut(slot)?;
+    let empty = held.as_mut().filter(|stack| stack.id == EMPTY_MAP)?;
+    if !infinite {
+        empty.count -= 1;
+        if empty.count == 0 {
+            *held = None;
+        }
+    }
+    let at = (feet[0].floor() as i32, feet[2].floor() as i32);
+    let made = store.create(at, 0, dimension, true, false);
+    if held.is_none() {
+        *held = Some(made);
+        return None;
+    }
+    inventory.add_item(made, slot)
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Mark {
     pub kind: String,
@@ -1067,6 +1094,31 @@ impl MapStore {
         }
         self.maps.insert(id, data);
         self.dirty.insert(id);
+    }
+
+    pub fn create(
+        &mut self,
+        (x, z): (i32, i32),
+        scale: u8,
+        dimension: &str,
+        tracking: bool,
+        unlimited: bool,
+    ) -> ItemStack {
+        let data = MapData::create_fresh(
+            f64::from(x),
+            f64::from(z),
+            scale,
+            dimension,
+            tracking,
+            unlimited,
+        );
+        let id = self.free_id();
+        self.insert(id, data);
+        let mut components = serde_json::Map::new();
+        components.insert(MAP_ID.to_owned(), Value::from(id));
+        let mut stack = ItemStack::new(FILLED_MAP, 1);
+        stack.components = Some(Value::Object(components));
+        stack
     }
 
     pub fn take_writes(&mut self) -> MapWrites {
@@ -2983,5 +3035,80 @@ mod tests {
         assert_eq!(at(6), Some(packed(GRASS, HIGH)), "seen through the glass");
         assert_eq!(at(7), Some(packed(COLOR_STONE, NORMAL)), "bedrock");
         assert_eq!(at(16), None, "the next chunk is not loaded");
+    }
+
+    #[test]
+    fn an_empty_map_turns_into_a_map_of_where_its_user_stands() {
+        let mut store = MapStore::default();
+        let mut inventory = Inventory::default();
+        inventory.slots[0] = Some(ItemStack::new(EMPTY_MAP, 3));
+        let here = ([1000.7, 64.0, -300.2], "minecraft:overworld");
+        let dropped = use_empty_map(&mut store, &mut inventory, 0, here, false);
+        assert_eq!(dropped, None);
+        let count = |inventory: &Inventory, slot: usize| {
+            inventory.slots[slot]
+                .as_ref()
+                .map(|stack| (stack.id.clone(), stack.count))
+        };
+        assert_eq!(
+            count(&inventory, 0),
+            Some((EMPTY_MAP.to_owned(), 2)),
+            "one fewer empty map"
+        );
+        let made = inventory.slots[1].clone().expect("the new map");
+        let read = CarriedMap::of(&made).expect("a map item with an id");
+        assert_eq!((made.id.as_str(), made.count, read.id), (FILLED_MAP, 1, 0));
+        let fresh = MapData::create_fresh(1000.0, -301.0, 0, "minecraft:overworld", true, false);
+        assert_eq!(store.get(0), Some(&fresh));
+        assert_eq!(
+            (fresh.x_center, fresh.z_center, fresh.scale),
+            (1024, -256, 0),
+            "centred on the grid around the block the user stands on"
+        );
+        assert!(fresh.tracking_position && !fresh.unlimited_tracking && !fresh.locked);
+        let writes = store.take_writes();
+        assert_eq!(
+            (
+                writes.maps.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+                writes.last_id
+            ),
+            (vec![0], Some(0))
+        );
+        inventory.slots[0] = Some(ItemStack::new(EMPTY_MAP, 1));
+        let nether = ([-5.5, 70.0, 3.0], "minecraft:the_nether");
+        assert_eq!(
+            use_empty_map(&mut store, &mut inventory, 0, nether, false),
+            None
+        );
+        let replaced = inventory.slots[0].clone().expect("the map in hand");
+        assert_eq!(
+            CarriedMap::of(&replaced).map(|map| map.id),
+            Some(1),
+            "the last empty map is replaced in the hand"
+        );
+        assert_eq!(store.get(1).unwrap().dimension, "minecraft:the_nether");
+        inventory.slots[0] = Some(ItemStack::new(EMPTY_MAP, 1));
+        use_empty_map(&mut store, &mut inventory, 0, here, true);
+        assert_eq!(
+            count(&inventory, 0),
+            Some((EMPTY_MAP.to_owned(), 1)),
+            "nothing is used up in creative"
+        );
+        assert_eq!(store.last_id(), 2);
+        for slot in 0..36 {
+            if slot != 0 {
+                inventory.slots[slot] = Some(ItemStack::new("minecraft:stone", 64));
+            }
+        }
+        inventory.slots[40] = Some(ItemStack::new("minecraft:stone", 64));
+        inventory.slots[0] = Some(ItemStack::new(EMPTY_MAP, 2));
+        let rest = use_empty_map(&mut store, &mut inventory, 0, here, false)
+            .expect("a full inventory drops the new map");
+        assert_eq!(CarriedMap::of(&rest).map(|map| map.id), Some(3));
+        assert_eq!(
+            use_empty_map(&mut store, &mut inventory, 1, here, false),
+            None
+        );
+        assert_eq!(store.last_id(), 3, "only an empty map makes a map");
     }
 }
