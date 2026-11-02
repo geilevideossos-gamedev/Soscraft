@@ -1,3 +1,4 @@
+use super::warden_render;
 use crate::client_mobs::ClientMobs;
 use crate::families::{FamilyDraw, FamilyShow, TerrainFamily};
 use crate::lighting::SkyLight;
@@ -12,14 +13,13 @@ use minecraftoss_entities::world::families::deep_dark::wardens::{self, Anger, Me
 use std::collections::BTreeMap;
 
 pub const TRACKING_RANGE: i32 = 16;
-pub const SHADOW_RADIUS: f32 = 0.9;
 pub const ANGER: &str = "anger";
 pub const SUSPECTS: &str = "suspects";
 pub const BRAIN: &str = "Brain";
 pub const MEMORIES: &str = "memories";
-const POSE: usize = 0;
-const POSE_AGE: usize = 1;
-const CLIENT_ANGER: usize = 2;
+const CLIENT_ANGER: usize = 0;
+const CLOCKS: usize = 1;
+const POSE_SHIFT: u32 = 8;
 
 type Flag = fn(&mut Memories) -> &mut Slot<()>;
 
@@ -124,8 +124,8 @@ fn brain_tag(memories: &Memories) -> Tag {
 impl TerrainFamily for Warden {
     const TRACKING_RANGE: i32 = TRACKING_RANGE;
     const VOLATILE: &'static [&'static str] = &[ANGER, crate::vibrations::LISTENER];
-    const TEXTURES: &'static [&'static str] = &[];
-    const SHADOW_RADIUS: f32 = SHADOW_RADIUS;
+    const TEXTURES: &'static [&'static str] = &warden_render::TEXTURES;
+    const SHADOW_RADIUS: f32 = warden_render::SHADOW_RADIUS;
 
     fn read(mob: &mut FamilyMob<Self>, tag: &Tag) {
         mob.state.body_rotation = BodyRotation::new(mob.core.yaw);
@@ -141,27 +141,42 @@ impl TerrainFamily for Warden {
     }
 
     fn show(mob: &FamilyMob<Self>) -> FamilyShow {
-        let mut show = FamilyShow::default();
-        show.values[POSE] = mob.state.pose.id();
-        show.values[POSE_AGE] = mob.state.pose_age;
+        let now = mob.core.tick_count;
+        let mut show = FamilyShow {
+            flags: (mob.state.pose.id() as u32) << POSE_SHIFT,
+            ..FamilyShow::default()
+        };
+        for (index, start) in mob.state.animations.starts().into_iter().enumerate() {
+            if let Some(start) = start {
+                show.flags |= 1 << index;
+                show.values[CLOCKS + index] = now - start;
+            }
+        }
         show.values[CLIENT_ANGER] = mob.state.client_anger;
         show
     }
 
     fn show_on(mob: &mut FamilyMob<Self>, show: &FamilyShow) {
-        wardens::set_pose(mob, Pose::of_id(show.values[POSE]));
-        mob.state.pose_age = show.values[POSE_AGE];
+        wardens::set_pose(mob, Pose::of_id((show.flags >> POSE_SHIFT) as i32));
+        let now = mob.core.tick_count;
+        let starts = std::array::from_fn(|index| {
+            (show.flags & (1 << index) != 0).then(|| now - show.values[CLOCKS + index])
+        });
+        mob.state.animations.set_starts(starts);
         mob.state.client_anger = show.values[CLIENT_ANGER];
     }
 
     fn draw(
-        _out: &mut FamilyDraw<'_>,
-        _mobs: &[FamilyMob<Self>],
-        _poses: &ClientMobs,
-        _atlas: &Atlas,
-        _light: &SkyLight,
-        _partial: f32,
+        out: &mut FamilyDraw<'_>,
+        mobs: &[FamilyMob<Self>],
+        poses: &ClientMobs,
+        atlas: &Atlas,
+        light: &SkyLight,
+        partial: f32,
     ) {
+        let shown = mobs.iter().filter(|mob| !mob.core.removed);
+        let clips = warden_render::Clips::shared();
+        warden_render::append_wardens(out, shown, poses, atlas, light, partial, &clips);
     }
 }
 
@@ -172,6 +187,7 @@ mod tests {
     use crate::server_mobs::{mob_tags, spawn_saved};
     use minecraftoss_entities::monster_ai::Target;
     use minecraftoss_entities::world::EntityWorld;
+    use minecraftoss_entities::world::families::deep_dark::wardens::Animations;
     use std::collections::HashMap;
 
     fn parse(text: &str) -> Tag {
@@ -284,15 +300,20 @@ mod tests {
         assert_eq!(shows(&host)[&id].family, Some(FamilyShow::default()));
         let mob = host.warden_mut(id).unwrap();
         wardens::emerge(mob);
-        mob.state.pose_age = 30;
+        mob.core.tick_count = 30;
         mob.state.client_anger = 85;
         let show = shows(&host)[&id].family.unwrap();
-        assert_eq!(show.values[..3], [Pose::Emerging.id(), 30, 85]);
+        assert_eq!(show.flags, 1 | (Pose::Emerging.id() as u32) << POSE_SHIFT);
+        assert_eq!(show.values[..2], [85, 30]);
         Warden::show_on(friend.warden_mut(id).unwrap(), &show);
         let mirror = warden(&friend, id);
+        let emerged = mirror.state.animations.emerge;
         assert_eq!(
-            (mirror.state.pose, mirror.state.pose_age),
-            (Pose::Emerging, 30)
+            (
+                mirror.state.pose,
+                emerged.map(|start| mirror.core.tick_count - start)
+            ),
+            (Pose::Emerging, Some(30))
         );
         assert_eq!(
             (mirror.core.body.height, mirror.state.client_anger),
@@ -304,5 +325,122 @@ mod tests {
             (mirror.state.pose, mirror.core.body.height),
             (Pose::Standing, 2.9)
         );
+        assert_eq!(mirror.state.animations, Animations::default());
+    }
+
+    fn clips() -> warden_render::Clips {
+        use crate::keyframes::{Channel, Definition, Interpolation, Keyframe, Target, degree_vec};
+        let mut clips = warden_render::Clips::default();
+        for (index, bone) in [(0, "right_arm"), (1, "body"), (4, "head"), (5, "left_arm")] {
+            let mut clip = Definition::new(4.0, false);
+            let turn = degree_vec(-30.0 - index as f32, 0.0, 10.0);
+            let keys = vec![
+                Keyframe::new(0.0, degree_vec(0.0, 0.0, 0.0), Interpolation::Linear),
+                Keyframe::new(4.0, turn, Interpolation::Linear),
+            ];
+            clip.add(bone, Channel::new(Target::Rotation, keys));
+            clips.clips[index] = Some(std::sync::Arc::new(clip));
+        }
+        clips
+    }
+
+    fn mesh_of(world: &EntityWorld, partial: f32) -> Vec<([f32; 3], [f32; 4])> {
+        use crate::mesh::ChunkMesh;
+        let mut poses = ClientMobs::default();
+        poses.spawn_missing(&crate::client_mobs::server_mobs(world));
+        let temp = crate::test_dir::tempdir().unwrap();
+        std::fs::write(
+            temp.path().join("pack.mcmeta"),
+            r#"{"pack":{"min_format":[97,1],"max_format":[97,1]}}"#,
+        )
+        .unwrap();
+        let packs = crate::pack::PackStack::open(vec![temp.path().into()]).unwrap();
+        let atlas = crate::mesh::make_atlas(&packs, Vec::new()).unwrap();
+        let light =
+            SkyLight::from_levels((-8, 56, -8), (17, 17, 17), vec![15; 4913], vec![0; 4913]);
+        let (mut models, mut culled, mut translucent) = (
+            ChunkMesh::default(),
+            ChunkMesh::default(),
+            ChunkMesh::default(),
+        );
+        let mut out = FamilyDraw {
+            models: &mut models,
+            culled: &mut culled,
+            translucent: &mut translucent,
+            held: &mut Vec::new(),
+        };
+        let wardens = world.family::<Warden>();
+        warden_render::append_wardens(&mut out, wardens, &poses, &atlas, &light, partial, &clips());
+        models
+            .vertices
+            .iter()
+            .chain(&translucent.vertices)
+            .map(|v| (v.position, v.color))
+            .collect()
+    }
+
+    #[test]
+    fn a_friend_sees_a_warden_roar_and_boom_at_the_same_ticks() {
+        let tag = parse("{id:\"minecraft:warden\",Pos:[0.5d,64.0d,0.5d],Rotation:[30.0f,0.0f]}");
+        let mut host = EntityWorld::default();
+        let id = spawn_saved(&mut host, &tag).unwrap();
+        let saved = saved_tag(&host, id, tag);
+        let mut friend = EntityWorld::default();
+        assert!(spawn_tracked(&mut friend, id, &saved));
+        friend.warden_mut(id).unwrap().core.tick_count = 7;
+        let steps: [(i32, fn(&mut FamilyMob<Warden>, i32)); 6] = [
+            (100, |mob, _| wardens::set_pose(mob, Pose::Sniffing)),
+            (110, |mob, _| wardens::set_pose(mob, Pose::Roaring)),
+            (130, |mob, now| mob.state.animations.tendril = Some(now)),
+            (194, |mob, _| wardens::set_pose(mob, Pose::Standing)),
+            (200, |mob, now| mob.state.animations.swing(now)),
+            (203, |mob, now| mob.state.animations.sonic_boom = Some(now)),
+        ];
+        for (now, step) in steps {
+            let mob = host.warden_mut(id).unwrap();
+            mob.core.tick_count = now;
+            step(mob, now);
+            mob.state.client_anger = now / 2;
+            for later in [now, now + 3] {
+                host.warden_mut(id).unwrap().core.tick_count = later;
+                let show = shows(&host)[&id].family.unwrap();
+                Warden::show_on(friend.warden_mut(id).unwrap(), &show);
+                let (seen, sent) = (warden(&friend, id), warden(&host, id));
+                let since = |mob: &FamilyMob<Warden>| {
+                    let at = mob.core.tick_count;
+                    mob.state
+                        .animations
+                        .starts()
+                        .map(|start| start.map(|start| at - start))
+                };
+                assert_eq!(since(seen), since(sent), "{later}");
+                assert_eq!(
+                    (seen.state.pose, seen.state.client_anger),
+                    (sent.state.pose, sent.state.client_anger)
+                );
+                for partial in [0.0, 0.6] {
+                    assert_eq!(
+                        mesh_of(&friend, partial),
+                        mesh_of(&host, partial),
+                        "{later}"
+                    );
+                }
+            }
+        }
+        let sent = warden(&host, id).state.animations;
+        assert_eq!(
+            (
+                sent.sniff,
+                sent.roar,
+                sent.attack,
+                sent.sonic_boom,
+                sent.tendril
+            ),
+            (Some(100), None, Some(200), Some(203), Some(130)),
+            "the swing ended the roar"
+        );
+        let host_mesh = mesh_of(&host, 0.0);
+        host.warden_mut(id).unwrap().state.animations.attack = None;
+        assert_ne!(mesh_of(&host, 0.0), host_mesh, "the swing's clip moves it");
     }
 }

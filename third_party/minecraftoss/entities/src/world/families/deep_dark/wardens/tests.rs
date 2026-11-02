@@ -847,3 +847,141 @@ fn a_warden_darkens_around_it_every_six_seconds() {
         "from where it stands; one without AI never darkens anything: {pulses:?}"
     );
 }
+
+#[test]
+fn the_heartbeat_quickens_with_anger() {
+    for (anger, delay) in [
+        (0, 40),
+        (2, 40),
+        (3, 39),
+        (40, 25),
+        (79, 11),
+        (80, 10),
+        (150, 10),
+        (-5, 40),
+    ] {
+        assert_eq!(heart_beat_delay(anger), delay, "{anger}");
+    }
+    assert!(!heart_beats(0, 0), "no beat before its first tick");
+    assert!(heart_beats(40, 0) && heart_beats(80, 0) && !heart_beats(41, 0));
+    assert!(heart_beats(25, 40) && heart_beats(10, 90) && !heart_beats(25, 0));
+    for (tick, anger, partial, glow) in [
+        (40, 0, 0.0, 1.0),
+        (40, 0, 0.5, 0.95),
+        (45, 0, 0.0, 0.5),
+        (49, 0, 1.0, 0.0),
+        (50, 0, 0.0, 0.0),
+        (79, 0, 0.5, 0.0),
+        (5, 0, 0.0, 0.0),
+        (85, 80, 0.0, 0.5),
+    ] {
+        let shown = heart_animation(tick, anger, partial);
+        assert!((shown - glow).abs() < 1.0e-6, "{tick} {anger}: {shown}");
+    }
+}
+
+#[test]
+fn its_tendrils_rise_with_a_click_and_fall_over_ten_ticks() {
+    assert_eq!(tendril_animation(None, 0.5), 0.0);
+    assert_eq!(tendril_animation(Some(0), 0.25), 0.25);
+    for (since, partial, shown) in [
+        (1, 0.0, 1.0),
+        (1, 0.5, 0.95),
+        (5, 0.0, 0.6),
+        (10, 0.0, 0.1),
+        (10, 1.0, 0.0),
+        (11, 0.0, 0.0),
+        (300, 0.5, 0.0),
+    ] {
+        let tendril = tendril_animation(Some(since), partial);
+        assert!((tendril - shown).abs() < 1.0e-6, "{since}: {tendril}");
+    }
+}
+
+#[test]
+fn a_warden_starts_its_animations_with_its_poses_swings_booms_and_clicks() {
+    let mut world = EntityWorld::default();
+    let rising = world.spawn_emerging_warden(at(0.5, 8.5), 0.0);
+    let emerging = warden_of(&world, rising).state.animations;
+    assert_eq!(
+        emerging,
+        Animations {
+            emerge: Some(0),
+            ..Animations::default()
+        }
+    );
+    let mut world = EntityWorld::default();
+    let id = calm_at(&mut world, at(0.5, 0.5));
+    let players = [player_at(1, at(8.5, 0.5))];
+    world
+        .warden_mut(id)
+        .unwrap()
+        .state
+        .anger
+        .increase(Target::Player(1), 0, 90);
+    let mut roared = None;
+    for _ in 0..120 {
+        world.tick_with_players(&mut Cave, &players);
+        let mob = warden_of(&world, id);
+        if mob.state.pose == Pose::Roaring {
+            roared = Some(mob.core.tick_count);
+            break;
+        }
+    }
+    let roared = roared.expect("it roars");
+    assert_eq!(warden_of(&world, id).state.animations.roar, Some(roared));
+    let mob = world.warden_mut(id).unwrap();
+    set_pose(mob, Pose::Roaring);
+    assert_eq!(
+        mob.state.animations.roar,
+        Some(roared),
+        "the same pose again starts nothing"
+    );
+    mob.core.tick_count += 3;
+    set_pose(mob, Pose::Sniffing);
+    assert_eq!(mob.state.animations.sniff, Some(roared + 3));
+    set_pose(mob, Pose::Standing);
+    assert_eq!(
+        mob.state.animations.sniff,
+        Some(roared + 3),
+        "an animation keeps running when its pose ends"
+    );
+    let mut world = EntityWorld::default();
+    let fighter = calm_at(&mut world, at(0.5, 0.5));
+    let close = [player_at(2, at(1.5, 0.5))];
+    world.warden_mut(fighter).unwrap().state.animations.roar = Some(1);
+    fighting(&mut world, fighter, Target::Player(2));
+    world.tick_with_players(&mut Cave, &close);
+    let mob = warden_of(&world, fighter);
+    assert_eq!(
+        (mob.state.animations.attack, mob.state.animations.roar),
+        (Some(mob.core.tick_count), None),
+        "a swing ends the roar's animation"
+    );
+    let swung = mob.state.animations;
+    let mut world = EntityWorld::default();
+    let boomer = calm_at(&mut world, at(0.5, 0.5));
+    let far = [player_at(3, at(9.5, 0.5))];
+    fighting(&mut world, boomer, Target::Player(3));
+    world
+        .warden_mut(boomer)
+        .unwrap()
+        .state
+        .memories_mut()
+        .sonic_boom_cooldown
+        .erase();
+    world.tick_with_players(&mut Boxed, &far);
+    let mob = warden_of(&world, boomer);
+    assert_eq!(mob.state.animations.sonic_boom, Some(mob.core.tick_count));
+    let mut world = EntityWorld::default();
+    let listener = calm_at(&mut world, at(0.5, 0.5));
+    world.warden_mut(listener).unwrap().core.tick_count = 17;
+    world.warden_hears(listener, (4, 64, 0), None, None, &[]);
+    assert_eq!(
+        warden_of(&world, listener).state.animations.tendril,
+        Some(17)
+    );
+    let mut copy = Animations::default();
+    copy.set_starts(swung.starts());
+    assert_eq!(copy, swung);
+}

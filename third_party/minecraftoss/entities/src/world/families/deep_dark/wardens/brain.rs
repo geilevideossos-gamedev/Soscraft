@@ -238,7 +238,7 @@ pub fn set_pose(mob: &mut FamilyMob<Warden>, pose: Pose) {
         return;
     }
     mob.state.pose = pose;
-    mob.state.pose_age = 0;
+    mob.state.animations.start_pose(pose, mob.core.tick_count);
     super::fit(&mut mob.core, pose);
 }
 

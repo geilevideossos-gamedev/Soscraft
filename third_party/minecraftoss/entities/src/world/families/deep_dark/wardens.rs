@@ -59,6 +59,10 @@ pub const PROJECTILE_ANGER_DISTANCE: f64 = 30.0;
 pub const ANGER_TICK_INTERVAL: i32 = 20;
 pub const BYPASSES_INVULNERABILITY: [&str; 2] =
     ["minecraft:out_of_world", "minecraft:generic_kill"];
+pub const TENDRIL_TICKS: i32 = 10;
+pub const HEART_TICKS: i32 = 10;
+pub const HEART_BEAT_DELAY: i32 = 40;
+pub const HEART_BEAT_QUICKENING: f32 = 30.0;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Pose {
@@ -96,10 +100,94 @@ impl Pose {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Animations {
+    pub emerge: Option<i32>,
+    pub dig: Option<i32>,
+    pub roar: Option<i32>,
+    pub sniff: Option<i32>,
+    pub attack: Option<i32>,
+    pub sonic_boom: Option<i32>,
+    pub tendril: Option<i32>,
+}
+
+impl Animations {
+    pub fn start_pose(&mut self, pose: Pose, tick: i32) {
+        match pose {
+            Pose::Emerging => self.emerge = Some(tick),
+            Pose::Digging => self.dig = Some(tick),
+            Pose::Roaring => self.roar = Some(tick),
+            Pose::Sniffing => self.sniff = Some(tick),
+            Pose::Standing => {}
+        }
+    }
+
+    pub fn swing(&mut self, tick: i32) {
+        self.roar = None;
+        self.attack = Some(tick);
+    }
+
+    pub fn starts(&self) -> [Option<i32>; 7] {
+        [
+            self.emerge,
+            self.dig,
+            self.roar,
+            self.sniff,
+            self.attack,
+            self.sonic_boom,
+            self.tendril,
+        ]
+    }
+
+    pub fn set_starts(&mut self, starts: [Option<i32>; 7]) {
+        [
+            self.emerge,
+            self.dig,
+            self.roar,
+            self.sniff,
+            self.attack,
+            self.sonic_boom,
+            self.tendril,
+        ] = starts;
+    }
+}
+
+pub fn heart_beat_delay(client_anger: i32) -> i32 {
+    let angry = AngerLevel::Angry.minimum() as f32;
+    let share = (client_anger as f32 / angry).clamp(0.0, 1.0);
+    HEART_BEAT_DELAY - (share * HEART_BEAT_QUICKENING).floor() as i32
+}
+
+pub fn heart_beats(tick: i32, client_anger: i32) -> bool {
+    tick > 0 && tick % heart_beat_delay(client_anger) == 0
+}
+
+fn countdown(ticks: i32, since: i32, partial: f32) -> f32 {
+    let old = (ticks - since).max(0) as f32;
+    let now = (ticks - since - 1).max(0) as f32;
+    (old + partial * (now - old)) / ticks as f32
+}
+
+pub fn heart_animation(tick: i32, client_anger: i32, partial: f32) -> f32 {
+    let since = tick.rem_euclid(heart_beat_delay(client_anger));
+    if tick - since < 1 {
+        return 0.0;
+    }
+    countdown(HEART_TICKS, since, partial)
+}
+
+pub fn tendril_animation(since: Option<i32>, partial: f32) -> f32 {
+    match since {
+        Some(0) => partial,
+        Some(since) if since > 0 => countdown(TENDRIL_TICKS, since - 1, partial),
+        _ => 0.0,
+    }
+}
+
 #[derive(Clone)]
 pub struct Warden {
     pub pose: Pose,
-    pub pose_age: i32,
+    pub animations: Animations,
     pub anger: Anger,
     pub client_anger: i32,
     pub brain: WardenBrain,
@@ -161,7 +249,7 @@ pub fn warden(position: DVec3) -> FamilyMob<Warden> {
         core,
         state: Warden {
             pose: Pose::Standing,
-            pose_age: 0,
+            animations: Animations::default(),
             anger: Anger::default(),
             client_anger: 0,
             brain: WardenBrain::default(),
@@ -457,6 +545,7 @@ fn strike(world: &mut EntityWorld, id: u64, target: Target) {
         return;
     };
     let (position, yaw) = (mob.core.body.position, mob.core.yaw);
+    mob.state.animations.swing(mob.core.tick_count);
     world.entity_events.push((id, ATTACK_EVENT));
     let kind = PlayerHitKind::Melee {
         attacker: position,
@@ -561,9 +650,6 @@ impl Family for Warden {
         let Some(base) = world.family_base_tick::<Self, W>(id, level, players) else {
             return;
         };
-        if let Some(mob) = world.family_mob_mut::<Self>(id) {
-            mob.state.pose_age += 1;
-        }
         if base.alive && !base.no_ai {
             let others = world.hoglin_living(id, players);
             let uuids = uuids(world, &others);
@@ -595,6 +681,9 @@ impl Family for Warden {
                 strike(world, id, target);
             }
             if ctx.charged {
+                if let Some(mob) = world.warden_mut(id) {
+                    mob.state.animations.sonic_boom = Some(mob.core.tick_count);
+                }
                 world.entity_events.push((id, SONIC_BOOM_EVENT));
             }
             if let Some((target, dir)) = ctx.boom {
@@ -761,6 +850,7 @@ impl EntityWorld {
         let position = mob.core.body.position;
         let voice = Voice::Event("entity.warden.tendril_clicks", TENDRIL_VOLUME, pitch);
         mob.core.voices.push((voice, position));
+        mob.state.animations.tendril = Some(mob.core.tick_count);
         let owner = owner.and_then(|owner| find(&others, owner)).copied();
         let source = source.filter(|&source| find(&others, source).is_some());
         let mut disturbance = at;
