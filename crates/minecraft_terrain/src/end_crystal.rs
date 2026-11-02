@@ -11,6 +11,8 @@ pub const EXPLOSION_POWER: f32 = 6.0;
 pub const TRACKING_RANGE: f64 = 256.0;
 pub const OBSIDIAN: &str = "minecraft:obsidian";
 pub const BEDROCK: &str = "minecraft:bedrock";
+pub const END_TARGET: u64 = u64::MAX / 8;
+const DRAGON_PART_TARGET: u64 = 1 << 60;
 const USE_REACH: f64 = 4.5;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -27,6 +29,7 @@ pub struct EndDamage {
     pub player: Option<u64>,
     pub kind: DamageKind,
     pub from: Option<DVec3>,
+    pub arrow: bool,
 }
 
 impl EndDamage {
@@ -36,6 +39,17 @@ impl EndDamage {
             player: Some(player),
             kind: DamageKind::Attack,
             from: None,
+            arrow: false,
+        }
+    }
+
+    pub fn thrown(amount: f32, player: Option<u64>, arrow: bool) -> Self {
+        Self {
+            amount,
+            player,
+            kind: DamageKind::Attack,
+            from: None,
+            arrow,
         }
     }
 
@@ -52,6 +66,7 @@ impl EndDamage {
             player,
             kind: DamageKind::Explosion,
             from: None,
+            arrow: false,
         }
     }
 }
@@ -60,6 +75,30 @@ impl EndDamage {
 pub enum EndTarget {
     Crystal(u64),
     DragonPart { id: u64, part: usize },
+}
+
+impl EndTarget {
+    pub fn target_id(self) -> u64 {
+        END_TARGET
+            + match self {
+                EndTarget::Crystal(id) => id,
+                EndTarget::DragonPart { id, part } => DRAGON_PART_TARGET | (id << 3) | part as u64,
+            }
+    }
+
+    pub fn of_target(target: u64) -> Option<Self> {
+        let offset = (END_TARGET..crate::item_frame::FRAME_TARGET)
+            .contains(&target)
+            .then(|| target - END_TARGET)?;
+        Some(if offset & DRAGON_PART_TARGET == 0 {
+            EndTarget::Crystal(offset)
+        } else {
+            EndTarget::DragonPart {
+                id: (offset & !DRAGON_PART_TARGET) >> 3,
+                part: (offset & 7) as usize,
+            }
+        })
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -190,6 +229,39 @@ pub fn on_ray<'a>(
                 .map(|distance| (crystal.id, distance))
         })
         .min_by(|a, b| a.1.total_cmp(&b.1))
+}
+
+pub fn end_targets(
+    crystals: &Crystals,
+    dragons: &crate::ender_dragon::Dragons,
+) -> Vec<minecraftoss_entities::potion::PotionTarget> {
+    let target =
+        |end: EndTarget, (min, max): (DVec3, DVec3)| minecraftoss_entities::potion::PotionTarget {
+            id: end.target_id(),
+            min,
+            max,
+            owner: false,
+        };
+    let crystals = crystals
+        .list
+        .iter()
+        .map(|crystal| target(EndTarget::Crystal(crystal.id), pick_box(crystal.position)));
+    let parts = dragons
+        .list
+        .iter()
+        .filter(|dragon| !dragon.removed)
+        .flat_map(|dragon| {
+            dragon.parts.iter().enumerate().map(move |(part, &feet)| {
+                target(
+                    EndTarget::DragonPart {
+                        id: dragon.id,
+                        part,
+                    },
+                    crate::ender_dragon::part_box(feet, part),
+                )
+            })
+        });
+    crystals.chain(parts).collect()
 }
 
 fn doubles(tag: &Tag, key: &str) -> Option<DVec3> {
@@ -640,6 +712,50 @@ mod tests {
         assert!((distance - 4.0).abs() < 1e-9);
         assert_eq!(on_ray(&views, eye, DVec3::Z, 3.0), None);
         assert_eq!(on_ray(&views, eye, -DVec3::Z, 6.0), None);
+    }
+
+    #[test]
+    fn thrown_things_aim_at_crystals_and_dragon_parts_by_their_own_ids() {
+        let mut crystals = Crystals::default();
+        let crystal = crystals.add(&crystal_tag([0.5, 64.0, 5.5])).unwrap();
+        let mut dragons = crate::ender_dragon::Dragons::default();
+        let mut random = LegacyRandom::new(3);
+        let tag =
+            crate::ender_dragon::Dragons::fresh_tag(DVec3::new(0.0, 100.0, 0.0), 0.0, &mut random);
+        let dragon = dragons.add(&tag).unwrap();
+        let feet = |part: usize| DVec3::new(part as f64 * 10.0, 100.0, 0.0);
+        dragons.list[0].parts = std::array::from_fn(feet);
+        let targets = end_targets(&crystals, &dragons);
+        assert_eq!(targets.len(), 9, "a crystal and the dragon's eight parts");
+        assert_eq!(
+            (targets[0].min, targets[0].max),
+            pick_box(DVec3::new(0.5, 64.0, 5.5))
+        );
+        assert_eq!(
+            EndTarget::of_target(targets[0].id),
+            Some(EndTarget::Crystal(crystal))
+        );
+        for (part, target) in targets[1..].iter().enumerate() {
+            assert_eq!(
+                EndTarget::of_target(target.id),
+                Some(EndTarget::DragonPart { id: dragon, part })
+            );
+            assert_eq!(
+                (target.min, target.max),
+                crate::ender_dragon::part_box(feet(part), part)
+            );
+        }
+        assert!(targets.iter().all(|target| !target.owner
+            && (END_TARGET..crate::item_frame::FRAME_TARGET).contains(&target.id)));
+        assert_eq!(EndTarget::of_target(crate::item_frame::FRAME_TARGET), None);
+        assert_eq!(EndTarget::of_target(crate::thrown::PLAYER_TARGET), None);
+        assert_eq!(EndTarget::of_target(crystal), None, "a mob's id");
+        dragons.list[0].removed = true;
+        assert_eq!(
+            end_targets(&crystals, &dragons).len(),
+            1,
+            "a dragon that has gone"
+        );
     }
 
     #[test]

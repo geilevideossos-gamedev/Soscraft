@@ -2045,6 +2045,7 @@ impl ServerSim {
             let mut targets = mob_targets.clone();
             targets.extend(crate::thrown::player_targets(players, trident.owner));
             targets.extend(self.frames.targets());
+            targets.extend(crate::end_crystal::end_targets(&self.crystals, &self.dragons));
             let owner = players.iter().find(|p| p.id == trident.owner).map(|p| {
                 let owner = crate::trident::TridentOwner::of(p);
                 crate::trident::TridentOwner { bounds: crate::thrown::skip_own_mount(&self.mobs, &mut targets, p.id, owner.bounds), ..owner }
@@ -2063,6 +2064,12 @@ impl ServerSim {
                     TridentEvent::Struck { target, .. } if crate::item_frame::struck_frame(target).is_some() => {
                         if let Some(frame) = crate::item_frame::struck_frame(target) {
                             self.frame_action(frame, crate::item_frame::FrameAction::Shot { infinite: false });
+                        }
+                    }
+                    TridentEvent::Struck { target, velocity } if crate::end_crystal::EndTarget::of_target(target).is_some() => {
+                        if let Some(end) = crate::end_crystal::EndTarget::of_target(target) {
+                            let player = (trident.mob_owner.is_none() && trident.owner != crate::trident::UNKNOWN_OWNER).then_some(trident.owner);
+                            self.thrown_end_hit(end, crate::end_crystal::EndDamage::thrown(crate::trident::DAMAGE, player, true), velocity);
                         }
                     }
                     TridentEvent::Struck { target, velocity } if trident.mob_owner.is_some() => self.mob_trident_struck(trident.mob_owner.unwrap_or(0), target, velocity),
@@ -2214,7 +2221,9 @@ impl ServerSim {
         }
         let mob_targets = crate::thrown::targets(&self.mobs);
         let frame_targets = self.frames.targets();
+        let end_targets = crate::end_crystal::end_targets(&self.crystals, &self.dragons);
         let mut frame_hits = Vec::new();
+        let mut end_hits = Vec::new();
         let mut block_hits = Vec::new();
         let mut struck = Vec::new();
         let mut shot_by_mobs = Vec::new();
@@ -2231,6 +2240,7 @@ impl ServerSim {
                 let mut targets = mob_targets.clone();
                 targets.extend(crate::thrown::player_targets(players, t.owner));
                 targets.extend(frame_targets.iter().cloned());
+                targets.extend(end_targets.iter().filter(|target| t.kind != Throwable::WindCharge || !matches!(crate::end_crystal::EndTarget::of_target(target.id), Some(crate::end_crystal::EndTarget::Crystal(_)))).cloned());
                 let mut owner_box = crate::thrown::owner_box(players, t.owner);
                 if let Some(shooter) = t.shooter {
                     owner_box = None;
@@ -2261,8 +2271,14 @@ impl ServerSim {
                 let hurts = matches!(t.kind, Throwable::Snowball | Throwable::Egg | Throwable::EnderPearl);
                 let frame = landed.mob.and_then(crate::item_frame::struck_frame);
                 frame_hits.extend(frame.filter(|_| hurts || t.kind == Throwable::WindCharge));
+                let end = landed.mob.and_then(crate::end_crystal::EndTarget::of_target);
+                if let Some(end) = end.filter(|_| hurts || t.kind == Throwable::WindCharge) {
+                    let amount = if t.kind == Throwable::WindCharge { crate::wind::DAMAGE } else { 0.0 };
+                    let player = (t.shooter.is_none() && t.owner != crate::thrown::MOB_THROWER).then_some(t.owner);
+                    end_hits.push((end, crate::end_crystal::EndDamage::thrown(amount, player, t.kind == Throwable::WindCharge), landed.velocity));
+                }
                 block_hits.extend(landed.block.zip(landed.face).map(|(block, face)| (block, face, landed.at)));
-                if let Some(mob) = landed.mob.filter(|&id| hurts && crate::thrown::struck_player(id).is_none() && frame.is_none()) {
+                if let Some(mob) = landed.mob.filter(|&id| hurts && crate::thrown::struck_player(id).is_none() && frame.is_none() && end.is_none()) {
                     match t.shooter {
                         Some(shooter) => shot_by_mobs.push((shooter, mob, landed.velocity)),
                         None if t.owner == crate::thrown::MOB_THROWER => {}
@@ -2290,7 +2306,7 @@ impl ServerSim {
                     }
                     Throwable::WindCharge => {
                         let center = if landed.mob.is_some() { t.position() } else { crate::wind::burst_point(landed.at, landed.face) };
-                        bursts.push((landed.mob.filter(|_| frame.is_none()), landed.velocity, t.owner, center));
+                        bursts.push((landed.mob.filter(|_| frame.is_none() && end.is_none()), landed.velocity, t.owner, center));
                     }
                     Throwable::SplashPotion | Throwable::LingeringPotion => {
                         let contents = t.contents();
@@ -2325,6 +2341,9 @@ impl ServerSim {
         }
         for id in frame_hits {
             self.frame_action(id, crate::item_frame::FrameAction::Shot { infinite: false });
+        }
+        for (end, damage, velocity) in end_hits {
+            self.thrown_end_hit(end, damage, velocity);
         }
         for (pos, face, at) in block_hits {
             self.projectile_hit_block(pos, face, at);
@@ -3071,6 +3090,14 @@ impl ServerSim {
                 self.end_events(events);
             }
         }
+    }
+
+    fn thrown_end_hit(&mut self, target: crate::end_crystal::EndTarget, damage: crate::end_crystal::EndDamage, velocity: glam::DVec3) {
+        let dragon = match target {
+            crate::end_crystal::EndTarget::DragonPart { id, .. } => self.dragons.list.iter().find(|dragon| dragon.id == id).map(|dragon| dragon.position),
+            crate::end_crystal::EndTarget::Crystal(_) => None,
+        };
+        self.end_hit(target, dragon.map_or(damage, |at| damage.from_position(at - velocity)));
     }
 
     fn crystal_destroyed(&mut self, destroyed: crate::end_crystal::Destroyed) {
@@ -7517,6 +7544,97 @@ mod tests {
         assert_eq!(e.illager.health, health, "a snowball does it no harm");
         assert!(e.illager.body.velocity.z > 0.3 && e.illager.body.velocity.x.abs() < 0.05, "pushed along the throw: {:?}", e.illager.body.velocity);
         assert_eq!(e.ai.state.hurt_by.map(|(by, _)| by), Some(minecraftoss_entities::monster_ai::Target::Player(0)));
+    }
+
+    fn crystal_and_dragon_ahead(server: &mut ServerSim) {
+        let tag = server.crystals.fresh_tag(glam::DVec3::new(8.5, 200.0, 9.5), false);
+        server.crystals.add(&tag).expect("a crystal");
+        let mut random = minecraftoss_player::rng::LegacyRandom::new(3);
+        let tag = crate::ender_dragon::Dragons::fresh_tag(glam::DVec3::new(8.5, 230.0, 14.5), 0.0, &mut random);
+        server.dragons.add(&tag).expect("a dragon");
+        server.dragons.list[0].set_phase(crate::ender_dragon::Phase::HoldingPattern);
+        server.dragons.list[0].parts = [glam::DVec3::new(8.5, 240.0, 14.5); 8];
+    }
+
+    fn thrown_ahead(item: &'static str) -> (crate::thrown::PlayerBody, crate::thrown::Throw<'static>) {
+        let throw = crate::thrown::Throw { owner: 0, item, components: None, eye: glam::DVec3::new(8.5, 201.62, 5.5), yaw: 0.0, pitch: 0.0, motion: glam::DVec3::ZERO, on_ground: true };
+        (player_at(0, [8.5, 200.0, 5.5], true), throw)
+    }
+
+    fn trident_ahead(server: &mut ServerSim, seed: u64) {
+        let (player, throw) = thrown_ahead(crate::trident::ITEM);
+        let mut random = minecraftoss_player::rng::LegacyRandom::new(seed);
+        let stack = minecraftoss_player::inventory::ItemStack::new(crate::trident::ITEM, 1);
+        server.throw_trident(crate::trident::ThrownTrident::launch(&throw, stack, false, &mut random));
+        for _ in 0..6 {
+            server.tick_tridents(&[player]);
+        }
+    }
+
+    #[test]
+    fn a_snowball_breaks_an_end_crystal_and_a_trident_hurts_the_dragon_head_by_eight() {
+        use crate::ender_dragon::{BODY, HEAD, MAX_HEALTH};
+        let Some((mut server, _)) = door_world() else { return };
+        crystal_and_dragon_ahead(&mut server);
+        let (player, throw) = thrown_ahead("minecraft:snowball");
+        let mut random = minecraftoss_player::rng::LegacyRandom::new(5);
+        server.throw(crate::thrown::Thrown::launch(&throw, &mut random).expect("a snowball"));
+        let mut hits = Vec::new();
+        for _ in 0..10 {
+            server.tick_thrown(&[player]);
+            hits.extend(server.take_thrown_hits());
+        }
+        assert_eq!(hits.len(), 1);
+        assert!(hits[0].at.z > 8.0 && hits[0].at.z < 8.6 && hits[0].at.y > 201.0, "it breaks on the crystal's front: {hits:?}");
+        assert!(server.crystals.list.is_empty(), "a snowball breaks a crystal");
+        assert_eq!(server.blasts, vec![(Blast { center: [8.5, 200.0, 9.5], power: 6.0, fire: false }, BlastSource::Player(0))], "and it blows up, blamed on the thrower");
+        server.dragons.list[0].parts[HEAD] = glam::DVec3::new(8.5, 200.9, 12.5);
+        trident_ahead(&mut server, 5);
+        let dragon = &server.dragons.list[0];
+        assert_eq!(dragon.health, MAX_HEALTH - 8.0, "a trident deals 8 to the head");
+        assert!(dragon.velocity.z > 0.39 && dragon.velocity.x.abs() < 0.05, "pushed along the throw: {:?}", dragon.velocity);
+        let dragon = &mut server.dragons.list[0];
+        dragon.damage_cooldown = 0;
+        dragon.parts[HEAD] = glam::DVec3::new(8.5, 240.0, 14.5);
+        dragon.parts[BODY] = glam::DVec3::new(8.5, 200.9, 12.5);
+        trident_ahead(&mut server, 6);
+        assert_eq!(server.dragons.list[0].health, MAX_HEALTH - 11.0, "and 3 to the body");
+    }
+
+    #[test]
+    fn a_potion_breaks_on_an_end_crystal_a_wind_charge_passes_it_and_a_perched_dragon_shrugs_off_a_trident() {
+        use crate::ender_dragon::{HEAD, MAX_HEALTH};
+        let Some((mut server, _)) = door_world() else { return };
+        crystal_and_dragon_ahead(&mut server);
+        server.dragons.list[0].parts[HEAD] = glam::DVec3::new(8.5, 200.9, 14.5);
+        let mut random = minecraftoss_player::rng::LegacyRandom::new(5);
+        let (player, throw) = thrown_ahead(crate::thrown::SPLASH_POTION);
+        server.throw(crate::thrown::Thrown::launch(&throw, &mut random).expect("a potion"));
+        for _ in 0..12 {
+            server.tick_thrown(&[player]);
+        }
+        let breaks = server.take_potion_breaks();
+        assert_eq!(breaks.len(), 1);
+        assert!(breaks[0].position.z > 7.9 && breaks[0].position.z < 8.6, "it breaks on the crystal's front: {breaks:?}");
+        assert_eq!(server.crystals.list.len(), 1, "a potion leaves the crystal");
+        assert!(server.blasts.is_empty());
+        let (player, throw) = thrown_ahead("minecraft:wind_charge");
+        server.throw(crate::thrown::Thrown::launch(&throw, &mut random).expect("a wind charge"));
+        for _ in 0..10 {
+            server.tick_thrown(&[player]);
+        }
+        assert_eq!(server.crystals.list.len(), 1, "a wind charge flies through a crystal");
+        assert!(server.thrown_views().is_empty(), "and bursts on the dragon's head");
+        assert_eq!(server.dragons.list[0].health, MAX_HEALTH - 1.0);
+        let dragon = &mut server.dragons.list[0];
+        dragon.damage_cooldown = 0;
+        dragon.velocity = glam::DVec3::ZERO;
+        dragon.set_phase(crate::ender_dragon::Phase::SittingScanning);
+        trident_ahead(&mut server, 5);
+        let trident = server.tridents.last().expect("the trident");
+        assert!(trident.dealt_damage && trident.position.z < 15.0, "it struck the head: {:?}", trident.position);
+        assert_eq!(server.dragons.list[0].health, MAX_HEALTH - 1.0, "a perched dragon shrugs off a trident");
+        assert_eq!(server.dragons.list[0].velocity, glam::DVec3::ZERO);
     }
 
     #[test]

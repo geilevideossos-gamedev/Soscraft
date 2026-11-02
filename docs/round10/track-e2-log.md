@@ -1358,3 +1358,56 @@ After bde09f23.
 ```
 IW4L_MINECRAFT_KIT=minecraft:potion@long_water_breathing,minecraft:potion@long_water_breathing,minecraft:potion@long_water_breathing,minecraft:potion@night_vision,minecraft:potion@night_vision,minecraft:oak_boat,minecraft:iron_shovel,minecraft:diamond_shovel,minecraft:diamond_pickaxe,minecraft:map*8,minecraft:compass,minecraft:torch*64,minecraft:cobblestone*64,minecraft:cooked_beef*32,minecraft:turtle_helmet,minecraft:diamond_sword,minecraft:shield,minecraft:spyglass
 ```
+
+## Group ti4-end-targets
+
+### 1. Minecraft snowballs and tridents hit end crystals and the ender dragon
+
+After 9c8c70c5.
+
+- **Vanilla (26.3, checked with javap):**
+  - `Projectile.canHitEntity` takes any entity whose `canBeHitByProjectile()` holds, that is `isAlive() && isPickable()`. `EndCrystal.isPickable` and `EnderDragonPart.isPickable` are true and `EnderDragon.isPickable` is false, so a thrown thing stops on a crystal or on one of the dragon's eight parts, never on the dragon's own box. A part is a plain `Entity`, alive until the dragon is removed.
+  - `AbstractWindCharge.canHitEntity` refuses other wind charges and `END_CRYSTAL`, so a wind charge flies through crystals.
+  - `Snowball.onHitEntity` hurts with `thrown(this, owner)` for 0 (3 only on a blaze); `ThrownEgg` and `ThrownEnderpearl` for 0; `ThrownTrident` 8 with `trident(this, owner)`; `AbstractWindCharge` 1 with `windCharge(this, owner)`. Potions and bottles o' enchanting have no `onHitEntity` and just break.
+  - `EndCrystal.hurtServer`: any source that is not the dragon's and that the crystal is not invulnerable to removes it, even at 0 damage, and a non-explosion source blows it up with power 6 as `explosion(crystal, source.getEntity())`.
+  - `EnderDragon.hurt(level, part, source, damage)`: nothing while DYING; `phase.onHurt`; a part other than the head and neck takes `damage / 4 + min(damage, 1)`; below 0.01 nothing; only a source whose entity is a `Player` (or `#always_hurts_ender_dragons`) hurts it. `AbstractDragonSittingPhase.onHurt` (SittingFlaming, SittingScanning, SittingAttacking; not Hovering) returns 0 when the direct entity is an `AbstractArrow` (a trident) or a `WindCharge`, and sets it alight for a second.
+  - `LivingEntity.dealDefaultKnockback`: a projectile's knockback is `knockback(0.4, -motion.x, -motion.z)`, along its flight. `EnderDragon.knockback` does nothing while it sits.
+- **Changed:**
+  - `minecraft_terrain/src/end_crystal.rs`:
+    - `END_TARGET` (`u64::MAX / 8`, below `item_frame::FRAME_TARGET`): a crystal is `END_TARGET + id`, a dragon part `END_TARGET + 2^60 + id * 8 + part`. `EndTarget::target_id` and `EndTarget::of_target` turn one into the other; any id outside `END_TARGET..FRAME_TARGET` is `None`.
+    - `end_targets(crystals, dragons)`: each crystal's 2 x 2 pick box and the 8 part boxes (`ender_dragon::part_box`) of every dragon that is not removed, as `PotionTarget`s.
+    - `EndDamage.arrow` (an arrow or a wind charge struck) and `EndDamage::thrown(amount, player, arrow)`; `attack` and `explosion` set it false.
+  - `minecraft_terrain/src/ender_dragon.rs` `hurt_part`: a dragon in one of the three perching phases takes 0 from an `arrow` hit.
+  - `minecraft_terrain/src/server.rs`:
+    - `tick_tridents` adds the end targets to every trident's targets; a strike on one runs `thrown_end_hit` with the trident's 8, blamed on the thrower (none for a drowned's trident or a thrower that is not here).
+    - `tick_thrown` adds them to every thrown thing's targets, without the crystals for a wind charge. A snowball, egg or pearl that strikes one runs `thrown_end_hit` with 0 and a wind charge with 1 (as an `arrow` hit), blamed on the player who threw it (none for a snow golem's or a dispenser's throw); the mob hurt, the snow golem hit and the wind charge's mob hurt skip end targets. A potion or bottle breaks on one as on a mob.
+    - New private `thrown_end_hit(target, damage, velocity)`: for a dragon part it sets `from` to the dragon's position less the flight's velocity, so a full hit pushes the dragon along the throw, then runs `end_hit`.
+  - `docs/MINECRAFT-SURVIVAL.md`: the End paragraph and the dragon fight limits.
+- **Tests:**
+  - `end_crystal::tests::thrown_things_aim_at_crystals_and_dragon_parts_by_their_own_ids`: one crystal and a dragon give 9 targets with the pick box and the 8 part boxes; every id goes back to its crystal or part and lies below `FRAME_TARGET`; a frame id, a player id and a mob id are not end targets; a removed dragon drops out.
+  - `ender_dragon::tests::a_perched_dragon_shrugs_off_tridents_and_wind_charges`: in each of the three perching phases an `arrow` hit of 8 does nothing and any other 8 lands; a hovering dragon takes 3 on the body; a flying one takes 8 on the head, nothing from 0, and nothing without a player.
+  - `server::tests::a_snowball_breaks_an_end_crystal_and_a_trident_hurts_the_dragon_head_by_eight`: a real flight through `tick_thrown` breaks on the crystal's front and destroys it with a power 6 blast blamed on the player; a trident through `tick_tridents` takes 8 off the head and pushes the dragon 0.4 along the throw; a second one takes 3 off the body.
+  - `server::tests::a_potion_breaks_on_an_end_crystal_a_wind_charge_passes_it_and_a_perched_dragon_shrugs_off_a_trident`: a splash potion breaks on the crystal's front and leaves it; a wind charge flies through the crystal and bursts on the head beyond it for 1; a trident at a dragon perched in SittingScanning does nothing and does not move it.
+  - Both server tests fail with the end targets left out of `tick_thrown` and `tick_tridents` (checked).
+  - Run on this commit: `test -p minecraft_terrain` 1605 passed with 3 ignored; `check -p launcher` clean.
+- **Decisions:**
+  - The push of a thrown hit on the dragon follows the flight (vanilla's `calculateHorizontalHurtKnockbackDirection`), not the thrower's position as the brief said: `thrown_end_hit` sets `from` so that `hurt_part`'s existing knockback points along the throw.
+  - A wind charge flies through crystals (vanilla `AbstractWindCharge.canHitEntity`), so the brief's "a wind charge 1" applies to the dragon only.
+  - The perching rule is a new `EndDamage.arrow` flag, set for tridents and wind charges, rather than a damage kind, so the knockback and the crystal's blast stay those of an attack. The trident is not set alight, as the fork's tridents can't burn. Hovering counts as sitting for knockback but is not one of vanilla's sitting phase classes, so it still takes trident hits.
+  - A dying dragon's parts stay targets until it is removed, as vanilla's parts stay alive; its hits do nothing.
+  - A throw with no player behind it (a snow golem's snowball, a drowned's trident, a dispenser's snowball, egg or wind charge) still breaks crystals, with an unblamed blast, and never hurts the dragon.
+  - Splash and lingering potions break on crystals and parts without effect. Vanilla's harming or healing splash would reach the dragon's own box; that is left out and listed in `MINECRAFT-SURVIVAL.md`.
+- **Protocol:** no message change; `EndDamage` stays on the server thread.
+- **Test steps** (survival, Normal, in a world whose dragon is alive; wear the diamond armour from the kit and keep at least 8 blocks from a crystal you hit, as each one blows up with power 6):
+  1. **TE-1. Snowball.** Run `/execute in minecraft:the_end run tp @s 100 50 0` and walk onto the main island. Place obsidian on the ground 10 blocks from you and an end crystal on it, step back and throw a snowball at the crystal: the snowball breaks on it (white crumbs) and the crystal explodes (**TE-1_snowball_crystal**).
+  2. **TE-2. Potion and wind charge.** Place a second crystal the same way. Throw a harming splash at it: the potion shatters on the crystal and the crystal stays. Throw a wind charge at it: the charge flies through it and bursts behind it, and the crystal stays (**TE-2_crystal_stays**).
+  3. **TE-3. Egg.** Throw an egg at the same crystal: it explodes (sometimes a chick hatches first).
+  4. **TE-4. Trident at the dragon.** Hold the loyalty trident and wait for the dragon to swoop low past you or to come down to the exit portal. Throw it at its head while it flies: the dragon flashes red, the pink boss bar drops by about a 25th and the trident flies back to you. A hit on its body or wings drops the bar by less (**TE-4_trident_dragon**).
+  5. **TE-5. Perched.** When the dragon perches on the exit portal and breathes purple flames on it, throw the trident at it from outside the flames: it bounces off, the dragon does not flash and the boss bar stays. A snowball breaks on it with no effect either (**TE-5_perched**).
+  6. **TE-6. Pillar crystal.** Throw a snowball up at the crystal on top of one of the low pillars that has no iron cage: it explodes and the dragon swoops at you; if it was healing from that crystal, its beam ends.
+  7. **TE-F1. Friend.** The friend throws a snowball at a crystal the host placed: it explodes in both windows. The friend's trident at the flying dragon's head drops the boss bar for both (**TE-F1_friend**).
+- **Kit** (18 backpack slots; the same for the friend):
+
+```
+IW4L_MINECRAFT_KIT=minecraft:trident+loyalty=3,minecraft:trident,minecraft:snowball*16,minecraft:egg*16,minecraft:wind_charge*16,minecraft:end_crystal*4,minecraft:obsidian*8,minecraft:splash_potion@harming*2,minecraft:potion@slow_falling,minecraft:shield,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots,minecraft:golden_apple*16,minecraft:cooked_beef*32,minecraft:cobblestone*64
+```

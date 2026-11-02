@@ -1038,7 +1038,15 @@ impl EnderDragon {
         if self.phase == Phase::Dying {
             return Hurt::default();
         }
-        let amount = part_damage(part, damage.amount);
+        let perched = matches!(
+            self.phase,
+            Phase::SittingFlaming | Phase::SittingScanning | Phase::SittingAttacking
+        );
+        let amount = if perched && damage.arrow {
+            0.0
+        } else {
+            part_damage(part, damage.amount)
+        };
         if amount < 0.01 || !hurts_the_dragon(damage) {
             return Hurt::default();
         }
@@ -2274,6 +2282,7 @@ mod tests {
             player: None,
             kind: DamageKind::Attack,
             from: None,
+            arrow: false,
         };
         dragon.damage_cooldown = 0;
         assert!(
@@ -2310,6 +2319,53 @@ mod tests {
                 .full
         );
         assert_eq!(dragon.health, 185.0);
+    }
+
+    #[test]
+    fn a_perched_dragon_shrugs_off_tridents_and_wind_charges() {
+        let mut events = DragonEvents::default();
+        let trident = EndDamage::thrown(8.0, Some(0), true);
+        for phase in [
+            Phase::SittingFlaming,
+            Phase::SittingScanning,
+            Phase::SittingAttacking,
+        ] {
+            let mut dragon = dragon_at(DVec3::new(0.0, 64.0, 0.0), 0.0);
+            dragon.set_phase(phase);
+            assert!(
+                !dragon.hurt_part(HEAD, &trident, &mut events).applied,
+                "{phase:?}"
+            );
+            assert!(
+                dragon
+                    .hurt_part(HEAD, &EndDamage::thrown(8.0, Some(0), false), &mut events)
+                    .applied,
+                "anything else still hurts it"
+            );
+            assert_eq!(dragon.health, 192.0);
+        }
+        let mut hovering = dragon_at(DVec3::new(0.0, 64.0, 0.0), 0.0);
+        hovering.set_phase(Phase::Hovering);
+        assert!(
+            hovering.hurt_part(BODY, &trident, &mut events).applied,
+            "hovering is not perching"
+        );
+        assert_eq!(hovering.health, 197.0);
+        let mut flying = dragon_at(DVec3::new(0.0, 100.0, 0.0), 0.0);
+        assert!(
+            !flying
+                .hurt_part(HEAD, &EndDamage::thrown(0.0, Some(0), false), &mut events)
+                .applied,
+            "a snowball does nothing to it"
+        );
+        assert!(
+            !flying
+                .hurt_part(HEAD, &EndDamage::thrown(8.0, None, true), &mut events)
+                .applied,
+            "nor a trident nobody threw"
+        );
+        flying.hurt_part(HEAD, &trident, &mut events);
+        assert_eq!(flying.health, 192.0);
     }
 
     #[test]
