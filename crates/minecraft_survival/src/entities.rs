@@ -2437,6 +2437,21 @@ mod tests {
         assert!(!monsters_in(&dead, area, 7), "dead ones and one that left");
     }
 
+    #[test]
+    fn a_player_cannot_sleep_beside_margit() {
+        let area = crate::sleep::monster_box((0, 64, 0));
+        let mut world = EntityWorld::default();
+        let margit = world.spawn_family_kind("iw4l:margit", DVec3::new(2.5, 64.0, 0.5)).unwrap();
+        assert!(monsters_in(&world, area, 7), "asleep at his anchor, he keeps the player awake like any monster");
+        let mut far = EntityWorld::default();
+        far.spawn_family_kind("iw4l:margit", DVec3::new(12.5, 64.0, 0.5)).unwrap();
+        assert!(!monsters_in(&far, area, 7), "12 blocks off");
+        world.family_core_mut(margit).unwrap().1.health = 0.0;
+        assert!(!monsters_in(&world, area, 7), "dead");
+        assert!(crate::sleep::prevents_rest("iw4l:margit", false));
+        assert!(!crate::sleep::prevents_rest("iw4l:unknown", false));
+    }
+
     fn monsters_in(world: &EntityWorld, area: [f64; 6], sleeper: u64) -> bool {
         crate::sleep::monster_in(area, resting_monsters(world, sleeper))
     }

@@ -75,7 +75,7 @@ pub fn prevents_rest(kind: &str, angry_at_sleeper: bool) -> bool {
     if kind == ZOMBIFIED_PIGLIN {
         return angry_at_sleeper;
     }
-    MONSTERS.contains(&kind)
+    MONSTERS.contains(&kind) || elden_boss::def(kind).is_some()
 }
 
 pub fn intersects(a: [f64; 6], b: [f64; 6]) -> bool {

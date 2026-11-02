@@ -46,6 +46,12 @@ Group er-altar (commits 26 to 28), 11 stacks:
 IW4L_MINECRAFT_KIT=minecraft:gold_block*16,minecraft:lantern*8,minecraft:cobblestone*64,minecraft:iron_pickaxe,minecraft:netherite_sword+sharpness=5,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots,minecraft:golden_apple*16,minecraft:cooked_beef*32
 ```
 
+Review of segment f3 (commit 29 on), 1 stack:
+
+```
+IW4L_MINECRAFT_KIT=minecraft:white_bed
+```
+
 The whole track's owner's test for the release (27 stacks) is in "Owner's test for the release" at the end of this log.
 
 ## Protocol
@@ -71,7 +77,7 @@ Wording for the docs this track must not edit; the merge copies it in.
 - `docs/MULTIPLAYER.md`, section 9.2 "Mob moves", a new bullet after "Flags that renderers read but neither the NBT nor `MobLook` carry are added to `ServerMob`": "An Elden Ring boss's pose and phase ride the registry's `MobShow.family` like every registered mob's. His daggers in flight ride `MobShow.elden: Option<EldenShow>`: the three newest, each its start, velocity and age, so a friend draws them where the host does. Every other mob sends `None`, one byte."
 - `CLAUDE.md`, Roadmap step 3: "**Elden Ring bosses:** Margit first, then more. Margit's proof of concept is in (round 10, track F): `/summon iw4l:margit` or a lantern on two gold blocks summons him, and the host and friends fight him with MW2 guns and Minecraft weapons through both phases, with his boss bar, music, fog ring and reward; he is our own stand-in model with vanilla sounds. Next: the host loads the real assets and sends them to friends, then more bosses. Design: `docs/ELDEN-RING-BOSSES.md`."
 - `docs/MINECRAFT-SURVIVAL.md`, a new section "### Bosses (round 10, track F)" under "## Implemented", after "### Survival and combat": "Margit, the Fell Omen (`iw4l:margit`), the first Elden Ring boss, built from `docs/ELDEN-RING-BOSSES.md`. `/summon iw4l:margit` or a standing lantern placed on two stacked gold blocks (not on Peaceful) summons him asleep at an anchor; he wakes when a player comes within 24 blocks, fights within a 24-block leash marked by a ring of gold motes on the ground, and resets after 5 s with nobody within 40 blocks. His moves, phases, stance, kneel and criticals are data in the pure crate `crates/elden_boss`; he lives in the entity world as a registered family (`iw4l:margit`, hit key 96) and is saved as a vanilla `minecraft:marker` with `data.iw4l`, so vanilla 26.3 loads the world. Minecraft weapons hurt him with no hurt cooldown, MW2 bullets and blasts through his own resistances; his health scales with the fighters at the wake (x1.6 for two). Every player within 48 blocks gets his red boss bar and the boss music; his death tells every fighter GREAT ENEMY FELLED and drops an enchanted golden apple, gold and experience by fighter. Friends see every move, his golden weapons and his daggers in flight. He is a cube model with a skin painted by code and vanilla sounds; nothing comes from ELDEN RING yet."
-- `docs/MINECRAFT-SURVIVAL.md`, "## Limitations", "### Mobs", new bullets: "Margit: a player can sleep in a bed beside him (`sleep::MONSTERS` does not list him); he walks through water and lava with his dry ground walk; his fog ring blocks nothing."
+- `docs/MINECRAFT-SURVIVAL.md`, "## Limitations", "### Mobs", new bullets: "Margit: he walks through water and lava with his dry ground walk; his fog ring blocks nothing."
 
 ## Group er-core
 
@@ -1002,9 +1008,32 @@ After cc414444.
 IW4L_MINECRAFT_KIT=minecraft:netherite_sword+sharpness=5,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots,minecraft:golden_apple*16,minecraft:cooked_beef*32
 ```
 
+## Review of segment f3
+
+The adversarial review of groups er-look, er-fight, er-guns, er-bar-friend and er-altar (commits 17 to 28, from `r10-f3-base`). It read every commit of the segment against the brief, the design doc, D0's checklist and vanilla 26.3: the boss bar, music and felled line per player, the friend's clip and daggers on the state lane, the altar and the fog ring, the comments rule and `rustfmt --check` on the segment's new files. The unfinished commit 81da408f is finished by 8f2a8074 and stays in history. It found one gap that vanilla does not have; its fix follows.
+
+### 29. Margit keeps a player beside a bed awake like every monster
+
+After 8a37d278.
+
+- **Why:** vanilla's `ServerPlayer.startSleepInBed` refuses the bed with "You may not rest now; there are monsters nearby" (`block.minecraft.bed.not_safe`) while a monster stands in the 8 x 5 x 8 box around it and its `isPreventingPlayerRest` holds. `Monster.isPreventingPlayerRest` returns true (checked with javap on the 26.3 `client.jar`); only the zombified piglin overrides it. Margit's family is a registered monster, and D0's generic loop in `resting_monsters` already hands his body to the sleep check, but `sleep::prevents_rest` knew only the vanilla ids of `sleep::MONSTERS`, so a player could sleep right beside him.
+- **Changed (`minecraft_survival`, `sleep.rs`):** `prevents_rest` is also true for every Elden Ring boss id (`elden_boss::def`). `MONSTERS` and `entities.rs` `resting_monsters` (on D0's never-edit list) are unchanged, so a later boss of `elden_boss::IDS` keeps players awake with no new line.
+- **Tests:** `entities::tests::a_player_cannot_sleep_beside_margit` (an asleep Margit 2 blocks from the bed keeps the player awake, one 12 blocks off does not, nor does a dead one; `prevents_rest` knows `iw4l:margit` and not an unknown `iw4l:` id).
+- **Runs:** `test -p minecraft_survival --locked --lib -- sleep`: 26 passed. `check -p launcher --locked`: green, with only the old render_frame and skate warnings. No added line holds a comment, and no file is new.
+- **Decision:** an asleep Margit keeps the player awake too, as any vanilla monster does whatever its AI is doing.
+- **Closes from release 3's known limits:** "A player can sleep in a bed beside him". Of its "Not handled yet" list, only his walk through water and lava remains.
+- **Owner's steps.** Release build, survival, Normal, flat open ground in the Overworld. Name each screenshot by its label, `f-29-1.png`.
+  1. `/time set night`. Place the bed on open ground and stand beside it.
+  2. `/summon iw4l:margit ~ ~ ~4 {NoAI:1b}`: he kneels asleep 4 blocks away and never wakes (no AI). Right-click the bed: "You may not rest now; there are monsters nearby" shows above the hotbar, and you stay standing. **Screenshot f-29-1** with the line and Margit in view.
+  3. `/difficulty peaceful`: he vanishes. Right-click the bed: you lie down, and the night skips to morning. `/difficulty normal`.
+
+```
+IW4L_MINECRAFT_KIT=minecraft:white_bed
+```
+
 ## Owner's test for the release
 
-Brief F, "Owner's test for the release", adjusted to what was built (commits 7 to 28). What the owner runs on the release build after segment f2 merges. Name each screenshot by its label, `f03_margit_rises.png`; for a step that asks for both windows, `f12_friend_view-host.png` and `f12_friend_view-friend.png`.
+Brief F, "Owner's test for the release", adjusted to what was built (commits 7 to 29). What the owner runs on the release build after segment f2 merges. Name each screenshot by its label, `f03_margit_rises.png`; for a step that asks for both windows, `f12_friend_view-host.png` and `f12_friend_view-friend.png`.
 
 ### Setup
 - Survival, a new world, open flat ground (a plains). In every new world the host types `/difficulty normal` and `/gamerule keep_inventory true`; in two windows also `/op Friend`.
@@ -1028,7 +1057,7 @@ Brief F, "Owner's test for the release", adjusted to what was built (commits 7 t
 13. Go back to him (the bar returns while he is awake), then run 45 blocks from the spot where he was summoned and wait 6 s: the bar and the music go. Come back: he is walking home at full health, phase 1, and kneels on his spot; he wakes again when you come within 24 blocks of it.
 14. Pillar up 5 blocks near him on a single column: he throws daggers and never fades up to you. Come down, dig a 1 x 1 hole 2 deep and stand in it: his cane still reaches you. Climb out, build a ring of cobblestone 2 high, 3 blocks out from the hole all round, and stand in the hole again: he gets in, by a leap over the ring or, within about 5 s, by vanishing in golden mist (with the mirror sound) and appearing inside the ring beside the hole, and keeps swinging.
 15. Hurt him, then Save and Quit, and load: he stands where he was, at full health, and walks back to his spot and kneels. **f02_after_load**
-16. `/difficulty peaceful`: he vanishes. Then build the altar of step 17 on Peaceful: the lantern stays on the gold blocks and nothing happens. Break the lantern, `/difficulty normal`.
+16. `/time set night` and `/give @s minecraft:white_bed`. Place the bed, stand beside it and run `/summon iw4l:margit ~ ~ ~4 {NoAI:1b}` (he kneels asleep and never wakes): right-clicking the bed says "You may not rest now; there are monsters nearby". `/difficulty peaceful`: he vanishes, and the bed lets you lie down and skip the night. Then build the altar of step 17 on Peaceful: the lantern stays on the gold blocks and nothing happens. Break the lantern, `/difficulty normal`.
 17. Stack two gold blocks, stand 2-3 blocks away and put a lantern on top: the lantern and the gold blocks break with their particles and sounds (nothing drops), and Margit kneels where the pillar stood, facing you, and at once rises in golden mist with his bar and music. A lantern hanging over two gold blocks, or a lantern on one gold block, does nothing. **f13_altar**
 18. While he fights, turn away from him: on the ground about 24 blocks from the spot where he appeared, an arc of small gold sparkles curves round that spot, the part of it within about 20 blocks of you. From the spot itself none shows; walk toward any side and that side's arc shows. It stops when his fight resets or he dies. **f14_fog_ring**
 19. **Optional, vanilla check:** with Margit asleep, quit, copy the world and open the copy in vanilla 26.3: it loads with no error, and `/data get entity @e[type=minecraft:marker,sort=nearest,limit=1]` near his spot shows `data.iw4l.boss`. Open the copy in our game again: Margit is there.
@@ -1043,7 +1072,6 @@ Brief F, "Owner's test for the release", adjusted to what was built (commits 7 t
 
 ### Known limits
 - Margit is our own stand-in: a cube model with a skin painted by code, our own move table and numbers, and vanilla sounds. Nothing comes from ELDEN RING (design doc 14), and the host does not load or send its assets yet.
-- A player can sleep in a bed beside him: `sleep::MONSTERS` (survival) does not list `iw4l:margit`, where vanilla keeps you awake near any monster.
 - He walks through water and lava with his dry ground walk. Lava and fire do hurt him.
 - The fog ring is gold motes on the ground; it blocks nothing (design doc 8), and a player more than 10 blocks above the ground sees none.
 - Loading the world resets his fight by design: full health, phase 1, and he walks back to his anchor. He takes no damage while asleep or while he walks home.
