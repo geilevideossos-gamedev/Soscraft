@@ -37,6 +37,7 @@ For the orchestrator to copy at the merge of segment m3a:
 - Under World simulation in `docs/MINECRAFT-SURVIVAL.md`, after the lightning-turns line (lightning-drawn): "Every player sees and hears a bolt as vanilla draws it: a jagged blue-white bolt 128 blocks tall from its seed, drawn within 64 blocks of the camera and changing shape at each re-flash, with the thunder roll and the impact crack once per bolt within 16 chunks. While a bolt is lit the sky turns pale blue and the world is lit as by day. Friends get the host's bolts within 16 chunks (their view distance at most)."
 - Under World simulation in `docs/MINECRAFT-SURVIVAL.md`, after the lightning line (lightning-turns): "Lightning turns a pig into a zombified piglin that never despawns, with a golden sword (one in twenty a golden spear; a baby pig gives a baby), and a villager into a witch that never despawns and can join raids, freeing its job site, bed and meeting point. Both keep their place, name, effects and lead, but not their saddle or held item. A struck creeper is charged (twice the blast, saved and seen by friends), and a mooshroom flips between red and brown once per bolt with its sound and takes no harm. On Peaceful pigs and villagers are only hurt."
 - Under World simulation in `docs/MINECRAFT-SURVIVAL.md`, after the lightning-drawn line (lightning-glow 1): "A charged creeper wears vanilla's energy swirl: the blue `creeper_armor` texture scrolling diagonally over a shell two pixels outside its body, unlit and added onto what lies behind it, turning, walking and swelling with the creeper. Friends see it too."
+- Under World simulation in `docs/MINECRAFT-SURVIVAL.md`, after the swirl line (lightning-glow 2): "A struck lightning rod sends 10 to 19 short white-violet sparks darting along its length, and every copper block a bolt cleans sparks on all six faces; friends within 64 blocks see them too."
 
 ## Left for later
 
@@ -50,6 +51,7 @@ For the orchestrator to copy at the merge of segment m3a:
 - A second bolt in the same tick does not hit a mob a first bolt just made (the new tags join the level after `strike`); vanilla adds it at once. It is hit from the next lit tick on.
 - Lightning drawn (lightning-drawn): vanilla's "Hide Lightning Flashes" accessibility option (`Options.hideLightningFlash`) and the entity distance option (`entityDistanceScaling`, which scales the 64-block draw range) have no setting in the fork yet; the flash always shows and the range is 64 blocks. A bolt never goes silent (`/summon` passes no tag to a bolt, so `Silent:1b` does nothing).
 - Charged creeper swirl (lightning-glow 1): a creeper shown turning inside a monster spawner's cage (`spawner_display.rs`) never wears the swirl, even when the spawner's `SpawnData` holds `powered:1b`; the cage has no additive mesh.
+- Lightning rod sparks (lightning-glow 2): the idle storm sparks of `LightningRodBlock.animateTick` (while thundering, when `level.random.nextInt(200) <= gameTime % 200` and the rod is the top block of its column, 1 or 2 sparks along its axis) are not shown. `display_ticks::animate_tick` gets only the scene, the player's block and the view's random; the rod arm beside `end_gateway` needs the client's thunder level, the game time and the level's own random passed in, which no caller has today. Natural thunderstorms come with `lightning-weather` (m3b), which is the place to add it.
 
 ## Segment m3a
 
@@ -252,6 +254,35 @@ After b4b3e8db ("Minecraft lightning bolts flash and thunder for every player").
 
 ```
 IW4L_MINECRAFT_KIT=minecraft:creeper_spawn_egg*2,minecraft:stone_slab*4,minecraft:iron_shovel,minecraft:water_bucket,minecraft:cooked_beef*16
+```
+
+#### 2. Minecraft lightning rods spark when struck
+
+After 49deedb2 ("Minecraft charged creepers glow with their energy swirl").
+
+- **javap (26.3 `client.jar`):**
+  - `LevelEventHandler`, case 3002: when `0 <= data < Direction.Axis.VALUES.length`, `ParticleUtils.spawnParticlesAlongAxis(Axis.VALUES[data], level, pos, 0.125, ELECTRIC_SPARK, UniformInt.of(10, 19))`; otherwise `ParticleUtils.spawnParticlesOnBlockFaces(level, pos, ELECTRIC_SPARK, UniformInt.of(3, 5))`. No sound.
+  - `ParticleUtils.spawnParticlesAlongAxis`: the count first (`UniformInt.sample`: `Mth.randomBetweenInclusive`, `nextInt(max - min + 1) + min`); each spark at the block's centre plus `Mth.nextDouble(-1, 1)` times 0.5 along the axis and times 0.125 across it (x, y, z in turn), then a speed `Mth.nextDouble(-1, 1)` along the axis only.
+  - `ParticleUtils.spawnParticlesOnBlockFaces`: for each `Direction` (down, up, north, south, west, east) a count of 3 to 5, and for each spark first a speed of three `Mth.nextDouble(-0.5, 0.5)`, then the position: 0.55 out along the face's normal and `Mth.nextDouble(-0.5, 0.5)` along the other two axes, moving only along its face.
+  - `GlowParticle$ElectricSparkProvider`: a `GlowParticle` made with zero speed, colour (1, 0.9, 1), the speed set to a quarter of the asked one, a lifetime of `nextInt(2) + 2`. `GlowParticle`: friction 0.96, `speedUpWhenYMotionIsBlocked`, `quadSize * 0.75`, no physics, layer OPAQUE, `getLightCoords` = `LightCoordsUtil.addSmoothBlockEmission(light, (age + partial) / lifetime)`. `particles/electric_spark.json`: the one sprite `minecraft:glow`.
+- **Changed (terrain):**
+  - `level_events.rs`: `ELECTRIC_SPARK` (3002) after `LECTERN_PAGE_TURN`, its arm after the lectern's, and `electric_sparks` (with the helper `between`, `Mth.nextDouble`): the axis sparks for data 0 to 2, the face sparks for anything else (the copper walk's -1), drawn in vanilla's order from the view's random.
+  - `ambient_particles.rs`: `Kind::ElectricSpark` after `Kind::Crit`; `Particle::electric_spark` (the provider and `GlowParticle`); `glide` (`Particle.tick` without physics: through blocks, faster on x and z while its height holds); the `glow` sprite (added to `textures()`); its constant size; the flames' light rule (`glow`).
+  - The world crate already posts 3002 (lightning-strikes 1), and level events reach friends within 64 blocks (`heard::Heard::Event`), so nothing else changed.
+- **Tests added:** terrain `level_events::tests::a_struck_rod_sparks_along_its_axis_and_cleaned_copper_sparks_on_its_faces` (for each axis: 10 to 19 sparks, the first in vanilla's draw order, 0.5 along the axis and 0.125 across it, moving only along it, no sound; data -1 and 3: 3 to 5 on each of the six faces, 0.55 out, never moving off its face) and `ambient_particles::tests::an_electric_spark_fades_quickly` (2 or 3 ticks, colour (1, 0.9, 1), a quarter of the asked speed, three quarters of the base size, the `glow` sprite, opaque; it passes through stone and speeds up on x while its height holds; light from the block level at birth to 15 at its end).
+- **Decisions:**
+  - Kept in the commit: the struck rod and cleaned copper (event 3002). Left for later: the rod's idle storm sparks (`animateTick`), which need the client's thunder level, the game time and the level random in `display_ticks` (see "Left for later"). This keeps `display_ticks::animate_tick`'s signature for `lightning-weather` to extend with the storm.
+  - `glide` is a new tick beside `coast` rather than a change to `coast`: `coast` drives the trial omen, whose `speed_up` is set, so a shared speed-up would change it.
+  - `docs/round10/mobs.md` is not changed: lightning rods are not mobs.
+- **Runs:** `test -p minecraft_terrain --locked --lib` (1752 passed, 3 ignored), `check -p launcher --locked` (green; only the old render_frame and skate warnings).
+- **Test steps:** release build, survival, Normal, flat plains, by day, `/weather clear`, the kit below, the host is op. Stand still and type every `/summon` from the same place, so `~ ~ ~8` is always the same block ("the spot"). Put out fires with the water bucket between steps. Name each screenshot by its label.
+  1. At the spot, build a pillar of 4 stone bricks, then a weathered copper block, then a lightning rod on top, with weathered copper on all four sides of that copper block. From your place run `/summon minecraft:lightning_bolt ~ ~6 ~8`: small white-violet sparks dart up and down along the rod for a moment, and sparks flash on the faces of each copper block that turns orange again. **m3-spark-1**
+  2. Place a stone brick on the ground at the spot and a lightning rod on its east face, so the rod lies flat, pointing east. Run `/summon minecraft:lightning_bolt ~1 ~1 ~8`: the sparks dart east and west along the lying rod. **m3-spark-2**
+  3. Friend, two windows (`scripts\mp-local.ps1`): the friend stands next to the host and the host repeats step 1 on a new pillar; the friend sees the same sparks. **m3-spark-friend**
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:lightning_rod*4,minecraft:weathered_copper*16,minecraft:stone_bricks*16,minecraft:water_bucket,minecraft:cooked_beef*16
 ```
 
 ## Combined kit

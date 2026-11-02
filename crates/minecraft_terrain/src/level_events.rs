@@ -15,6 +15,9 @@ pub const LAVA_FIZZ: i32 = 1501;
 pub const BONE_MEAL_USE: i32 = 1505;
 pub const BONE_MEAL_PARTICLES: i32 = 15;
 pub const LECTERN_PAGE_TURN: i32 = 1043;
+pub const ELECTRIC_SPARK: i32 = 3002;
+const SPARK_SPREAD: f64 = 0.125;
+const SPARK_FACE: f64 = 0.55;
 pub const ZOMBIE_INFECT: i32 = 1026;
 pub const ZOMBIE_INFECT_SOUND: &str = "minecraft:entity.zombie.infect";
 pub const ZOMBIE_VILLAGER_CONVERTED: i32 = 1027;
@@ -135,6 +138,7 @@ pub fn level_event<S: Scene + ?Sized>(
                 pitch: random.next_float() * 0.1 + 0.9,
             });
         }
+        ELECTRIC_SPARK => electric_sparks(base, data, random, &mut out),
         ZOMBIE_INFECT | ZOMBIE_VILLAGER_CONVERTED => {
             out.sounds.push(AmbientSound {
                 event: if id == ZOMBIE_INFECT { ZOMBIE_INFECT_SOUND } else { ZOMBIE_VILLAGER_CONVERTED_SOUND },
@@ -254,6 +258,36 @@ pub fn level_event<S: Scene + ?Sized>(
         _ => {}
     }
     out
+}
+
+fn between(random: &mut LegacyRandom, low: f64, high: f64) -> f64 {
+    random.next_double() * (high - low) + low
+}
+
+fn electric_sparks(base: DVec3, data: i32, random: &mut LegacyRandom, out: &mut DisplayTick) {
+    let centre = base + DVec3::splat(0.5);
+    if (0..3).contains(&data) {
+        let spread = |axis: i32| if axis == data { 0.5 } else { SPARK_SPREAD };
+        for _ in 0..random.next_int(10) + 10 {
+            let x = centre.x + between(random, -1.0, 1.0) * spread(0);
+            let y = centre.y + between(random, -1.0, 1.0) * spread(1);
+            let z = centre.z + between(random, -1.0, 1.0) * spread(2);
+            let mut speed = |axis: i32| if axis == data { between(random, -1.0, 1.0) } else { 0.0 };
+            let motion = DVec3::new(speed(0), speed(1), speed(2));
+            out.particles.push((Kind::ElectricSpark, DVec3::new(x, y, z), motion));
+        }
+        return;
+    }
+    for &(dx, dy, dz) in &FACES {
+        for _ in 0..random.next_int(3) + 3 {
+            let speed = DVec3::new(between(random, -0.5, 0.5), between(random, -0.5, 0.5), between(random, -0.5, 0.5));
+            let mut along = |step: i32| if step == 0 { between(random, -0.5, 0.5) } else { f64::from(step) * SPARK_FACE };
+            let at = DVec3::new(centre.x + along(dx), centre.y + along(dy), centre.z + along(dz));
+            let keep = |step: i32, value: f64| if step == 0 { value } else { 0.0 };
+            let motion = DVec3::new(keep(dx, speed.x), keep(dy, speed.y), keep(dz, speed.z));
+            out.particles.push((Kind::ElectricSpark, at, motion));
+        }
+    }
 }
 
 fn trial_sound(
@@ -592,6 +626,60 @@ mod tests {
         assert_eq!(sound.at, [2.5, 70.5, -4.5]);
         assert_eq!((sound.volume, sound.pitch), (1.0, mirror.next_float() * 0.1 + 0.9));
         assert!(event.particles.is_empty());
+    }
+
+    #[test]
+    fn a_struck_rod_sparks_along_its_axis_and_cleaned_copper_sparks_on_its_faces() {
+        let centre = DVec3::new(4.5, 70.5, -2.5);
+        for axis in 0..3 {
+            let mut random = LegacyRandom::new(11 + axis as u64);
+            let mut mirror = LegacyRandom::new(11 + axis as u64);
+            let event = level_event(ELECTRIC_SPARK, (4, 70, -3), axis, &no_scene(), &classes, &mut random);
+            assert!(event.sounds.is_empty());
+            assert_eq!(event.particles.len() as u32, mirror.next_int(10) + 10, "ten to nineteen");
+            let reach = |i: i32| if i == axis { 0.5 } else { 0.125 };
+            let first = DVec3::new(
+                centre.x + between(&mut mirror, -1.0, 1.0) * reach(0),
+                centre.y + between(&mut mirror, -1.0, 1.0) * reach(1),
+                centre.z + between(&mut mirror, -1.0, 1.0) * reach(2),
+            );
+            assert_eq!(event.particles[0].1, first, "drawn in vanilla's order");
+            for (kind, at, motion) in &event.particles {
+                assert_eq!(*kind, Kind::ElectricSpark);
+                for i in 0..3 {
+                    let (offset, speed) = ((*at - centre)[i as usize], motion[i as usize]);
+                    assert!(offset.abs() <= reach(i), "axis {axis}: {at}");
+                    if i == axis {
+                        assert!(speed.abs() <= 1.0);
+                    } else {
+                        assert_eq!(speed, 0.0, "it flies only along the rod");
+                    }
+                }
+            }
+        }
+        for data in [-1, 3] {
+            let mut random = LegacyRandom::new(5);
+            let event = level_event(ELECTRIC_SPARK, (4, 70, -3), data, &no_scene(), &classes, &mut random);
+            assert!((18..=30).contains(&event.particles.len()), "three to five on each of six faces");
+            let mut faces = HashMap::new();
+            for (kind, at, motion) in &event.particles {
+                assert_eq!(*kind, Kind::ElectricSpark);
+                let offset = *at - centre;
+                let out: Vec<usize> = (0..3).filter(|&i| (offset[i].abs() - 0.55).abs() < 1e-9).collect();
+                assert_eq!(out.len(), 1, "on one face, 0.55 out: {offset}");
+                let face = out[0];
+                *faces.entry((face, offset[face] > 0.0)).or_insert(0) += 1;
+                for i in 0..3 {
+                    if i == face {
+                        assert_eq!(motion[i], 0.0, "never off its face");
+                    } else {
+                        assert!(offset[i].abs() <= 0.5 && motion[i].abs() <= 0.5);
+                    }
+                }
+            }
+            assert_eq!(faces.len(), 6);
+            assert!(faces.values().all(|&count| (3..=5).contains(&count)));
+        }
     }
 
     #[test]
