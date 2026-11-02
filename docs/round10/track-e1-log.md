@@ -1213,6 +1213,47 @@ Commit: "Minecraft bells swing when rung", the one after `995909d0`.
 IW4L_MINECRAFT_KIT=minecraft:bell*4,minecraft:lever*2,minecraft:cobblestone*64,minecraft:oak_planks*64,minecraft:villager_spawn_egg*4,minecraft:ominous_bottle*2,minecraft:white_bed*2,minecraft:shield,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots,minecraft:golden_apple*8,minecraft:cooked_beef*16
 ```
 
+### Glowing mobs show a white outline
+
+Commit: "Glowing Minecraft mobs show a white outline like vanilla", the one after `c51af5b6`. The code is in `4ace82f4` ("Unfinished: glowing Minecraft mobs show a white outline", stopped for the week before it was built); `c51af5b6` merged `minecraft-survival` (`8f7410e6`) over it, and its one conflict, the test module of `render_gpu` `drawsurf/minecraft_world.rs`, kept both W1's `darkness_dims_the_terrain_lightmap_before_its_clamp` and this group's renamed outline test. This commit builds and tests that code unchanged and logs it.
+
+- **Cause** (as in the brief, re-checked at `c51af5b6`): `glow_render::append_glowing` copies a glowing mob's model as a white, full-bright hull a sixteenth of a block bigger on each side (`entities[4]`), plus a copy of the model (`entities[5]`). `draw_terrain` drew the hull with depth `Always` and then the copy with the normal entity pipeline over it. In the open that left a white rim, but a hidden raider showed as a solid white shape through the wall.
+- **Vanilla 26.3:** a `GLOWING` entity is drawn into `LevelRenderer`'s outline target in its team colour (white without a team) with no depth test, and the `entity_outline` post chain draws only the edge of that target over the frame. Through blocks you see the outline with the blocks inside it.
+- **Changed** (`crates/render_gpu/src/drawsurf/minecraft_world.rs`):
+  - `OUTLINE_STENCIL` (0x80, the scene stencil's top bit) and `outline_states()`: three depth-stencil states, all depth `Always` with no depth write, both faces alike, read and write mask 0x80:
+    1. the mask: stencil `Always`, pass op `Replace`, no colour writes;
+    2. the hull: stencil `NotEqual`, op `Keep`, colour on;
+    3. the clear: stencil `Always`, pass op `Zero`, no colour writes.
+  - `pipelines` builds the three from `glow_fragment` through `make_stenciled`, which `make_biased` now calls with the old default stencil, so every other pipeline is unchanged. The array grows from 14 to 16.
+  - `draw_terrain` sets the stencil reference to 0x80 and draws the copy as the mask, the hull, then the copy again as the clear. The hull turns white only outside the mob's own shape, in the open and through walls. The mob itself is already drawn by the normal entity passes, so the copy is no longer drawn in colour.
+  - `crates/minecraft_terrain/src/glow_render.rs`: no code change. The copy it already makes (the mob's own vertices, uv included) is the mask; only its test is renamed.
+- **Tests:**
+  - `render_gpu` `drawsurf::minecraft_world::tests::glowing_mobs_draw_an_outline_through_walls_masked_by_their_own_shape` (renamed from `glowing_mobs_draw_through_walls_in_white_with_their_cover_after`): the three states are seen through walls with the depth left alone, alike on both faces and masked to 0x80. Only the hull writes colour. On a row of ten stencil values, some holding MW2's 0x45, a mob over 3..7 and its hull over 2..8: the mask sets the bit on 3..7 only, the hull is white on 2 and 7 only, and the clear gives back exactly the row from before. MW2's `scene_depth::stencil_state` reads every bit, so the bit must be cleared.
+  - `minecraft_terrain` `glow_render::tests::a_glowing_mob_gets_a_white_hull_a_sixteenth_bigger_and_a_copy_that_masks_its_shape` (renamed, same checks).
+  - The 17 `render_gpu` `minecraft_world` tests and the 15 `minecraft_terrain` glow tests pass, and `check -p launcher` passes.
+- **Decisions:**
+  - The outline rim is world-space: the hull a sixteenth of a block bigger on each side, so it gets thinner on screen with distance. Vanilla's `entity_outline` post effect is screen-space. It is still an outline, not a filled shape.
+  - The mask is the stencil's top bit. MW2's material passes (`colour_submit`, `scene_depth::stencil_state`) read and write all 8 bits, so the third pass zeroes the bit again inside each glowing silhouette before they run. The terrain pass is the first to use the scene stencil after its clear, and none of its other pipelines writes stencil, so the bit is 0 there before the mask.
+  - The mask follows the model's cut-out texels (`glow_fragment` discards alpha below 0.1), like the hull.
+  - Glowing mobs share one mask, so where two overlap their outlines merge into one, as in vanilla's shared outline target.
+  - The outline stays white: in the fork only raiders glow (the bell is the only source), and vanilla's white is the colour for a mob on no team.
+- **Protocol:** no change.
+- **Owner's test steps** (survival, Normal, by day on flat ground, the kit below):
+  1. **Set up.** Place a bell on cobblestone, and look at the side you can ring (its front or back). About 20 blocks in front of you, build a plank wall 5 wide and 4 high. Type `/gamemode creative` so the pillagers don't shoot you. Use a pillager egg in the open about 15 blocks away, where you can see it, and another one right behind the wall, where the wall hides it.
+  2. **Ring.** Go back to the bell and right-click its side. About 2 seconds later both pillagers glow for 3 seconds:
+     - The one in the open has a thin white rim around its body, and its own colours inside. It is not covered in white.
+     - The hidden one shows as a white **outline** through the wall, with the planks visible inside it, not a filled white shape.
+     - **Screenshot bell_06_glow_outline**, with both in view.
+  3. **Partly hidden.** Ring again, and stand behind a single cobblestone block so it hides part of the pillager in the open. Its outline runs on over the block, and the block shows inside the outline.
+  4. **Two together.** Use two more pillager eggs side by side so they overlap from where you stand, and ring again. They share one outline around both, with no white line between them.
+  5. **Friend (two windows, both on this build).** The friend stands about 10 blocks from the bell while the host rings it. The friend sees the same outlines, the hidden one through the wall too. Then the friend stands between the host and a glowing pillager. In the host's window the friend's soldier model is drawn normally in front of the pillager. **Screenshot bell_08_friend_outline**, both windows.
+  6. `/gamemode survival` after.
+- **Kit** (8 backpack slots):
+
+```
+IW4L_MINECRAFT_KIT=minecraft:bell*2,minecraft:pillager_spawn_egg*8,minecraft:cobblestone*64,minecraft:oak_planks*64,minecraft:shield,minecraft:diamond_chestplate,minecraft:golden_apple*8,minecraft:cooked_beef*16
+```
+
 ## Review fixes
 
 ### The starting kit keeps the quotes inside its components
