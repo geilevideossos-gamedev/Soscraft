@@ -9350,12 +9350,12 @@ mod tests {
         let zombie = server.mobs.zombies().last().expect("a zombie");
         assert_eq!((zombie.zombie.body.position.to_array(), zombie.yaw), (position, -120.0));
         let dormant = server.dormant.len();
-        assert!(server.hatch_egg("minecraft:fox", position, 0.0).is_err());
+        assert!(server.hatch_egg("minecraft:illusioner", position, 0.0).is_err());
         assert_eq!(server.dormant.len(), dormant);
         let mut handle = ServerHandle::spawn(server);
         handle.hatch_egg(0, "minecraft:cow".to_owned(), position, 45.0);
         handle.hatch_egg(0, "minecraft:not_a_mob".to_owned(), position, 0.0);
-        handle.hatch_egg(0, "minecraft:fox".to_owned(), position, 0.0);
+        handle.hatch_egg(0, "minecraft:illusioner".to_owned(), position, 0.0);
         handle.wait_idle();
         let answers: Vec<_> = handle.poll().into_iter().flat_map(|out| out.summoned).map(|(_, answer)| answer).collect();
         assert_eq!(answers.len(), 3);

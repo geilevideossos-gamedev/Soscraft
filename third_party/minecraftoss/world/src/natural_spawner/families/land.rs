@@ -151,6 +151,7 @@ mod tests {
     use minecraftoss_core::{BiomeId, BlockPos, BlockStateId, ChunkPos};
 
     const RABBIT: &str = "minecraft:rabbit";
+    const FOX: &str = "minecraft:fox";
     const POLAR_BEAR: &str = "minecraft:polar_bear";
     const PANDA: &str = "minecraft:panda";
 
@@ -345,6 +346,156 @@ mod tests {
                 assert!(calls.concat().is_empty(), "{biome}: none on {why}");
             }
         }
+    }
+
+    fn creatures(
+        kind: &str,
+        biome: &str,
+        floor: &str,
+        sky: i32,
+    ) -> Option<(Vec<Vec<Tag>>, Vec<String>)> {
+        let paths = minecraftoss_core::registries::DataPaths::discover().ok()?;
+        let registries = minecraftoss_core::Registries::load(&paths).ok()?;
+        registries.entities.as_ref()?;
+        let biome = registries.biomes.id(biome)?;
+        let floor = registries.blocks.parse_state(floor).ok()?;
+        let registries = std::sync::Arc::new(registries);
+        let mut spawns = CreatureSpawns::load(registries, "minecraft:overworld", false).ok()?;
+        spawns.by_category[usize::from(biome.0)][MobCategory::Creature as usize] = Creatures {
+            entries: vec![SpawnerData {
+                kind: kind.to_owned(),
+                weight: 1,
+                min: 4,
+                max: 4,
+                constant: true,
+            }],
+            total: 1,
+        };
+        let mut level = Field {
+            floor,
+            sky,
+            biome,
+            random: LegacyRandom::new(49),
+            made: 0,
+            added: Vec::new(),
+            notes: Vec::new(),
+        };
+        let players = [[8.5, 64.0, 40.5]];
+        let mut calls = Vec::new();
+        for _ in 0..60 {
+            let before = level.added.len();
+            spawns.spawn_category_for_position(
+                &mut level,
+                &mut context(&players),
+                &mut Unlimited,
+                MobCategory::Creature,
+                ChunkPos::new(0, 0),
+                BlockPos::new(8, 64, 8),
+            );
+            calls.push(level.added[before..].to_vec());
+        }
+        Some((calls, level.notes))
+    }
+
+    #[test]
+    fn foxes_spawn_on_podzol_in_light_in_groups_with_a_snowy_variant_in_snowy_biomes() {
+        let info = type_info(FOX).unwrap();
+        assert_eq!(
+            (info.width, info.height, info.placement, info.fire_immune),
+            (0.6, 0.7, Placement::NoRestrictions, false)
+        );
+        assert!(matches!(
+            info.heightmap,
+            HeightmapKind::MotionBlockingNoLeaves
+        ));
+        assert!(matches!(
+            info.rules,
+            Rules::SpawnableOn("minecraft:foxes_spawnable_on")
+        ));
+        assert_eq!(MobCategory::of_type(FOX), Some(MobCategory::Creature));
+        assert!(
+            super::super::row(FOX).is_none(),
+            "the built-in row spawns it"
+        );
+        let mut held = 0;
+        let mut foxes = 0;
+        let mut cubs = 0;
+        for (biome, floor, variant) in [
+            ("minecraft:taiga", "minecraft:podzol", "red"),
+            ("minecraft:taiga", "minecraft:grass_block", "red"),
+            ("minecraft:snowy_taiga", "minecraft:snow_block", "snow"),
+        ] {
+            let Some((calls, notes)) = creatures(FOX, biome, floor, 15) else {
+                return;
+            };
+            assert!(notes.is_empty(), "{biome}: {notes:?}");
+            let mut groups = 0;
+            for call in calls.iter().filter(|call| !call.is_empty()) {
+                groups += 1;
+                let babies: Vec<bool> = call
+                    .iter()
+                    .map(|tag| int(tag, "Age") == Some(-24000))
+                    .collect();
+                for (index, &baby) in babies.iter().enumerate() {
+                    let after_two = index >= 2 && (babies[index - 1] || !babies[index - 2]);
+                    assert!(
+                        !baby || after_two,
+                        "{biome}: cubs from a group's third fox on: {babies:?}"
+                    );
+                }
+                cubs += babies.iter().filter(|&&baby| baby).count();
+                for tag in call {
+                    foxes += 1;
+                    assert_eq!(tag.get("id").and_then(Tag::as_str), Some(FOX));
+                    let kind = tag.get("Type").and_then(Tag::as_str);
+                    assert_eq!(kind, Some(variant), "{biome}");
+                    let follow = tag
+                        .get("attributes")
+                        .and_then(Tag::as_list)
+                        .and_then(|list| {
+                            list.iter().find(|entry| {
+                                entry.get("id").and_then(Tag::as_str)
+                                    == Some("minecraft:follow_range")
+                            })
+                        })
+                        .and_then(|entry| entry.get("base"))
+                        .and_then(Tag::as_f64);
+                    assert_eq!(follow, Some(32.0));
+                    let item = tag
+                        .get("equipment")
+                        .and_then(|equipment| equipment.get("mainhand"))
+                        .and_then(|stack| stack.get("id"))
+                        .and_then(Tag::as_str);
+                    if let Some(item) = item {
+                        held += 1;
+                        assert!(
+                            [
+                                "minecraft:emerald",
+                                "minecraft:egg",
+                                "minecraft:rabbit_foot",
+                                "minecraft:rabbit_hide",
+                                "minecraft:wheat",
+                                "minecraft:leather",
+                                "minecraft:feather",
+                            ]
+                            .contains(&item),
+                            "{item}"
+                        );
+                    }
+                }
+            }
+            assert!(groups > 5, "{biome}: {groups}");
+            for (floor, sky, why) in [("minecraft:stone", 15, "stone"), (floor, 8, "the dark")] {
+                let (calls, _) = creatures(FOX, biome, floor, sky).unwrap();
+                assert!(calls.concat().is_empty(), "{biome}: none on {why}");
+            }
+        }
+        assert!(cubs > 10, "{cubs} cubs");
+        let share = f64::from(held) / f64::from(foxes);
+        assert!(
+            (0.1..0.3).contains(&share),
+            "{held} of {foxes} hold an item"
+        );
     }
 
     fn pandas() -> Option<(Vec<Vec<Tag>>, Vec<String>)> {
