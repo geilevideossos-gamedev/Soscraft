@@ -13,6 +13,8 @@ Files under `third_party/minecraftoss` this track patched or added.
 - Patched (water-hooks 1): `entities/src/world/families.rs` (the `Breath` hook), `entities/src/world/living.rs` (`breathe_up_to`, `breathe_with_gills`), `entities/src/world/families/water.rs` (the registration of the test probe).
 - Added (water-hooks 1): `entities/src/world/families/water/swimming.rs`, `entities/src/world/families/water/swimming/swim_probe.rs` (test only), `entities/src/world/families/water/tests.rs` (test only).
 - Patched (water-hooks 2): `entities/src/world/emissions.rs` (the own step at zero volume and an empty swim sound stay silent). Changed again: `entities/src/world/families.rs` (`swim_sounds`, `quiet_steps`, `movement_sounds`), the probe and the water tests.
+- Patched (water-paths 1): `entities/src/walk_path.rs` (the A* loop over the private `NodeSource`, and `#[cfg(test)] mod tests;`).
+- Added (water-paths 1): `entities/src/walk_path/tests.rs` (test only).
 
 ## Hooks
 
@@ -42,10 +44,10 @@ Nothing yet.
 
 ## Combined kit
 
-Everything this track's test steps need so far (7 stacks):
+Everything this track's test steps need so far (11 stacks):
 
 ```
-IW4L_MINECRAFT_KIT=minecraft:rabbit_spawn_egg*4,minecraft:polar_bear_spawn_egg*2,minecraft:silverfish_spawn_egg*2,minecraft:water_bucket,minecraft:glass*16,minecraft:stone*64,minecraft:iron_shovel
+IW4L_MINECRAFT_KIT=minecraft:rabbit_spawn_egg*4,minecraft:polar_bear_spawn_egg*2,minecraft:silverfish_spawn_egg*2,minecraft:zombie_spawn_egg*2,minecraft:drowned_spawn_egg*2,minecraft:cow_spawn_egg*2,minecraft:water_bucket,minecraft:glass*16,minecraft:stone*64,minecraft:iron_shovel,minecraft:iron_sword
 ```
 
 ## Segment m2a
@@ -121,4 +123,27 @@ After 0fa9ec48.
 
 ```
 IW4L_MINECRAFT_KIT=minecraft:polar_bear_spawn_egg*2,minecraft:rabbit_spawn_egg*4,minecraft:silverfish_spawn_egg*2,minecraft:stone*64,minecraft:water_bucket,minecraft:iron_shovel
+```
+
+### Group water-paths
+
+#### 1. Minecraft path search takes any node evaluator
+
+After 287abc2f.
+
+- **Why:** vanilla's `PathFinder` takes any `NodeEvaluator`, but here the A* loop (`find_path_to_any`) took the walk evaluator itself. d0b made the flying search a mode of that evaluator (one A* for walking and flying) and did not split the loop, so this commit does, as M2-1 plans: the swim evaluator of the next commit plugs into the same loop, and `Node` and `Heap` stay private to `walk_path.rs`.
+- **Changed (vendored entities crate, `walk_path.rs`):** a private trait `NodeSource` (`profile`, `nodes`, `node`, `start`, `neighbors`), implemented by the walk evaluator by handing each call to its own method, so the walk and the flying search run exactly as before. `find_path_to_any` is generic over it. The longest path and the node budget are read from the profile before the start node is made instead of after the targets' nodes (no side effects either way). Nothing public changes.
+- **Tests added** (`walk_path::tests`, a new test file beside `walk_path.rs`):
+  - `the_walk_search_is_unchanged_behind_the_evaluator_split`: six searches over a stone field with a wall and a pool, pinned node by node to what the search gave before the split (the paths were recorded on 287abc2f's code first): a cow around the wall; a cow to the best of three targets with reach 1; a cow afloat in the pool climbing out; a mob that cannot float stopping before the water; a cow cut short by its 16-block follow range; and a flyer over the wall through `find_fly_path_to_any`.
+- **Unchanged:** every walk, flying and goal test, and the `bin/check_*` fixtures (none was touched).
+- **Decisions:**
+  - The loop keeps its variable names and reaches the nodes through `nodes()`, so the diff of the loop is mechanical; `reconstruct` became a `FnMut` closure for it.
+  - The trait stays private: the searches are reached through the public `find_*` functions, as before.
+- **Test steps** (regression of paths; nothing new to see). Release build, survival, Normal, by day, flat open ground in the Overworld. Name each screenshot by its label.
+  1. Build a stone wall 7 wide and 3 high. Stand behind its middle and use a zombie egg 6 blocks in front of it. The zombie walks round one end of the wall and comes at you. **m2-paths-1**
+  2. Dig a pool 5 x 5 and 3 deep, fill it from the water bucket, and use a drowned egg in it: the drowned swims to you when you stand at the edge. Use two cow eggs beside the pool: they wander as before, and a cow pushed into the pool swims out.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:zombie_spawn_egg*2,minecraft:drowned_spawn_egg*2,minecraft:cow_spawn_egg*2,minecraft:stone*64,minecraft:water_bucket,minecraft:iron_shovel,minecraft:iron_sword
 ```

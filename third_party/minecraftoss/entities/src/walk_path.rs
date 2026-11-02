@@ -826,22 +826,51 @@ pub fn find_fly_path_to_any<W: World + ?Sized>(world: &W, profile: &WalkProfile,
     find_path_to_any(evaluator, targets, reach_range)
 }
 
-fn find_path_to_any<W: World + ?Sized>(mut evaluator: Evaluator<'_, W>, targets: &[NodePos], reach_range: i32) -> Option<FoundPath> {
+trait NodeSource {
+    fn profile(&self) -> &WalkProfile;
+    fn nodes(&mut self) -> &mut [Node];
+    fn node(&mut self, pos: NodePos) -> usize;
+    fn start(&mut self) -> usize;
+    fn neighbors(&mut self, current: usize) -> Vec<usize>;
+}
+
+impl<W: World + ?Sized> NodeSource for Evaluator<'_, W> {
+    fn profile(&self) -> &WalkProfile {
+        self.profile
+    }
+
+    fn nodes(&mut self) -> &mut [Node] {
+        &mut self.nodes
+    }
+
+    fn node(&mut self, pos: NodePos) -> usize {
+        Evaluator::node(self, pos)
+    }
+
+    fn start(&mut self) -> usize {
+        Evaluator::start(self)
+    }
+
+    fn neighbors(&mut self, current: usize) -> Vec<usize> {
+        Evaluator::neighbors(self, current)
+    }
+}
+
+fn find_path_to_any<S: NodeSource>(mut evaluator: S, targets: &[NodePos], reach_range: i32) -> Option<FoundPath> {
     if targets.is_empty() {
         return None;
     }
-    let profile = evaluator.profile;
+    let max_path_length = evaluator.profile().max_path_length.unwrap_or(evaluator.profile().follow_range);
+    let max_visited = evaluator.profile().max_visited_nodes();
     let start = evaluator.start();
     // `Collectors.toMap` of `getTarget`: the targets' nodes are made before
     // the search, and the map (16 buckets) orders them by node hash.
     let mut keys = Vec::with_capacity(targets.len());
     for &pos in targets {
         let node = evaluator.node(pos);
-        keys.push((evaluator.nodes[node].pos, pos));
+        keys.push((evaluator.nodes()[node].pos, pos));
     }
     let keys = java_hash_order(&keys, |(at, _)| node_hash(at), 16);
-    let max_path_length = profile.max_path_length.unwrap_or(profile.follow_range);
-    let max_visited = profile.max_visited_nodes();
     let mut best: Vec<(f32, usize)> = vec![(f32::MAX, start); keys.len()];
     let best_h = |nodes: &[Node], node: usize, best: &mut [(f32, usize)]| {
         let mut min = f32::MAX;
@@ -855,12 +884,12 @@ fn find_path_to_any<W: World + ?Sized>(mut evaluator: Evaluator<'_, W>, targets:
         min
     };
     let mut heap = Heap::default();
-    let h = best_h(&evaluator.nodes, start, &mut best);
-    evaluator.nodes[start].g = 0.0;
-    evaluator.nodes[start].h = h;
-    evaluator.nodes[start].f = h;
-    heap.insert(&mut evaluator.nodes, start);
-    let start_pos = evaluator.nodes[start].pos;
+    let h = best_h(evaluator.nodes(), start, &mut best);
+    evaluator.nodes()[start].g = 0.0;
+    evaluator.nodes()[start].h = h;
+    evaluator.nodes()[start].f = h;
+    heap.insert(evaluator.nodes(), start);
+    let start_pos = evaluator.nodes()[start].pos;
     let mut reached: Vec<usize> = Vec::new();
     let mut count = 0;
     while !heap.0.is_empty() {
@@ -868,44 +897,44 @@ fn find_path_to_any<W: World + ?Sized>(mut evaluator: Evaluator<'_, W>, targets:
         if count >= max_visited {
             break;
         }
-        let current = heap.pop(&mut evaluator.nodes);
-        evaluator.nodes[current].closed = true;
+        let current = heap.pop(evaluator.nodes());
+        evaluator.nodes()[current].closed = true;
         for (i, &(at, _)) in keys.iter().enumerate() {
-            if distance_manhattan(evaluator.nodes[current].pos, at) <= reach_range as f32 && !reached.contains(&i) {
+            if distance_manhattan(evaluator.nodes()[current].pos, at) <= reach_range as f32 && !reached.contains(&i) {
                 reached.push(i);
             }
         }
         if !reached.is_empty() {
             break;
         }
-        if distance(evaluator.nodes[current].pos, start_pos) >= max_path_length {
+        if distance(evaluator.nodes()[current].pos, start_pos) >= max_path_length {
             continue;
         }
         for neighbor in evaluator.neighbors(current) {
-            let step = distance(evaluator.nodes[current].pos, evaluator.nodes[neighbor].pos);
-            evaluator.nodes[neighbor].walked = evaluator.nodes[current].walked + step;
-            let g = evaluator.nodes[current].g + step + evaluator.nodes[neighbor].cost_malus;
-            if evaluator.nodes[neighbor].walked < max_path_length && (evaluator.nodes[neighbor].heap_index < 0 || g < evaluator.nodes[neighbor].g) {
-                evaluator.nodes[neighbor].came_from = Some(current);
-                evaluator.nodes[neighbor].g = g;
-                let h = best_h(&evaluator.nodes, neighbor, &mut best) * 1.5;
-                evaluator.nodes[neighbor].h = h;
-                if evaluator.nodes[neighbor].heap_index >= 0 {
+            let step = distance(evaluator.nodes()[current].pos, evaluator.nodes()[neighbor].pos);
+            evaluator.nodes()[neighbor].walked = evaluator.nodes()[current].walked + step;
+            let g = evaluator.nodes()[current].g + step + evaluator.nodes()[neighbor].cost_malus;
+            if evaluator.nodes()[neighbor].walked < max_path_length && (evaluator.nodes()[neighbor].heap_index < 0 || g < evaluator.nodes()[neighbor].g) {
+                evaluator.nodes()[neighbor].came_from = Some(current);
+                evaluator.nodes()[neighbor].g = g;
+                let h = best_h(evaluator.nodes(), neighbor, &mut best) * 1.5;
+                evaluator.nodes()[neighbor].h = h;
+                if evaluator.nodes()[neighbor].heap_index >= 0 {
                     let f = g + h;
-                    heap.change_cost(&mut evaluator.nodes, neighbor, f);
+                    heap.change_cost(evaluator.nodes(), neighbor, f);
                 } else {
-                    evaluator.nodes[neighbor].f = g + h;
-                    heap.insert(&mut evaluator.nodes, neighbor);
+                    evaluator.nodes()[neighbor].f = g + h;
+                    heap.insert(evaluator.nodes(), neighbor);
                 }
             }
         }
     }
-    let reconstruct = |i: usize| {
+    let mut reconstruct = |i: usize| {
         let mut nodes = Vec::new();
         let mut current = Some(best[i].1);
         while let Some(index) = current {
-            nodes.push(evaluator.nodes[index].pos);
-            current = evaluator.nodes[index].came_from;
+            nodes.push(evaluator.nodes()[index].pos);
+            current = evaluator.nodes()[index].came_from;
         }
         nodes.reverse();
         nodes
@@ -1063,3 +1092,6 @@ pub fn fly_path_type<W: World + ?Sized>(world: &W, (x, y, z): NodePos, mob: Node
     }
     path_type
 }
+
+#[cfg(test)]
+mod tests;
