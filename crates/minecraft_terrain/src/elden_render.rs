@@ -524,9 +524,11 @@ pub fn clip(length: u16, poses: &[PoseKey], looping: bool) -> Definition {
     definition
 }
 
+type WalkKeys = [(f32, [f32; 3]); 3];
+
 fn walk() -> Definition {
     let mut walk = Definition::new(WALK_SECONDS, true);
-    let rotations: [(Bone, [(f32, [f32; 3]); 3]); 5] = [
+    let rotations: [(Bone, WalkKeys); 5] = [
         (
             Bone::RightLeg,
             [

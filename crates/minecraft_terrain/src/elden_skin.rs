@@ -106,7 +106,7 @@ pub fn paint() -> RgbaImage {
     fill(&mut skin, BEARD_AREA, BEARD_GREY, 14, 3);
     for y in BEARD_AREA[1]..BEARD_AREA[3] {
         for x in BEARD_AREA[0]..BEARD_AREA[2] {
-            if hash(x, 0, 4) % 3 == 0 {
+            if hash(x, 0, 4).is_multiple_of(3) {
                 darken(&mut skin, x, y, 30);
             }
         }
@@ -120,7 +120,7 @@ pub fn paint() -> RgbaImage {
     fill(&mut skin, WOOD_AREA, CANE, 6, 6);
     for y in WOOD_AREA[1]..WOOD_AREA[3] {
         for x in WOOD_AREA[0]..WOOD_AREA[2] {
-            if hash(x, y / 4, 7) % 3 == 0 {
+            if hash(x, y / 4, 7).is_multiple_of(3) {
                 darken(&mut skin, x, y, 22);
             }
         }
@@ -133,7 +133,7 @@ pub fn paint() -> RgbaImage {
     fill(&mut skin, CLOTH_AREA, CLOAK, 6, 11);
     for y in CLOTH_AREA[1]..CLOTH_AREA[3] {
         for x in CLOTH_AREA[0]..CLOTH_AREA[2] {
-            if hash(x, y, 12) % 9 == 0 {
+            if hash(x, y, 12).is_multiple_of(9) {
                 darken(&mut skin, x, y, 12);
             }
         }
@@ -141,17 +141,17 @@ pub fn paint() -> RgbaImage {
     fill(&mut skin, MANTLE, FUR, 14, 13);
     fill(&mut skin, SKIRT_AREA, CLOAK, 6, 14);
     for x in HEM[0]..HEM[2] {
-        if hash(x, HEM[1], 15) % 5 == 0 {
+        if hash(x, HEM[1], 15).is_multiple_of(5) {
             skin.get_pixel_mut(x, HEM[1]).0[3] = 0;
         }
-        if hash(x, HEM[3], 16) % 2 == 0 {
+        if hash(x, HEM[3], 16).is_multiple_of(2) {
             skin.get_pixel_mut(x, HEM[3] - 1).0[3] = 0;
         }
     }
     fill(&mut skin, GOLD_AREA, GOLDEN, 14, 17);
     for y in GOLD_AREA[1]..GOLD_AREA[3] {
         for x in GOLD_AREA[0]..GOLD_AREA[2] {
-            if hash(x, y, 18) % 7 == 0 {
+            if hash(x, y, 18).is_multiple_of(7) {
                 dot(&mut skin, [x, y], GLEAM);
             }
         }
@@ -159,7 +159,7 @@ pub fn paint() -> RgbaImage {
     fill(&mut skin, ARM_AREA, PALE, 8, 19);
     for y in ARM_AREA[1]..ARM_AREA[3] {
         for x in ARM_AREA[0]..ARM_AREA[2] {
-            if hash(x, 0, 20) % 4 == 0 {
+            if hash(x, 0, 20).is_multiple_of(4) {
                 darken(&mut skin, x, y, 26);
             }
         }

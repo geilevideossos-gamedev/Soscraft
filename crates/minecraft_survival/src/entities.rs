@@ -3785,7 +3785,7 @@ mod tests {
             };
             assert!(overlay, "on the action bar");
             assert_eq!(text.resolve(&|_| None).text, "GREAT ENEMY FELLED");
-            assert_eq!(out.own_sounds, [chime.clone()], "the chime for this player");
+            assert_eq!(out.own_sounds, std::slice::from_ref(&chime), "the chime for this player");
         }
         assert!(!queues.0.contains_key(&99), "a player not in this level is not queued");
         assert!(crate::heard::actor_only(&chime.0), "heard by that player only");

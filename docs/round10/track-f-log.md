@@ -1031,6 +1031,29 @@ After 8a37d278.
 IW4L_MINECRAFT_KIT=minecraft:white_bed
 ```
 
+## Final checks of segment f3
+
+### 30. Margit's skin, walk and felled test pass clippy
+
+After 2224aa49.
+
+- **Why:** clippy on the crates segment f3 touched (from `git diff --stat r10-f3-base..HEAD`: `elden_boss`, `frame`, `hud`, `minecraft_survival`, `minecraft_terrain`, `render_anim` and the vendored `minecraftoss-entities`) warned on nine lines this segment added: seven `clippy::manual_is_multiple_of` in `elden_skin.rs`, one `clippy::type_complexity` in `elden_render.rs` and one `clippy::cloned_ref_to_slice_refs` in the felled test of `minecraft_survival`'s `entities.rs`.
+- **Changed:**
+  - `minecraft_terrain`, `elden_skin.rs`: the seven noise checks of `paint()` use `u32::is_multiple_of` instead of `% n == 0`. The skin's pixels are the same.
+  - `minecraft_terrain`, `elden_render.rs`: the walk's keys have a type alias `WalkKeys`, so `walk()`'s rotation table reads `[(Bone, WalkKeys); 5]`. Same keys.
+  - `minecraft_survival`, `entities.rs` (test only): `every_fighter_is_told_great_enemy_felled` compares the player's sounds with `std::slice::from_ref(&chime)`.
+- **Tests:** none new; nothing changes in behaviour.
+- **Runs:**
+  - `clippy -p elden_boss -p frame -p hud -p minecraft_survival -p minecraft_terrain -p render_anim -p minecraftoss-entities --locked --all-targets -- -A clippy::approx_constant`: after the fix no warning on a line segment f3 added (checked against the added lines of `git diff -U0 r10-f3-base`); `elden_boss` and `frame` have none at all; the older warnings of `hud` (62), `minecraft_terrain` (34), `minecraft_survival` (1, `menus.rs`) and `render_anim` (82) stay. The entities crate, outside the workspace, was linted through `clippy-driver` as `RUSTC_WRAPPER` (as in commit 16) after touching its three Margit files: 79 warnings in its lib, none in Margit's files or on a line of this segment.
+  - `test -p elden_boss -p frame -p hud --locked`: 57, 28 and 200 passed; doc-tests 0.
+  - `test -p minecraft_terrain --locked`: 1594 passed and 3 ignored; doc-tests 0.
+  - `test -p minecraft_survival --locked`: 814 passed, `vanilla_world` 1 passed; doc-tests 0.
+  - `test -p render_anim --locked`: 220 passed; doc-tests 0.
+  - `test -p minecraftoss-entities --locked`: 508 passed (the bins have no tests); doc-tests 0.
+  - `check -p launcher --locked`: green, with only the old render_frame and skate warnings.
+  - Every new `.rs` file of segment f3 (`elden_boss/src/flight.rs` with edition 2024, `elden_altar.rs`, `elden_bar.rs`, `elden_effects.rs`, `elden_felled.rs`, `elden_render.rs`, `elden_show.rs` and `elden_skin.rs` in `minecraft_terrain` and the entities crate's `blows.rs` with 2021, `render_anim/src/minecraft_elden.rs` with 2024) passes `rustfmt --check` with empty output on its staged content, and no line the segment added holds a comment.
+- **Owner's steps:** none: no behaviour changes. Every commit of the segment (17 to 29) has its steps above, and the release test below covers them all with one kit line.
+
 ## Owner's test for the release
 
 Brief F, "Owner's test for the release", adjusted to what was built (commits 7 to 29). What the owner runs on the release build after segment f2 merges. Name each screenshot by its label, `f03_margit_rises.png`; for a step that asks for both windows, `f12_friend_view-host.png` and `f12_friend_view-friend.png`.
