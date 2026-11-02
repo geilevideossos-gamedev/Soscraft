@@ -3198,7 +3198,7 @@ mod tests {
         let kinds = simulated_kinds();
         assert!(kinds.windows(2).all(|pair| pair[0] < pair[1]), "sorted, each once");
         assert!(SIMULATED_KINDS.iter().all(|kind| kinds.contains(kind) && is_simulated(kind)));
-        assert!(!is_simulated("minecraft:phantom") && !kinds.contains(&"minecraft:phantom"));
+        assert!(!is_simulated("minecraft:giant") && !kinds.contains(&"minecraft:giant"));
         let mut world = EntityWorld::default();
         for kind in registered {
             assert!(is_simulated(kind) && kinds.contains(&kind), "{kind}");

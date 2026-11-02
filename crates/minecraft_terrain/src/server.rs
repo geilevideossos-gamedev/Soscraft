@@ -9537,14 +9537,14 @@ mod tests {
     }
 
     #[test]
-    fn live_shulkers_stay_far_from_players_while_dormant_monsters_go() {
+    fn live_shulkers_stay_far_from_players_while_other_monsters_go() {
         let Some((mut server, _)) = door_world() else { return };
         let fresh = minecraftoss_core::snbt::parse_compound("{}").unwrap();
         server.summon("minecraft:shulker", [8.5, 200.0, 8.5], Some(&fresh), 0.0).unwrap();
         server.summon("minecraft:phantom", [9.5, 200.0, 8.5], Some(&fresh), 0.0).unwrap();
-        let kinds = |server: &ServerSim| server.dormant.iter().map(|(group, _)| group[0].kind.clone()).collect::<Vec<_>>();
-        assert_eq!(kinds(&server), ["minecraft:phantom"]);
-        assert_eq!(server.mobs.shulkers().len(), 1, "shulkers are simulated");
+        let phantoms = |server: &ServerSim| server.mobs.family::<minecraftoss_entities::world::families::night::phantoms::Phantom>().len();
+        assert!(server.dormant.is_empty(), "phantoms are simulated");
+        assert_eq!((server.mobs.shulkers().len(), phantoms(&server)), (1, 1), "shulkers are simulated");
         let player = minecraftoss_entities::tempt::PlayerCandidate {
             id: 0,
             position: glam::DVec3::new(3008.5, 200.0, 8.5),
@@ -9566,9 +9566,14 @@ mod tests {
             attackable: true,
         };
         server.despawn_mobs(&[player], 2);
-        assert!(kinds(&server).is_empty());
+        assert_eq!(phantoms(&server), 0, "a live phantom far from every player goes");
         assert_eq!(server.mobs.shulkers().len(), 1);
-        server.despawn_mobs(&[player], 0);
+        server.summon("minecraft:phantom", [9.5, 200.0, 8.5], Some(&fresh), 0.0).unwrap();
+        let near = minecraftoss_entities::tempt::PlayerCandidate { position: glam::DVec3::new(8.5, 200.0, 11.5), ..player };
+        server.despawn_mobs(&[near], 2);
+        assert_eq!(phantoms(&server), 1, "a phantom near a player stays");
+        server.despawn_mobs(&[near], 0);
+        assert_eq!(phantoms(&server), 0, "phantoms are not allowed in peaceful");
         assert_eq!(server.mobs.shulkers().len(), 1, "shulkers are allowed in peaceful");
     }
 
@@ -11538,13 +11543,13 @@ mod tests {
                 server.level.set_block_entity_value(minecraftoss_core::BlockPos::new(pos.0, pos.1, pos.2), "normal_config", Tag::String(config.to_owned()));
             }
         };
-        let (zombies, breezes, empty, phantoms, far) = ((2, 200, 2), (6, 200, 2), (10, 200, 2), (14, 200, 2), (100, 200, 2));
+        let (zombies, breezes, empty, giants, far) = ((2, 200, 2), (6, 200, 2), (10, 200, 2), (14, 200, 2), (100, 200, 2));
         place(&mut server, zombies, Some("minecraft:trial_chamber/melee/zombie/normal"));
         place(&mut server, breezes, Some("minecraft:trial_chamber/breeze/normal"));
         place(&mut server, empty, None);
-        place(&mut server, phantoms, None);
-        let unsimulated = minecraftoss_core::snbt::parse_compound("{spawn_potentials:[{data:{entity:{id:\"minecraft:phantom\"}},weight:1}]}").unwrap();
-        server.level.set_block_entity_value(minecraftoss_core::BlockPos::new(phantoms.0, phantoms.1, phantoms.2), "normal_config", unsimulated);
+        place(&mut server, giants, None);
+        let unsimulated = minecraftoss_core::snbt::parse_compound("{spawn_potentials:[{data:{entity:{id:\"minecraft:giant\"}},weight:1}]}").unwrap();
+        server.level.set_block_entity_value(minecraftoss_core::BlockPos::new(giants.0, giants.1, giants.2), "normal_config", unsimulated);
         place(&mut server, far, Some("minecraft:trial_chamber/melee/zombie/normal"));
         server.take_block_entity_changes();
         server.take_changes();
@@ -11561,12 +11566,12 @@ mod tests {
         };
         assert_eq!(at(&server, zombies), ("waiting_for_players".to_owned(), Some(Some("minecraft:zombie".to_owned()))));
         assert_eq!(at(&server, breezes), ("waiting_for_players".to_owned(), Some(Some("minecraft:breeze".to_owned()))), "breezes are simulated");
-        assert_eq!(at(&server, phantoms), ("inactive".to_owned(), Some(Some("minecraft:phantom".to_owned()))), "phantoms are not simulated yet");
+        assert_eq!(at(&server, giants), ("inactive".to_owned(), Some(Some("minecraft:giant".to_owned()))), "giants are not simulated");
         assert_eq!(at(&server, empty), ("inactive".to_owned(), Some(None)), "the default config spawns nothing");
         assert_eq!(at(&server, far), ("inactive".to_owned(), None), "outside the simulation area nothing ticks");
-        let spawners = [zombies, breezes, empty, phantoms, far];
+        let spawners = [zombies, breezes, empty, giants, far];
         let changed: Vec<BlockPos> = server.take_block_entity_changes().into_iter().filter(|(pos, tag)| spawners.contains(pos) && tag.as_ref().is_some_and(|tag| tag.get("spawn_data").is_some())).map(|(pos, _)| pos).collect();
-        assert_eq!(changed, [zombies, breezes, empty, phantoms]);
+        assert_eq!(changed, [zombies, breezes, empty, giants]);
         let blocks: Vec<BlockPos> = server.take_changes().into_iter().map(|(pos, _)| pos).filter(|pos| spawners.contains(pos)).collect();
         assert_eq!(blocks, [zombies, breezes]);
         let before = server.level.chunk(ChunkPos::new(0, 0)).and_then(|chunk| chunk.block_entities.entities.get(&zombies)).cloned();
@@ -11576,7 +11581,7 @@ mod tests {
         }
         let after = server.level.chunk(ChunkPos::new(0, 0)).and_then(|chunk| chunk.block_entities.entities.get(&zombies)).cloned();
         assert_eq!(before, after, "a waiting spawner keeps its mob");
-        assert_eq!(at(&server, phantoms).0, "inactive");
+        assert_eq!(at(&server, giants).0, "inactive");
         assert!(server.take_block_entity_changes().iter().all(|(pos, _)| !spawners.contains(pos)));
     }
 
