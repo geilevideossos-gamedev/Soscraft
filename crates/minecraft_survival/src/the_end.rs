@@ -453,8 +453,8 @@ pub(crate) mod tests {
             !build_platform(&mut level, &mut steve),
             "one platform per arrival"
         );
-        let changes = server_answer(&mut level, |sim| sim.take_changes());
-        assert!(changes.contains(&((101, 50, 0), None)), "{changes:?}");
+        let cleared = server_answer(&mut level, |sim| sim.command_block((101, 50, 0)));
+        assert_eq!(cleared, minecraftoss_core::BlockStateId::AIR);
         let items = server_answer(&mut level, |sim| {
             sim.items()
                 .into_iter()
