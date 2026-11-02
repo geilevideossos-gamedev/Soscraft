@@ -3,6 +3,12 @@ use super::*;
 use crate::inside_blocks::Hazard;
 
 pub const DAMAGE: f32 = 5.0;
+pub const ZOMBIFIED_PIGLIN: &str = "minecraft:zombified_piglin";
+pub const WITCH: &str = "minecraft:witch";
+pub const MOOSHROOM_CONVERT: &str = "entity.mooshroom.convert";
+const GOLDEN_SWORD: &str = "minecraft:golden_sword";
+const GOLDEN_SPEAR: &str = "minecraft:golden_spear";
+const PEACEFUL: i32 = 0;
 const IGNITE_TICKS: i32 = 160;
 const REACH: f64 = 3.0;
 const HEIGHT: f64 = 6.0;
@@ -22,11 +28,19 @@ impl Bolt {
         let max = body.position + DVec3::new(half, f64::from(body.height), half);
         min.cmplt(high).all() && max.cmpgt(low).all()
     }
+
+    pub fn name(&self) -> String {
+        format!("{:032x}", crate::gossip::uuid_from_ints(self.uuid))
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum ThunderOutcome {
-    Convert { id: u64, into: &'static str },
+    Convert {
+        id: u64,
+        into: &'static str,
+        held: Option<&'static str>,
+    },
 }
 
 fn thunder_fire(body: &mut Body) {
@@ -39,6 +53,7 @@ fn thunder_fire(body: &mut Body) {
 impl EntityWorld {
     pub fn thunder_hit(&mut self, bolt: &Bolt, world: &dyn World) -> Vec<ThunderOutcome> {
         let game_time = self.game_time;
+        let mut outcomes = Vec::new();
         for key in self.order.clone() {
             let Some(mob) = self.struck_mut(key) else {
                 continue;
@@ -51,13 +66,72 @@ impl EntityWorld {
                     continue;
                 }
             }
+            if self.thunder_turn(key, bolt, &mut outcomes) {
+                continue;
+            }
             let Some(mob) = self.struck_mut(key) else {
                 continue;
             };
             thunder_fire(mob.body());
             mob.hurt_hazard(Hazard::LightningBolt, DAMAGE, world, game_time);
+            if let EntityKey::Creeper(id) = key {
+                if let Some(entity) = self.creepers.iter_mut().find(|e| e.id == id) {
+                    entity.creeper.powered = true;
+                }
+            }
         }
-        Vec::new()
+        outcomes
+    }
+
+    fn thunder_turn(
+        &mut self,
+        key: EntityKey,
+        bolt: &Bolt,
+        outcomes: &mut Vec<ThunderOutcome>,
+    ) -> bool {
+        let peaceful = self.difficulty == PEACEFUL;
+        match key {
+            EntityKey::Pig(id) if !peaceful => {
+                let Some(entity) = self.pigs.iter_mut().find(|e| e.id == id) else {
+                    return false;
+                };
+                let held = if entity.random.next_int(20) == 0 {
+                    GOLDEN_SPEAR
+                } else {
+                    GOLDEN_SWORD
+                };
+                outcomes.push(ThunderOutcome::Convert {
+                    id,
+                    into: ZOMBIFIED_PIGLIN,
+                    held: Some(held),
+                });
+                true
+            }
+            EntityKey::Villager(id) if !peaceful => {
+                self.release_villager_pois(id);
+                outcomes.push(ThunderOutcome::Convert {
+                    id,
+                    into: WITCH,
+                    held: None,
+                });
+                true
+            }
+            EntityKey::Cow(id) => {
+                let Some(entity) = self.cows.iter_mut().find(|e| e.id == id) else {
+                    return false;
+                };
+                let position = entity.cow.body.position;
+                let Some(mooshroom) = entity.mooshroom.as_mut() else {
+                    return false;
+                };
+                if mooshroom.lightning_hit(&bolt.name()) {
+                    let voice = Voice::Event(MOOSHROOM_CONVERT, 2.0, 1.0);
+                    entity.voices.push((voice, position));
+                }
+                true
+            }
+            _ => false,
+        }
     }
 
     fn struck_mut(&mut self, key: EntityKey) -> Option<&mut dyn Exposed> {
@@ -173,6 +247,126 @@ mod tests {
         let cow = world.cows.iter().find(|e| e.id == id).unwrap();
         assert_eq!(cow.cow.health, 5.0);
         assert_eq!(cow.last_damage_source, Some(DamageSourceKind::Hazard));
+    }
+
+    #[test]
+    fn a_struck_pig_or_villager_turns_unhurt_unless_peaceful() {
+        use minecraftoss_player::rng::LegacyRandom;
+        let spear = (0..)
+            .find(|&seed| LegacyRandom::new(seed).next_int(20) == 0)
+            .unwrap();
+        let sword = (0..)
+            .find(|&seed| LegacyRandom::new(seed).next_int(20) != 0)
+            .unwrap();
+        let mut world = EntityWorld::default();
+        let pig = world.spawn_pig(crate::pig::Pig::new(SPOT), true);
+        let lucky = world.spawn_pig(crate::pig::Pig::new(SPOT + DVec3::X), true);
+        world.pig_mut(pig).unwrap().random = LegacyRandom::new(sword);
+        world.pig_mut(lucky).unwrap().random = LegacyRandom::new(spear);
+        let villager = world.spawn_villager(crate::villager::Villager::new(SPOT - DVec3::X), true);
+        let outcomes = world.thunder_hit(&bolt(), &Air);
+        assert_eq!(outcomes.len(), 3, "{outcomes:?}");
+        for turned in [
+            (pig, ZOMBIFIED_PIGLIN, Some(GOLDEN_SWORD)),
+            (lucky, ZOMBIFIED_PIGLIN, Some(GOLDEN_SPEAR)),
+            (villager, WITCH, None),
+        ] {
+            let (id, into, held) = turned;
+            assert!(
+                outcomes.contains(&ThunderOutcome::Convert { id, into, held }),
+                "{outcomes:?}"
+            );
+        }
+        for e in world.pigs() {
+            assert_eq!((e.pig.health, e.pig.body.fire_ticks), (10.0, 0), "unhurt");
+        }
+        assert_eq!(world.villagers()[0].villager.health, 20.0);
+
+        let mut world = EntityWorld::default();
+        world.set_difficulty(0);
+        world.spawn_pig(crate::pig::Pig::new(SPOT), true);
+        world.spawn_villager(crate::villager::Villager::new(SPOT - DVec3::X), true);
+        assert!(
+            world.thunder_hit(&bolt(), &Air).is_empty(),
+            "nothing turns on Peaceful"
+        );
+        assert_eq!(world.pigs()[0].pig.health, 5.0);
+        assert_eq!(world.villagers()[0].villager.health, 15.0);
+    }
+
+    #[test]
+    fn a_struck_villager_frees_its_job_site() {
+        let site = (2, 64, 0);
+        let mut world = EntityWorld::default();
+        assert!(world.pois.add(site, crate::poi::PoiType::Farmer));
+        assert!(world.pois.acquire(site));
+        let mut farmer = crate::villager::Villager::new(SPOT);
+        farmer.profession = crate::villager::Profession::Farmer;
+        let id = world.spawn_villager_active(farmer, 0.0);
+        let ai = world.villager_mut(id).unwrap().ai.as_deref_mut().unwrap();
+        ai.brain.memories.job_site.set(site);
+        assert_eq!(world.pois.record(site).unwrap().free_tickets, 0);
+        let outcomes = world.thunder_hit(&bolt(), &Air);
+        assert_eq!(
+            outcomes,
+            vec![ThunderOutcome::Convert {
+                id,
+                into: WITCH,
+                held: None
+            }]
+        );
+        assert_eq!(
+            world.pois.record(site).unwrap().free_tickets,
+            1,
+            "its job site is free again"
+        );
+    }
+
+    #[test]
+    fn a_struck_creeper_is_charged_and_hurt() {
+        let mut world = EntityWorld::default();
+        world.set_difficulty(0);
+        let id = world.spawn_creeper(crate::creeper::Creeper::new(SPOT), true);
+        assert!(world.thunder_hit(&bolt(), &Air).is_empty());
+        let creeper = &world
+            .creepers()
+            .iter()
+            .find(|e| e.id == id)
+            .unwrap()
+            .creeper;
+        assert!(creeper.powered);
+        assert_eq!((creeper.health, creeper.body.fire_ticks), (15.0, 1));
+    }
+
+    #[test]
+    fn a_mooshroom_flips_once_per_bolt_unharmed() {
+        use crate::mooshroom::{MushroomCow, MushroomVariant};
+        let mut world = EntityWorld::default();
+        world.set_difficulty(0);
+        let id = world.spawn_mooshroom(MushroomCow::new(SPOT, MushroomVariant::Red), true);
+        let variant = |world: &EntityWorld| {
+            let cow = world.cows().iter().find(|e| e.id == id).unwrap();
+            cow.mooshroom.as_ref().unwrap().variant
+        };
+        for _ in 0..4 {
+            assert!(world.thunder_hit(&bolt(), &Air).is_empty());
+        }
+        assert_eq!(variant(&world), MushroomVariant::Brown);
+        let cow = world.cows.iter_mut().find(|e| e.id == id).unwrap();
+        assert_eq!((cow.cow.health, cow.cow.body.fire_ticks), (10.0, 0));
+        assert_eq!(cow.last_damage_source, None, "it does not panic");
+        let voices: Vec<_> = cow.voices.drain(..).map(|(voice, _)| voice).collect();
+        assert_eq!(voices, vec![Voice::Event(MOOSHROOM_CONVERT, 2.0, 1.0)]);
+        let next = Bolt {
+            uuid: [5, 6, 7, 8],
+            ..bolt()
+        };
+        world.thunder_hit(&next, &Air);
+        assert_eq!(
+            variant(&world),
+            MushroomVariant::Red,
+            "a new bolt turns it back"
+        );
     }
 
     #[test]

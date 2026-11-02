@@ -11,6 +11,7 @@ Files under `third_party/minecraftoss` this track patched or added.
 - Added (lightning-strikes 1): `world/src/level/lightning.rs` (with its tests), `entities/src/world/lightning.rs` (with its tests).
 - Patched (lightning-strikes 1): `world/src/level/mod.rs` (`pub mod lightning;`, the `lightning_hits` field), `world/src/level/entity.rs` (`LightningData.seed` and `uuid`, `Entity::new` is `pub(super)`, the bolt tick's fire and hits, the copper walk's 3002), `world/src/level/fire.rs` (`fire_survives` and `can_spread_fire_around` are `pub(super)`), `world/src/level/redstone.rs` (the rod's 3002), `entities/src/inside_blocks.rs` (`Hazard::LightningBolt`), `entities/src/world.rs` (`mod lightning;` and its `pub use`), `entities/src/world/pushing.rs` (`exposed_mut` is `pub(super)`).
 - Patched (lightning-strikes 2): `entities/src/world/families.rs` (the `thunder_hit` hook), `entities/src/world/families/pests/probe.rs` (test only: `thunder_answers`, `thunder_bolts` and its override). Changed again: `entities/src/world/lightning.rs` (the hook call and its test).
+- Patched (lightning-turns 1): `world/src/natural_spawner/spawning.rs` (the witch's arm in `finalize_conversion`, after the villager's). Changed again: `entities/src/world/lightning.rs` (the turns, the creeper's charge, the mooshroom's flip and their tests).
 
 ## Hooks
 
@@ -20,7 +21,7 @@ Root hooks this track added (M30, "M3's root hooks").
 
 ## Protocol
 
-No commit of this track has changed a `ToClient`/`ToServer` message or the codec yet. `minecraft_net::PROTOCOL` is not bumped here. `Output.players_lightning` is the server thread's output to the host, not a network message; `Hazard` and `DamageCause` are not on the wire.
+No commit of this track has changed a `ToClient`/`ToServer` message or the codec yet. `minecraft_net::PROTOCOL` is not bumped here. `Output.players_lightning` is the server thread's output to the host, not a network message; `Hazard` and `DamageCause` are not on the wire. `ThunderOutcome` (lightning-turns) stays on the host; the charged creeper and the mooshroom's colour reach friends through the look tag (`powered`, `Type`), which is not a message change.
 
 ## Cow-store one-liners outside D0-3's list
 
@@ -31,6 +32,7 @@ None yet.
 For the orchestrator to copy at the merge of segment m3a:
 
 - Under World simulation in `docs/MINECRAFT-SURVIVAL.md`: "Lightning (round 10, track M3): `/summon minecraft:lightning_bolt` strikes like vanilla's bolt. On Normal and Hard it lights its block and up to four around it, each re-flash lights its own block on any difficulty, and fire in an empty obsidian frame lights the portal. Every lit tick it hits every living thing in its box (3 blocks around, 3 below, 9 above): 5 damage that armour softens and shields do not block, with no knockback, and one more fire tick (eight seconds of fire for a mob or player that had just stopped burning). Animals panic, fire-immune mobs are hurt too, dropped items and experience orbs burn. A struck lightning rod powers for 8 ticks and sends the electric spark event (3002) along its axis; struck copper is cleaned with a spark on each cleaned block. Lightning deaths read 'was struck by lightning'."
+- Under World simulation in `docs/MINECRAFT-SURVIVAL.md`, after the lightning line (lightning-turns): "Lightning turns a pig into a zombified piglin that never despawns, with a golden sword (one in twenty a golden spear; a baby pig gives a baby), and a villager into a witch that never despawns and can join raids, freeing its job site, bed and meeting point. Both keep their place, name, effects and lead, but not their saddle or held item. A struck creeper is charged (twice the blast, saved and seen by friends), and a mooshroom flips between red and brown once per bolt with its sound and takes no harm. On Peaceful pigs and villagers are only hurt."
 
 ## Left for later
 
@@ -39,6 +41,9 @@ For the orchestrator to copy at the merge of segment m3a:
 - An item destroyed by lightning does not spill its contents (`ItemStack.onDestroyed`: bundles and shulker boxes) and posts no `entity_damage` game event; the fork's fire and lava hurts on items do neither either.
 - Worn armour on zombies and skeletons does not soften hazards (lava, fire, lightning): their hazard hurt uses the natural armour only, as it did before this track.
 - Vanilla's exact `getEntitiesOfClass` order for the hits: the entity world's order is used.
+- Lightning turns (lightning-turns): a player on a struck saddled pig gets off instead of riding the zombified piglin (vanilla moves the first passenger onto the new mob), and a struck mob's own vehicle is not handed on. A villager struck asleep in its bed: the witch does not take over its sleeping position, and the bed is left as a zombie infection leaves it. `hurtTime`, `yBodyRot`, the invulnerable time and `lastHurtByPlayerMemoryTime` are not carried to the new mob (vanilla's `ConversionType.convertCommon` copies them); the fork has no teams to copy.
+- The villager's "Villager ... was struck by lightning ...." line goes to stderr (`eprintln!`), as the server's other messages do: `minecraft_terrain` has no `diag` dependency, and adding one would change `Cargo.lock` under every track.
+- A second bolt in the same tick does not hit a mob a first bolt just made (the new tags join the level after `strike`); vanilla adds it at once. It is hit from the next lit tick on.
 
 ## Segment m3a
 
@@ -101,6 +106,66 @@ After cdd3cfed ("Minecraft lightning bolts set fires and hurt what they strike")
 - **Runs:** `test -p minecraftoss-entities --locked --lib` (571 passed), `check -p launcher --locked` (green; only the old render_frame and skate warnings).
 - **Test steps:** nothing new to see; registered mobs (silverfish, endermites, rabbits, polar bears, breezes) take the bolt like any mob. Release build, survival, Normal, by day: `/summon minecraft:polar_bear ~ ~ ~8`, then `/summon minecraft:lightning_bolt ~ ~ ~8`: the polar bear flashes red and is hurt, but lives (5 a hit, 30 health), and the grass under it catches fire. **m3-strike-hook**
 - **Kit:** none new.
+
+### Group lightning-turns
+
+#### 1. Minecraft lightning turns pigs, villagers, creepers and mooshrooms like vanilla
+
+After 1e178888 ("Registered Minecraft mobs can answer lightning their own way").
+
+- **javap (26.3 `client.jar`):**
+  - `Pig.thunderHit`: unless Peaceful, `convertTo(ZOMBIFIED_PIGLIN, ConversionParams.single(this, false, true), ..)`; its lambda calls `ZombifiedPiglin.populateDefaultEquipmentSlots(this.getRandom(), ..)` and `setPersistenceRequired`. A null result, or Peaceful, falls back to `Animal.thunderHit`.
+  - `ZombifiedPiglin.populateDefaultEquipmentSlots`: main hand `random.nextInt(20) == 0 ? GOLDEN_SPEAR : GOLDEN_SWORD`, so the pig's own random gives a golden spear one time in twenty.
+  - `Villager.thunderHit`: unless Peaceful, `LOGGER.info("Villager {} was struck by lightning {}.")`, then `convertTo(WITCH, single(this, false, false), ..)`; its lambda calls `Witch.finalizeSpawn(.., CONVERSION, null)`, `setPersistenceRequired` and the villager's `releaseAllPois`.
+  - `Raider.finalizeSpawn`: `setCanJoinRaid(!is(WITCH) || reason != NATURAL)`, so a converted witch can join raids; then `PatrollingMonster`'s leader roll (a `nextFloat` from the level random; witches never lead) and `Mob`'s part.
+  - `Creeper.thunderHit`: `Monster.thunderHit` (the base hit), then `DATA_IS_POWERED` true, on any difficulty.
+  - `MushroomCow.thunderHit`: when the bolt's UUID is not `lastLightningBoltUUID`, it flips RED/BROWN, stores the UUID and plays `MOOSHROOM_CONVERT` at 2.0 and 1.0. It never calls the base hit (no damage, no fire, no panic), on any difficulty.
+  - `ConversionType$1.convert` (SINGLE) and `convertCommon`: position and rotation, motion, the first passenger and the vehicle; equipment and drop chances only with `keepEquipment`; absorption, effects (copies), `setBaby` when the old one is a baby, age only between two `AgeableMob`s, `canPickUpLoot` only when preserved, left-handedness, NoAI, persistence, the custom name and its visibility, the on-fire flag, invulnerability, NoGravity, portal cooldown, Silent, tags, components and team; then fall distance, hurt time, body yaw, on-ground and the leash. `Mob.convertTo` adds the new mob and discards the old one, so a pig's saddle is lost.
+  - `Entity.toString`: `%s['%s'/%d, l='%s', x=%.2f, y=%.2f, z=%.2f, ..]`, mirrored (without the level) in the villager's log line.
+- **Changed:**
+  - Entities crate (`world/lightning.rs`): `ThunderOutcome::Convert { id, into, held }`. `EntityWorld::thunder_hit` asks `thunder_turn` before the base hit and returns the outcomes.
+    - Pig, unless Peaceful: it draws `nextInt(20)` from its own random and asks to become a zombified piglin holding a golden sword or spear, with no base hit.
+    - Villager, unless Peaceful: it gives back its points of interest (`release_villager_pois`, as `zombie_killed_villager` does before an infection) and asks to become a witch, with no base hit.
+    - Mooshroom, on any difficulty: it flips through `MushroomCowState::lightning_hit` (keyed by the bolt's UUID in hex, `Bolt::name`) and voices `entity.mooshroom.convert` at 2.0 and 1.0, with no base hit.
+    - Creeper: the base hit, then `powered`.
+  - World crate (`natural_spawner/spawning.rs`): `finalize_conversion` gains a witch arm after the villager's: `CanJoinRaid` true, the leader roll's `next_f32` from the level random, then `finalize_mob`.
+  - Terrain (`lightning.rs`):
+    - `strike` takes `&mut` `mob_tags`, sets the mob world's difficulty from the level's before each bolt's hits (the tick sets it only in `tick_mobs`, after the level tick) and returns the new tags.
+    - For each `Convert` it builds the old mob's saved tag (`mob_tags_where`) and turns it with `turned_tag`. It removes the old mob and its tag at once, so a second bolt in the same tick cannot turn it again. It finalizes the witch (`Level::finalize_conversion`) after printing the villager line, and gives the zombified piglin a UUID from `SpawnLevel::next_uuid`.
+    - `turned_tag` is `converted_zombie_tag` without `equipment` and `drop_chances`, plus `Pos`, `Motion`, `Rotation`, `OnGround`, `fall_distance`, `active_effects` and `AbsorptionAmount`, with the new `id` and `PersistenceRequired:1b`. The witch drops `CanPickUpLoot`. The piglin keeps the pig's (0 when unsaved), gets `IsBaby` from the pig's `Age` and its weapon in `equipment.mainhand`.
+  - Terrain `server.rs`: the `strike` line in `ServerSim::tick` passes `&mut self.mob_tags` and hands each returned tag to `add_saved_entity`.
+- **Tests added:**
+  - Entities `world::lightning::tests`:
+    - `a_struck_pig_or_villager_turns_unhurt_unless_peaceful`: a sword seed and a spear seed; both pigs and the villager unhurt; on Peaceful no outcome and 5 damage each.
+    - `a_struck_villager_frees_its_job_site`: a farmer's composter ticket comes back.
+    - `a_struck_creeper_is_charged_and_hurt`: on Peaceful too, 15 health, 1 fire tick, powered.
+    - `a_mooshroom_flips_once_per_bolt_unharmed`: four hits of one bolt flip it once with one sound and no damage, fire or panic; a new bolt flips it back.
+  - Terrain `lightning::tests`: `a_turned_pig_keeps_its_place_name_and_effects_but_not_its_saddle`, `a_turned_villager_drops_its_trades_hand_and_loot_pickup`, and `a_friend_sees_the_brown_mooshroom_and_the_charged_creeper` (two look updates; the friend's mooshroom is brown and its creeper charged).
+  - Terrain `server::tests`, a full server tick each:
+    - `a_struck_pig_becomes_a_persistent_zombified_piglin_with_a_golden_sword`: two pigs give two persistent piglins with a golden sword or spear at full health, and the baby gives a baby that keeps its name. On Peaceful the pig is hurt to 5.
+    - `a_struck_villager_becomes_a_persistent_witch`: on Easy (no fire burst to burn the witch), persistent, can join raids, 26 health, a UUID and no villager data. On Peaceful the villager is hurt to 15.
+    - `a_struck_creeper_is_charged_hurt_and_saved_charged`: 15 health, saved with `powered:1b`, loads charged.
+- **Decisions:**
+  - The golden spear one time in twenty (javap), where the brief says only "a golden sword": vanilla's `populateDefaultEquipmentSlots` for zombified piglins rolls it, from the pig's own random.
+  - The witch's finalize lives in `finalize_conversion` (its own arm) rather than in terrain, so the level random's draws stay in vanilla's order (the UUID from the entity random, then the leader roll and `Mob`'s part).
+  - Age: neither a zombified piglin nor a witch is an `AgeableMob`, so only `setBaby` carries over: `IsBaby` for the piglin. A baby villager gives an adult witch, as in vanilla.
+  - The brief's `a_struck_villager_becomes_a_persistent_witch_and_frees_its_job_site` is split: the server test checks the witch, and the entity-crate test the freed job site (a server test would need a villager that has already claimed one).
+  - `docs/round10/mobs.md` is not changed: lightning has no row, and pigs, villagers, creepers and mooshrooms are not M3 rows.
+- **Runs:** `test -p minecraftoss-entities -p minecraftoss-world -p minecraft_terrain --locked --lib` (575, 141 and 1743 passed), `check -p launcher --locked` (green; only the old render_frame and skate warnings).
+- **Test steps:** release build, survival, Normal, flat plains, by day, `/weather clear`, the kit below, the host is op. The bolt is not drawn yet and makes no thunder (`lightning-drawn`), and a charged creeper does not glow yet (`lightning-glow`). Stand still and type every `/summon` from the same place, so `~ ~ ~8` is always the same block ("the spot"). Put out fires with the water bucket between steps. Name each screenshot by its label.
+  1. `/summon minecraft:pig ~ ~ ~8`, then `/summon minecraft:lightning_bolt ~ ~ ~8`: the pig becomes a zombified piglin holding a golden sword (one time in twenty a golden spear). It is not angry at you. **m3-turn-1**
+  2. `/summon minecraft:pig ~ ~ ~8 {Age:-24000}`, then the bolt: a baby zombified piglin. **m3-turn-2**
+  3. Walk 140 blocks away in a straight line and come back: both zombified piglins are still there. **m3-turn-3**
+  4. Place a composter 2 blocks beside the spot and use a villager egg next to it. Wait until the villager wears the farmer's straw hat (up to a minute in the day). Then summon the bolt on the villager's block: it becomes a witch. **m3-turn-4** Put out the fire, step back and use a second villager egg 4 blocks from the composter: it becomes a farmer at the same composter, because the first villager freed it. **m3-turn-5**
+  5. `/summon minecraft:mooshroom ~ ~ ~8`, then the bolt: it turns brown with a short sound and does not flash red from the bolt (the fire under it may still singe it). A second bolt turns it red again. **m3-turn-6**
+  6. Dig a pit 1 wide and 3 deep at the spot and lay a stone slab on its floor. Run `/summon minecraft:creeper ~ ~-2.5 ~8` and `/summon minecraft:lightning_bolt ~ ~-2.5 ~8`. Dig a second pit the same way 5 blocks to the side and use a creeper egg in it. Save and quit, then load again. Walk up to each pit until its creeper hisses, then back off at once to 6 blocks: the struck creeper's crater is about twice as wide. **m3-turn-7**
+  7. `/difficulty peaceful`, then steps 1 and 4 again: the pig and the villager flash red and lose health, but stay a pig and a villager. **m3-turn-8**
+  8. Friend, two windows (`scripts\mp-local.ps1`): the host repeats steps 1 and 5; the friend sees the zombified piglin and the brown mooshroom. **m3-turn-friend**
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:pig_spawn_egg*4,minecraft:villager_spawn_egg*4,minecraft:creeper_spawn_egg*4,minecraft:mooshroom_spawn_egg*2,minecraft:composter*2,minecraft:stone_slab*8,minecraft:iron_shovel,minecraft:water_bucket,minecraft:cooked_beef*32
+```
 
 ## Combined kit
 

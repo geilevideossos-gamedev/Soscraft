@@ -3631,7 +3631,9 @@ impl ServerSim {
         self.drop_ominous_items();
         self.shoot_dispensed_rockets();
         self.explode_tnt();
-        crate::lightning::strike(&mut self.level, &mut self.mobs, &self.states, &self.mob_tables, &self.blast_players, &mut self.players_lightning);
+        for tag in crate::lightning::strike(&mut self.level, &mut self.mobs, &mut self.mob_tags, &self.states, &self.mob_tables, &self.blast_players, &mut self.players_lightning) {
+            self.add_saved_entity(tag);
+        }
         self.hear_bells();
         self.level.tick_spawners();
         self.level.unsupported.clear();
@@ -6531,6 +6533,80 @@ mod tests {
         assert_eq!(health, vec![5.0, 10.0], "the cow under the bolt takes five, the far one nothing");
         let blocks = &server.level.registries().blocks;
         assert_eq!(Some(blocks.block_of(server.level.block(minecraftoss_core::BlockPos::new(8, 200, 8)))), blocks.block_by_name("minecraft:fire"), "its block catches fire");
+    }
+
+    #[test]
+    fn a_struck_pig_becomes_a_persistent_zombified_piglin_with_a_golden_sword() {
+        use minecraftoss_entities::zombie::ZombieKind;
+        let spot = [8.5, 200.0, 8.5];
+        let baby = minecraftoss_core::snbt::parse_compound("{Age:-24000,CustomName:\"Babe\"}").unwrap();
+        let Some((mut server, _)) = door_world() else { return };
+        server.summon("minecraft:pig", spot, None, 0.0).unwrap();
+        server.summon("minecraft:pig", [9.5, 200.0, 8.5], Some(&baby), 0.0).unwrap();
+        server.summon(crate::lightning::BOLT, spot, None, 0.0).unwrap();
+        run_tick(&mut server, &mut idle_input(), true, &mut Output::default());
+        assert!(server.mobs.pigs().is_empty(), "both pigs turned");
+        let piglins: Vec<_> = server.mobs.zombies().iter().filter(|e| e.zombie.kind == ZombieKind::ZombifiedPiglin).collect();
+        assert_eq!(piglins.len(), 2);
+        for e in &piglins {
+            assert!(e.zombie.persistence_required);
+            assert!(matches!(e.zombie.main_hand.as_deref(), Some("minecraft:golden_sword" | "minecraft:golden_spear")), "{:?}", e.zombie.main_hand);
+            assert_eq!(e.zombie.health, 20.0, "the bolt's first hit turned the pig and did not hurt the piglin");
+        }
+        let babies: Vec<_> = piglins.iter().filter(|e| e.zombie.baby).map(|e| e.id).collect();
+        assert_eq!(babies.len(), 1, "the baby pig gives a baby");
+        let saved = crate::server_mobs::mob_tags(&server.mobs, |_| true, &server.mob_tags);
+        let (_, tag) = saved.iter().find(|(id, _)| *id == babies[0]).unwrap();
+        assert_eq!(tag.get("CustomName").and_then(minecraftoss_core::nbt::Tag::as_str), Some("Babe"));
+        assert_eq!(tag.get("PersistenceRequired").and_then(minecraftoss_core::nbt::Tag::as_i64), Some(1));
+
+        let Some((mut server, _)) = door_world() else { return };
+        server.summon("minecraft:pig", spot, None, 0.0).unwrap();
+        server.summon(crate::lightning::BOLT, spot, None, 0.0).unwrap();
+        run_tick(&mut server, &mut TickInput { difficulty: 0, ..idle_input() }, true, &mut Output::default());
+        assert_eq!(server.mobs.pigs().iter().map(|e| e.pig.health).collect::<Vec<_>>(), vec![5.0], "on Peaceful the pig is only hurt");
+        assert!(server.mobs.zombies().is_empty());
+    }
+
+    #[test]
+    fn a_struck_villager_becomes_a_persistent_witch() {
+        let spot = [8.5, 200.0, 8.5];
+        let Some((mut server, _)) = door_world() else { return };
+        server.summon("minecraft:villager", spot, None, 0.0).unwrap();
+        server.summon(crate::lightning::BOLT, spot, None, 0.0).unwrap();
+        run_tick(&mut server, &mut TickInput { difficulty: 1, ..idle_input() }, true, &mut Output::default());
+        assert!(server.mobs.villagers().is_empty(), "on Easy too");
+        let witch = &server.mobs.witches()[0];
+        assert!(witch.witch.persistence_required && witch.witch.raider.can_join_raid);
+        assert_eq!(witch.witch.health, 26.0);
+        let saved = crate::server_mobs::mob_tags(&server.mobs, |_| true, &server.mob_tags);
+        let (_, tag) = saved.iter().find(|(id, _)| *id == witch.id).unwrap();
+        assert!(tag.get("UUID").is_some() && tag.get("VillagerData").is_none());
+
+        let Some((mut server, _)) = door_world() else { return };
+        server.summon("minecraft:villager", spot, None, 0.0).unwrap();
+        server.summon(crate::lightning::BOLT, spot, None, 0.0).unwrap();
+        run_tick(&mut server, &mut TickInput { difficulty: 0, ..idle_input() }, true, &mut Output::default());
+        assert_eq!(server.mobs.villagers()[0].villager.health, 15.0, "on Peaceful the villager is only hurt");
+        assert!(server.mobs.witches().is_empty());
+    }
+
+    #[test]
+    fn a_struck_creeper_is_charged_hurt_and_saved_charged() {
+        let spot = [8.5, 200.0, 8.5];
+        let Some((mut server, _)) = door_world() else { return };
+        server.summon("minecraft:creeper", spot, None, 0.0).unwrap();
+        server.summon(crate::lightning::BOLT, spot, None, 0.0).unwrap();
+        run_tick(&mut server, &mut idle_input(), true, &mut Output::default());
+        let creeper = &server.mobs.creepers()[0];
+        assert!(creeper.creeper.powered);
+        assert_eq!(creeper.creeper.health, 15.0);
+        let saved = crate::server_mobs::mob_tags(&server.mobs, |_| true, &server.mob_tags);
+        let (_, tag) = saved.iter().find(|(id, _)| *id == creeper.id).unwrap();
+        assert_eq!(tag.get("powered").and_then(minecraftoss_core::nbt::Tag::as_i64), Some(1));
+        let mut loaded = minecraftoss_entities::world::EntityWorld::default();
+        let id = crate::server_mobs::spawn_saved(&mut loaded, tag).unwrap();
+        assert!(loaded.creeper_mut(id).unwrap().creeper.powered, "it loads charged");
     }
 
     /// A creeper sees the player across a platform, walks up, swells and
