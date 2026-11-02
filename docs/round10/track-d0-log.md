@@ -1,6 +1,6 @@
 # Track D0 log: the shared mob registry
 
-Branch `track-d0`, worktree `C:\Dev\mc-wt\track-d0`, target dir `D:\iw4l-wt\track-d0`. Brief: `docs/round10/track-d0.md`. Mob list: `docs/round10/mobs.md`.
+Branch `track-d0`, worktree `C:\Dev\Soscraft\mc-wt\track-d0` (`C:\Dev\mc-wt\track-d0` until the move), target dir `D:\iw4l-wt\track-d0`. Brief: `docs/round10/track-d0.md`. Mob list: `docs/round10/mobs.md`.
 
 A commit can't name its own hash, so each entry names the commit before it. Its own hash is in `git log` under its subject.
 
@@ -8,8 +8,8 @@ A commit can't name its own hash, so each entry names the commit before it. Its 
 
 Files under `third_party/minecraftoss` this track patched or added (round 8 counted 73 patched and 37 added).
 
-- Patched (18): `entities/src/world.rs`, `entities/src/world/combat.rs`, `entities/src/world/witches.rs`, `entities/src/world/pushing.rs`, `entities/src/world/fireballs.rs`, `entities/src/world/riding.rs`, `entities/src/world/villagers.rs`, `entities/src/world/leashes.rs`, `entities/src/monster_ai.rs`, `entities/src/bin/check_zombie_player_hits.rs`, `entities/src/world/emissions.rs`, `entities/src/walk_path.rs`, `entities/src/stroll.rs`, `world/src/natural_spawner.rs`, `world/src/natural_spawner/spawning.rs`, and with segment d0b `world/src/level/mod.rs`, `world/src/level/drops.rs`, `world/src/level/explosion.rs`.
-- Added (22): `entities/src/world/families.rs`, `entities/src/world/families/{pests,trial,deep_dark,land,water,night,bosses}.rs`, `entities/src/world/families/goals.rs`, `entities/src/world/families/pests/{silverfish,endermites}.rs`, `entities/src/world/families/pests/probe.rs` (test only), `entities/src/world/families/tests.rs` (test only), `world/src/natural_spawner/families.rs`, `world/src/natural_spawner/families/{pests,trial,deep_dark,land,water,night,bosses}.rs`, `world/src/natural_spawner/families/tests.rs` (test only).
+- Patched (20): `entities/src/world.rs`, `entities/src/world/combat.rs`, `entities/src/world/witches.rs`, `entities/src/world/pushing.rs`, `entities/src/world/fireballs.rs`, `entities/src/world/riding.rs`, `entities/src/world/villagers.rs`, `entities/src/world/leashes.rs`, `entities/src/monster_ai.rs`, `entities/src/bin/check_zombie_player_hits.rs`, `entities/src/world/emissions.rs`, `entities/src/walk_path.rs`, `entities/src/stroll.rs`, `world/src/natural_spawner.rs`, `world/src/natural_spawner/spawning.rs`, and with segment d0b `world/src/level/mod.rs`, `world/src/level/drops.rs`, `world/src/level/explosion.rs`, `entities/src/navigation.rs`, `entities/src/lib.rs`. Segment d0b also changed the added `entities/src/world/families/pests/{silverfish,endermites}.rs` and the already counted `entities/src/walk_path.rs`, `entities/src/stroll.rs` and `entities/src/monster_ai.rs`.
+- Added (23): `entities/src/world/families.rs`, `entities/src/world/families/{pests,trial,deep_dark,land,water,night,bosses}.rs`, `entities/src/world/families/goals.rs`, `entities/src/world/families/pests/{silverfish,endermites}.rs`, `entities/src/world/families/pests/probe.rs` (test only), `entities/src/world/families/tests.rs` (test only), `world/src/natural_spawner/families.rs`, `world/src/natural_spawner/families/{pests,trial,deep_dark,land,water,night,bosses}.rs`, `world/src/natural_spawner/families/tests.rs` (test only), and with segment d0b `entities/src/flying.rs`.
 
 ## Protocol
 
@@ -18,7 +18,8 @@ Files under `third_party/minecraftoss` this track patched or added (round 8 coun
   - Postcard writes one byte for `None`, so every other mob costs one byte more per tick.
   - No `ToClient`/`ToServer` variant and no codec function changed.
 - **"Minecraft silverfish hide in stone and wake their friends"** (group silverfish-behaviour, commit 1, after 6efedf5f) adds `PuffKind::Poof` after `PuffKind::Smoke` (`crates/minecraft_terrain/src/mob_particles.rs`). `MobPuff` travels in the entity snapshot a host sends its friends, so a friend on an older build cannot read a poof. No `ToClient`/`ToServer` variant and no codec function changed.
-- `minecraft_net::PROTOCOL` stays 6 on this track (`docs/round10/decisions.md`, "PROTOCOL is bumped only at release time"). The next release build bumps it once, because of this commit.
+- **"Minecraft mobs can fly with vanilla flying navigation"** (group flying-navigation, after 45de7c5d) changes no message, codec or serialized struct. `WalkProfile.flying`, `GroundNavigation.fly_random` and `flying.rs` live only in the host's entity world.
+- `minecraft_net::PROTOCOL` is never bumped on this track (`docs/round10/decisions.md`, "PROTOCOL is bumped only at release time"). It was 6 when segment d0a ran; the releases since then raised it to 10 (release 5, e7c9a1c8), which already covers `MobShow.family`. Segment d0b leaves it at 10, so the next release build bumps it once more for `PuffKind::Poof`.
 
 ## Group registry-core
 
@@ -736,3 +737,127 @@ IW4L_MINECRAFT_KIT=minecraft:silverfish_spawn_egg*16,minecraft:endermite_spawn_e
 ```
 
 27 stacks, the brief's D0-10 kit. R-15's friend needs the same kit (it reads the `.env` on join).
+
+## Group flying-navigation
+
+Segment d0b, brief D0-6.2 (P3).
+
+### 1. Minecraft mobs can fly with vanilla flying navigation
+
+After 45de7c5d.
+
+- **Changed (vendored entities crate):**
+  - New `flying.rs` (`pub mod flying;` after `fluid` in `lib.rs`), the public part:
+    - `FlyingMoveControl { max_turn, hovers_in_place }` (`FlyingMoveControl(mob, maxTurn, hoversInPlace)`). Its `tick` works on the mob's own `MoveControl` state (wanted spot, speed modifier, operation) and a `FlyingMove { yaw, pitch, speed, forward, vertical, no_gravity }`. On `MOVE_TO` it sets the operation to `WAIT` and gravity off. Within 0.0005 of the wanted spot it zeroes both inputs. Otherwise it turns the yaw at most 90 degrees. It sets the speed to the modifier times the flying speed in the air (the movement speed on the ground) and `forward` to the same (`Mob.setSpeed` sets `zza`). Unless the spot is level and straight above or below, it turns the pitch at most `max_turn` and sets `vertical` to plus or minus the speed. Without `MOVE_TO` it zeroes both inputs and gives gravity back unless the mob hovers in place.
+    - `Flight { stable, blocked_by_fluids }`, a family's `FlyingPathNavigation` settings: `Stable::StandOn` (the block at the spot can be stood on, `entityCanStandOn`, from its collision shape's top face) or `Stable::NotAboveAir` (the bee's), and whether fluids block a direct move (`isClearForMovementBetween(.., true)`, the default; the ghastling's `false`).
+    - `fly(profile, flight)` sets `WalkProfile.flying`. `require_path_length(profile, 48.0)` is `setRequiredPathLength`: the longest path becomes `max(FOLLOW_RANGE, 48)` and the node budget `floor(that * 16)`.
+    - `plan_path` is `FlyingPathNavigation.createPath`: the target block itself (no ground search), the current path kept while it still goes to one of the targets, a new path recorded in the navigation with its stuck timeout reset.
+    - `tick_path` is `FlyingPathNavigation.tick`. It follows the path as `followThePath` does, with the raw position as the mob's position (`getTempMobPos`), the stuck check (`doStuckDetection`), and the direct move by a collider ray from the feet to the next node's middle height (`canMoveDirectly`). As a passenger out of liquid (`canUpdatePath` false) it only steps on when the mob is in the next node's block. It returns the next node's spot and speed for `MoveControl.set_wanted_position`, with no ground height (`getGroundY` is not used).
+    - `can_update_path`, `is_clear_for_movement_between` (fluid boxes `0..height` from the level and the block above, as `FlowingFluid.getShape`, on the same block walk as `BlockGetter.clip`).
+  - `walk_path.rs`: the search mode for `FlyNodeEvaluator`. `WalkProfile.flying: Option<Flight>` (`None` for every existing mob) and an evaluator field `fly`. `find_fly_path_to_any` runs the same A* as `find_walk_path_to_any` (both now call `find_path_to_any`) with:
+    - `getStart`: `floor(y + 0.5)`, or from the feet up through water blocks for a floater in water. If that block's malus is negative, a small mob (box size under 1) tries 10 random blocks of its box grown to 1.1, and a big one the four corners at its feet's height.
+    - `getNeighbors`: the 26 neighbours in vanilla's order. The six sides only need to be open. An edge needs both sides it touches, and a corner its three sides and three edges, to have a node with a malus of at least 0.
+    - `findAcceptedNode`: a node only for a malus of at least 0, plus 1 for `WALKABLE`.
+    - `getPathType`: open air over fire or lava is `FIRE`, over a damaging block `DAMAGING`, over cocoa `COCOA`, over a fence `FENCE` (not the mob's own block). Over air, water or a walkable block it is `OPEN`, otherwise `WALKABLE`. Then the neighbours are checked for open and walkable spots. `getPathTypeOfMob` and the mob-box types are the walk evaluator's, as in vanilla.
+  - `navigation.rs`: `plan_walk_path` and `plan_walk_path_to_any` hand a flying profile to `flying::plan_path`. `GroundNavigation.fly_random` is the random for the start candidates. `tick_free` is the shared path follower for the flying tick, and `adopt_path` records a new path.
+  - `stroll.rs`: `GoalUtils.isNotStable` (`unstable_or_outside`) asks a flying profile's `Flight` instead of the solid-render block below, as vanilla asks the mob's navigation.
+  - `monster_ai.rs`: `MonsterGoalContext::profile` keeps a required path length when a spawn bonus changes the follow range (`getMaxPathLength` is the larger of the two). No profile had one before, so nothing changes for existing mobs.
+- **How a family uses it (the M briefs' question):** the flying navigation **plugs into `MonsterGoalContext.navigation` and the brain's `MoveSink`.** It does not stay a `GoalExtra` piece.
+  - A family puts `fly(&mut walk, ..)` (and its float, doors, maluses and `require_path_length`) in its `MonsterSpec.walk` or brain profile. Then every `plan_walk_path` and `plan_walk_path_to_any` plans a flying path into the same `GroundNavigation`: `navigate_walk_to`, `navigate_walk_to_entity`, every shared goal (stroll, melee, tempt, panic, follow) and `MoveSink`. `GoalExtra` is not needed for the navigation.
+  - The tick is the family's own. It must not call `family_goal_step`, whose `monster_ai_step` runs the ground move control and gravity. It calls `family_goal_step_with` with its own AI step, as rabbits do. That step runs `ai.tick_goals`, then `flying::tick_path` and `ai.move_control.set_wanted_position`, then `FlyingMoveControl::tick` (keep the `FlyingMove` in the family state and map `no_gravity` to `body.gravity`), then the look control and the family's own travel. That travel is `travel_air_flying` with gravity off for `Animal` flyers such as parrots and bees, or `Body::travel_flying` for allays and ghasts. It returns `None` (no fall damage).
+  - A brain family (allays, ghastlings) builds its `brain_behaviors::Walker` with the flying profile. `MoveSink` then plans flying paths (its `default_random_position_towards` fallback uses the flying stability too), and the brain step ticks the navigation with `flying::tick_path`. **M3 does not need its own `FlyingMoveSink`.**
+  - Per family, with no edit to `flying.rs`:
+    - Parrot: `Flight::default()`, `can_float = true`, `FlyingMoveControl::new(10, false)`.
+    - Bee: `Flight { stable: Stable::NotAboveAir, ..Flight::default() }`, `can_float = false`, `require_path_length(48.0)`, `FlyingMoveControl::new(20, true)`. While pollinating it skips `tick_path`.
+    - Allay: `Flight::default()`, `can_float = true`, `require_path_length(48.0)`, `FlyingMoveControl::new(20, true)`.
+    - Ghastling: `Flight { blocked_by_fluids: false, ..Flight::default() }`, `can_float = true`, `require_path_length(48.0)`, `FlyingMoveControl::new(180, true)`.
+    - No doors: `WalkProfile::animal` already has `can_open_doors` false, as `setCanOpenDoors(false)` and vanilla's default.
+- **Tests added** (`flying::tests`):
+  - `a_flying_path_goes_over_a_wall_and_through_a_gap_in_three_dimensions`:
+    - Over a stone floor, a 3 high wall is crossed at y 67 with steps that change height and place at once.
+    - A sealed wall under a ceiling is crossed through its one-block gap.
+    - Every step is one of the 26 neighbours, and the ground planner refuses the same airborne mob.
+  - `a_flying_path_prefers_the_air_to_the_ground_and_keeps_off_fire`: the flying path types over the ground, over fire and beside fire, and a path that rises off the ground and keeps clear of the fire.
+  - `a_flying_path_ends_on_a_stable_spot`:
+    - Stand-on: stone, a top slab and upside-down stairs, but not air, a bottom slab, a chest or bottom stairs.
+    - The bee's rule: not above air.
+    - `default_random_position` with the bee's rule picks only the layer above the floor. With stand-on it picks nothing over open ground, as vanilla (solid spots have a malus).
+  - `flying_move_control_turns_and_climbs_like_vanilla`:
+    - The yaw turns 90 at most, and the pitch 10 for a parrot or 20 for a bee.
+    - A level flyer that climbs snaps its pitch to 90, as `Entity.setXRot` clamps rotlerp's wrapped -5 (355).
+    - The speed comes from the flying speed in the air and the movement speed on the ground, `vertical` is plus or minus the speed, and the wanted spot sets the operation to `WAIT`.
+    - Gravity comes back on `WAIT` unless the mob hovers.
+    - Near the wanted spot both inputs are zero and the yaw stays.
+  - `a_flying_path_gives_up_when_stuck`: still for 100 ticks, the path is dropped on tick 101 and the navigation is stuck. Moving 0.05 a tick, it keeps going. A passenger only steps past the node it is in.
+  - `a_spawn_bonus_keeps_a_flyer_s_required_path_length`.
+  - `a_flyer_moves_straight_only_through_clear_air`: water blocks the default direct move but not the ghastling's, and stone blocks both.
+  - `a_flyer_follows_its_path_through_a_gap_in_a_wall`, the whole loop: plan through `navigate_walk_to`, then `tick_path`, `FlyingMoveControl(20, true)` and `travel_flying`. The flyer passes the gap and arrives without getting stuck.
+  - `the_brain_move_sink_flies_a_flyer_to_its_walk_target`: `MoveSink::try_start` with a flying profile plans over the wall.
+  - The wither tests pass unchanged (the wither keeps its own flight).
+- **javap this round (26.3):**
+  - `FlyingMoveControl`: the constructor and `tick` as above. The near limit is `2.500000277905201E-7` squared distance and the level limit `1.0E-5F`.
+  - `FlyingPathNavigation`:
+    - `createPathFinder`: a `FlyNodeEvaluator`.
+    - `canMoveDirectly`: `isClearForMovementBetween(mob, from, to, true)`.
+    - `canUpdatePath`: `canFloat && isInLiquid`, or not a passenger.
+    - `getTempMobPos`: the position. `createPath(Entity, reach)`: `createPath(blockPosition, reach)`.
+    - `tick` as above. `isStableDestination`: `entityCanStandOn` at the spot. `canNavigateGround`: false.
+  - `PathNavigation`:
+    - `createPath(Set, regionOffset, offsetUpward, reach, maxPathLength)`, `moveTo`, `recomputePath`.
+    - `followThePath` (`maxDistanceToWaypoint` from the width, a vertical distance of 1, and `canCutCorner` false for `FIRE_IN_NEIGHBOR`, `DAMAGING_IN_NEIGHBOR` and `WALKABLE_DOOR`), `shouldTargetNextNodeInDirection`, `doStuckDetection`.
+    - `isClearForMovementBetween`: a `COLLIDER` clip to `to + height / 2`, with fluids `ANY` or `NONE`.
+    - `getMaxPathLength` is `max(FOLLOW_RANGE, requiredPathLength)`, which defaults to 16. `setRequiredPathLength` recounts the node budget.
+  - `FlyNodeEvaluator`: `prepare`, `getStart`, `canStartAt`, `getTarget`, `getNeighbors`, `hasMalus`, `isOpen`, `findAcceptedNode`, `getCachedPathType` and `getPathType` as above. The start candidates have `SMALL_MOB_SIZE` 1, an inflated box of 1.1 and 10 candidates.
+  - `WalkNodeEvaluator.getPathTypeOfMob` and `getPathTypeWithinMobBB` call `getPathType` virtually, so the flying types reach the mob-box rules. `BlockPos.randomBetweenClosed` (`BlockPos$2.computeNext`): x, y, then z, one `nextInt` each, lazily per candidate.
+  - `Bee$1`: `isStableDestination` is the block below not being air, and `tick` returns early while pollinating. `Allay.createNavigation`: a plain `FlyingPathNavigation`, no doors, can float, required length 48. `HappyGhast$BabyFlyingPathNavigation`: the same, plus `canMoveDirectly(.., false)`.
+  - `Mob.setSpeed` also sets `zza`. `Entity.setXRot` is `clamp(x % 360, -90, 90)`. `MoveControl.rotlerp` wraps the result into 0..360.
+- **Decisions:**
+  - **One A*.** `FlyNodeEvaluator` is a search mode of `walk_path.rs`'s evaluator: its start, neighbours and path type are at the end of that file. The A*, the node cache, the collision cache and the mob-box path types there are private and shared, and walk paths are built exactly as before. `path_search.rs` is the older measured cow search over `Cell` terrains and refuses unclassified blocks, so it is not used. `flying.rs` holds everything a family calls.
+  - **The start candidates' random.** Vanilla draws them from the mob's random. `plan_walk_path` has no random, so the navigation keeps its own (`fly_random`, seed 0, which a family may reseed). They are only drawn when the mob's own block cannot start a path.
+  - **Passengers plan.** `plan_path` does not know whether the mob rides, so it plans as vanilla does for a mob that is not a passenger. `tick_path` takes `passenger` and follows the passenger rule.
+  - **Corners.** The navigation keeps no node types, so a flying path cuts corners at `FIRE_IN_NEIGHBOR` and `DAMAGING_IN_NEIGHBOR` nodes too, as the ground navigation already does at every node. Without doors no `WALKABLE_DOOR` node appears.
+  - **The first stuck check** after `moveTo` measures from `floor(y + 0.5)` (the shared `move_to`, the ground mob position) instead of the flyer's raw height, a difference under half a block, once.
+  - **Stability** lives in `WalkProfile.flying`, because `stroll.rs` takes the profile, not the navigation. A stand-on flyer finds no `DefaultRandomPos` spot over open ground (a solid spot has a malus), while `LandRandomPos` moves its solid spot up into the air above, as in vanilla. Flyers stroll with `hover_random_position` and `air_and_water_random_position`, which do not ask.
+  - **Pitch** follows `setXRot`'s clamp, so a flyer that starts climbing level snaps its pitch to 90 first, as vanilla does.
+  - **Allays** fly with fluids blocking a direct move. javap shows a plain `FlyingPathNavigation` for the allay; only the ghastling's navigation lets fluids through, though the d0b spec grouped allays with it.
+  - **Node budget.** A flyer with follow range 16 and no required length (a parrot) has 256 nodes, as vanilla. A 3 high, 19 wide wall 5 blocks away is out of its reach, so the over-the-wall test uses the bee's 48.
+- **Left for later:** the optional commit 2, "Minecraft withers fly around walls" (see "Left for later" below).
+- **Protocol:** no message or codec change (see "## Protocol").
+- **Runs:**
+  - `test -p minecraftoss-entities --locked`: 567 lib tests passed, every bin builds.
+  - `clippy -p minecraftoss-entities --locked --all-targets -- -A clippy::approx_constant`: no warning.
+  - `check -p launcher --locked`: green, only the old render_frame and skate warnings.
+  - The new `flying.rs` passes `rustfmt --check --edition 2021` with empty output on its staged content, and no added line holds a comment.
+- **What changes in the game:** nothing yet. No mob uses the flying navigation until M1's parrots and bees and M3's allays and ghastlings. The wither keeps its own flight. Ground mobs plan as before: the flying branches only run for a profile with `flying` set, and the shared A* is unchanged.
+- **Test steps** (regression of ground paths). Release build, survival, Normal, by day, flat open ground in the Overworld. Name each screenshot by its label, `D0-16-1.png`.
+  1. Build a stone wall 7 wide and 3 high. Stand behind its middle and use a zombie egg 6 blocks in front of it. The zombie walks round one end of the wall and comes at you. **Screenshot D0-16-1** as it rounds the corner.
+  2. Use two cow eggs and two rabbit eggs on open grass and watch for a minute. They wander about as before, and the rabbits hop.
+
+```
+IW4L_MINECRAFT_KIT=minecraft:zombie_spawn_egg*4,minecraft:cow_spawn_egg*4,minecraft:rabbit_spawn_egg*4,minecraft:stone*64,minecraft:iron_sword,minecraft:shield,minecraft:cooked_beef*32
+```
+
+## Left for later
+
+Everything track D0 leaves open after segment d0b, gathered from the entries above.
+
+- **Flying (this group):**
+  - The optional commit "Minecraft withers fly around walls". The wither still flies straight at one block with `wither_ai::FlightPath` and `wither::fly`. Moving it means a flying `WalkProfile` in its `MonsterGoalContext`, its goals calling `navigate_walk_to`, and `flying::tick_path` with `FlyingMoveControl::new(10, false)` in place of `FlightPath::tick` and `wither::fly`.
+  - Node types in the navigation, for `canCutCorner`, and `recompute` for flyers. Only villagers recompute a path when blocks change, and that path uses the ground rule.
+  - A shared flying AI step: each flying family writes its own (see "How a family uses it"). M1's `omnidirectionalAirMover` drag (0.91 vertically) is M1's.
+- **Spawning (registry-spawning):**
+  - Chunk-generation spawns have no `SpawnContext`, so a family creature row uses the animal rules at world generation. The first track with a creature that needs its own rule there (M1's goats, M2's frogs) adds that hook.
+  - `check_spawn_obstruction` refuses liquids for every row but striders and drowned. M2 adds the `WaterAnimal` exception for its water rows.
+- **Terrain-side tests no D0 family exercises (D0-9.4):** `show_on` with family values, `families::interact`, `is_vehicle` in `carries`, the mount inventory, and `FamilyDraw.held`. Silverfish and endermites use none of them, so the first track whose family uses one adds that test in its own files.
+- **Silverfish and endermites:**
+  - The poof when a silverfish merges into stone. The registry root needs a record of a removed mob's body that `mob_puffs` can fall back to.
+  - `InfestedMobEffect.onMobHurt` (the infested potion lets silverfish out of a hurt mob or player).
+- **Optional:** moving the bat to `BatAnimation` (a round 9 leftover).
+
+## Combined kit (segment d0b)
+
+24 stacks. It holds what the steps of segment d0b need: D0-14 (85917c3c, silverfish in stone), D0-15 (45de7c5d, endermites from pearls, 96 pearls in six stacks) and D0-16 (this group). The whole silverfish and endermite run is the D0-10 kit above. The class loadout's M4A1 is used as well.
+
+```
+IW4L_MINECRAFT_KIT=minecraft:silverfish_spawn_egg*8,minecraft:infested_stone*32,minecraft:infested_stone_bricks*32,minecraft:infested_deepslate*16,minecraft:stone_bricks*64,minecraft:diamond_pickaxe,minecraft:diamond_pickaxe+silk_touch,minecraft:tnt*8,minecraft:flint_and_steel,minecraft:creeper_spawn_egg*2,minecraft:ender_pearl*16,minecraft:ender_pearl*16,minecraft:ender_pearl*16,minecraft:ender_pearl*16,minecraft:ender_pearl*16,minecraft:ender_pearl*16,minecraft:zombie_spawn_egg*4,minecraft:cow_spawn_egg*4,minecraft:rabbit_spawn_egg*4,minecraft:stone*64,minecraft:iron_sword,minecraft:shield,minecraft:cooked_beef*32,minecraft:torch*64
+```
