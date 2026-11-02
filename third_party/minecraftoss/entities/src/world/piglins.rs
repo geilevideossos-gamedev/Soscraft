@@ -932,6 +932,9 @@ impl EntityWorld {
         }
         entity.piglin.drop_chances[slot] = piglin::GUARANTEED_DROP;
         entity.piglin.persistence_required = true;
+        entity
+            .piglin
+            .equipment_changed(self.recipes.as_deref(), slot, current.as_ref());
         if let Some(current) = current.filter(|_| roll < chance) {
             self.spawn_at_location(world, position, &current);
         }
@@ -949,6 +952,11 @@ impl EntityWorld {
         }
         entity.piglin.offhand = Some(stack);
         entity.piglin.drop_chances[piglin::OFFHAND] = piglin::GUARANTEED_DROP;
+        entity.piglin.equipment_changed(
+            self.recipes.as_deref(),
+            piglin::OFFHAND,
+            previous.as_ref(),
+        );
         if let Some(previous) = previous {
             self.spawn_at_location(world, position, &previous);
         }
@@ -967,6 +975,9 @@ impl EntityWorld {
         let Some(stack) = entity.piglin.offhand.take() else {
             return;
         };
+        entity
+            .piglin
+            .equipment_changed(self.recipes.as_deref(), piglin::OFFHAND, Some(&stack));
         let currency = stack.id == piglin::BARTERING_ITEM;
         if !entity.piglin.is_baby() {
             if barter && currency {
@@ -997,6 +1008,9 @@ impl EntityWorld {
         entity.piglin.main_hand = Some(stack);
         entity.piglin.drop_chances[piglin::MAINHAND] = piglin::GUARANTEED_DROP;
         entity.piglin.persistence_required = true;
+        entity
+            .piglin
+            .equipment_changed(self.recipes.as_deref(), piglin::MAINHAND, held.as_ref());
         if let Some(held) = held {
             if self.item_loved(&held.id) {
                 self.piglin_put_in_inventory(id, held, others, world);
@@ -1138,6 +1152,11 @@ impl EntityWorld {
         let position = entity.position();
         let previous = entity.piglin.offhand.replace(taken);
         entity.piglin.drop_chances[piglin::OFFHAND] = piglin::GUARANTEED_DROP;
+        entity.piglin.equipment_changed(
+            self.recipes.as_deref(),
+            piglin::OFFHAND,
+            previous.as_ref(),
+        );
         entity.brain.admire_for(crate::piglin_brain::ADMIRE_TICKS);
         Self::stop_walking(entity);
         Some(
@@ -1789,6 +1808,16 @@ impl EntityWorld {
                         .voices
                         .push((Voice::Event(event, 1.0, pitch), center));
                 }
+                self.game_event(
+                    if open {
+                        "minecraft:block_open"
+                    } else {
+                        "minecraft:block_close"
+                    },
+                    center,
+                    Some(id),
+                    None,
+                );
             }
         }
         self.level_random = level_random;

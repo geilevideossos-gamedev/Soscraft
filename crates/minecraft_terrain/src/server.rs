@@ -1798,6 +1798,9 @@ impl ServerSim {
                     None => rocket.tick(&world, &targets, owner_box),
                 }
             };
+            if events.contains(&RocketEvent::Launched) {
+                self.level.game_event_from(crate::game_events::PROJECTILE_SHOOT, rocket.previous.to_array(), Self::rocket_source(rocket.owner), None);
+            }
             for event in events {
                 match event {
                     RocketEvent::Launched if rocket.rider.is_some() => {}
@@ -1809,7 +1812,11 @@ impl ServerSim {
                         self.level.game_event_from(crate::game_events::EXPLODE, rocket.position.to_array(), rocket.owner.player().map(minecraftoss_world::level::game_event::EventSource::Player).or(rocket.owner.mob().map(minecraftoss_world::level::game_event::EventSource::Mob)), None);
                         self.rocket_blast(rocket, players);
                     }
-                    RocketEvent::Block { pos, at, velocity } => self.projectile_struck(pos, at, velocity),
+                    RocketEvent::Entity { at } => self.projectile_landed(at, None, Self::rocket_source(rocket.owner)),
+                    RocketEvent::Block { pos, at, velocity } => {
+                        self.acting(rocket.owner.player(), |sim| sim.projectile_struck(pos, at, velocity));
+                        self.projectile_landed(at, Some(pos), Self::rocket_source(rocket.owner));
+                    }
                 }
             }
         }
@@ -1889,6 +1896,9 @@ impl ServerSim {
 
     pub fn leash_fence(&mut self, player: u64, pos: BlockPos, sneaking: bool) -> bool {
         let tied = self.mobs.leash_fence(player, pos, sneaking);
+        if tied {
+            self.level.block_game_event_from(crate::game_events::BLOCK_ATTACH, minecraftoss_core::BlockPos::new(pos.0, pos.1, pos.2), Some(minecraftoss_world::level::game_event::EventSource::Player(player)), None);
+        }
         self.drop_leads();
         tied
     }
@@ -1898,6 +1908,9 @@ impl ServerSim {
             crate::leash_render::KnotAction::Punch => self.mobs.break_knot(pos),
             crate::leash_render::KnotAction::Shear => self.mobs.shear_knot(pos),
         };
+        if done {
+            self.level.game_event(crate::game_events::knot_event(action), minecraftoss_entities::world::knot_position(pos).to_array(), None);
+        }
         self.drop_leads();
         done
     }
@@ -2280,23 +2293,28 @@ impl ServerSim {
     }
 
     pub fn throw(&mut self, thrown: crate::thrown::Thrown) {
-        self.level.game_event_from(crate::game_events::PROJECTILE_SHOOT, thrown.position().to_array(), Some(Self::thrower(&thrown)), None);
+        self.level.game_event_from(crate::game_events::PROJECTILE_SHOOT, thrown.position().to_array(), Self::thrower(&thrown), None);
         self.thrown.push(thrown);
     }
 
-    fn thrower(thrown: &crate::thrown::Thrown) -> minecraftoss_world::level::game_event::EventSource {
+    fn thrower(thrown: &crate::thrown::Thrown) -> Option<minecraftoss_world::level::game_event::EventSource> {
         use minecraftoss_world::level::game_event::EventSource;
-        thrown.shooter.map_or(EventSource::Player(thrown.owner), EventSource::Mob)
+        thrown.shooter.map(EventSource::Mob).or_else(|| (thrown.owner != crate::thrown::MOB_THROWER).then_some(EventSource::Player(thrown.owner)))
     }
 
-    fn projectile_landed(&mut self, at: glam::DVec3, block: Option<BlockPos>, owner: minecraftoss_world::level::game_event::EventSource) {
+    fn rocket_source(owner: crate::firework_rocket::RocketOwner) -> Option<minecraftoss_world::level::game_event::EventSource> {
+        use minecraftoss_world::level::game_event::EventSource;
+        owner.player().map(EventSource::Player).or(owner.mob().map(EventSource::Mob))
+    }
+
+    fn projectile_landed(&mut self, at: glam::DVec3, block: Option<BlockPos>, owner: Option<minecraftoss_world::level::game_event::EventSource>) {
         match block {
             Some((x, y, z)) => {
                 let pos = minecraftoss_core::BlockPos::new(x, y, z);
                 let state = self.level.block(pos);
-                self.level.projectile_game_event(crate::game_events::PROJECTILE_LAND, minecraftoss_world::level::game_event::centre(pos), Some(owner), Some(state));
+                self.level.projectile_game_event(crate::game_events::PROJECTILE_LAND, minecraftoss_world::level::game_event::centre(pos), owner, Some(state));
             }
-            None => self.level.projectile_game_event(crate::game_events::PROJECTILE_LAND, at.to_array(), Some(owner), None),
+            None => self.level.projectile_game_event(crate::game_events::PROJECTILE_LAND, at.to_array(), owner, None),
         }
     }
 
@@ -2360,14 +2378,14 @@ impl ServerSim {
         trident.id = self.next_trident;
         self.next_trident = self.next_trident.wrapping_add(1).max(TRIDENT_IDS);
         if !trident.in_ground {
-            self.level.game_event_from(crate::game_events::PROJECTILE_SHOOT, trident.position.to_array(), Some(Self::trident_thrower(&trident)), None);
+            self.level.game_event_from(crate::game_events::PROJECTILE_SHOOT, trident.position.to_array(), Self::trident_thrower(&trident), None);
         }
         self.tridents.push(trident);
     }
 
-    fn trident_thrower(trident: &crate::trident::ThrownTrident) -> minecraftoss_world::level::game_event::EventSource {
+    fn trident_thrower(trident: &crate::trident::ThrownTrident) -> Option<minecraftoss_world::level::game_event::EventSource> {
         use minecraftoss_world::level::game_event::EventSource;
-        trident.mob_owner.map_or(EventSource::Player(trident.owner), EventSource::Mob)
+        trident.mob_owner.map(EventSource::Mob).or_else(|| (trident.owner != crate::trident::UNKNOWN_OWNER).then_some(EventSource::Player(trident.owner)))
     }
 
     pub fn trident_views(&self) -> Vec<crate::trident::TridentView> {
@@ -2482,7 +2500,7 @@ impl ServerSim {
                             crate::thrown::hurt_by(&mut self.mobs, target, crate::trident::DAMAGE, crate::trident::DAMAGE_TYPE, velocity, trident.owner);
                         }
                     },
-                    TridentEvent::Block { pos, at, velocity } => self.projectile_struck(pos, at, velocity),
+                    TridentEvent::Block { pos, at, velocity } => self.acting((trident.mob_owner.is_none() && trident.owner != crate::trident::UNKNOWN_OWNER).then_some(trident.owner), |sim| sim.projectile_struck(pos, at, velocity)),
                     TridentEvent::Sound { event, at, volume, pitch } => {
                         self.level.sounds.push(minecraftoss_world::level::burning::LevelSound { event, pos: at.to_array(), volume, pitch });
                     }
@@ -2690,7 +2708,7 @@ impl ServerSim {
                     let player = (t.shooter.is_none() && t.owner != crate::thrown::MOB_THROWER).then_some(t.owner);
                     end_hits.push((end, crate::end_crystal::EndDamage::thrown(amount, player, t.kind == Throwable::WindCharge), landed.velocity));
                 }
-                block_hits.extend(landed.block.zip(landed.face).map(|(block, face)| (block, face, landed.at)));
+                block_hits.extend(landed.block.zip(landed.face).map(|(block, face)| (block, face, landed.at, (t.shooter.is_none() && t.owner != crate::thrown::MOB_THROWER).then_some(t.owner))));
                 if let Some(mob) = landed.mob.filter(|&id| hurts && crate::thrown::struck_player(id).is_none() && frame.is_none() && end.is_none()) {
                     match t.shooter {
                         Some(shooter) => shot_by_mobs.push((shooter, mob, landed.velocity)),
@@ -2767,8 +2785,8 @@ impl ServerSim {
         for (end, damage, velocity) in end_hits {
             self.thrown_end_hit(end, damage, velocity);
         }
-        for (pos, face, at) in block_hits {
-            self.projectile_hit_block(pos, face, at);
+        for (pos, face, at, player) in block_hits {
+            self.acting(player, |sim| sim.projectile_hit_block(pos, face, at));
         }
         for (cell, pitch, hit, direction, amount) in awards {
             self.level.sounds.push(minecraftoss_world::level::burning::LevelSound { event: crate::thrown::BREAK_SOUND, pos: cell, volume: 1.0, pitch });
@@ -5116,8 +5134,8 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                 Command::LeashFence { player, pos, sneaking } => {
                     sim.leash_fence(player, pos, sneaking);
                 }
-                Command::Knot { pos, action, .. } => {
-                    sim.knot_action(pos, action);
+                Command::Knot { player, pos, action } => {
+                    sim.acting(Some(player), |sim| sim.knot_action(pos, action));
                 }
                 Command::Save => {
                     sim.ticks_since_save = 0;
@@ -14555,6 +14573,136 @@ mod tests {
         }
     }
 
+    fn knot_beside_a_sensor(fence: BlockPos) -> Option<(ServerSim, TickInput)> {
+        let (mut sim, mut scene) = sensor_world("minecraft:sculk_sensor")?;
+        place(&mut sim, &mut scene, fence, Block::new("minecraft:oak_fence"));
+        sim.summon("minecraft:cow", [8.5, 200.0, 19.5], None, 0.0).ok()?;
+        let cow = sim.mobs.cows().last()?.id;
+        sim.mobs.set_leash(cow, minecraftoss_entities::world::LeashHolder::Player(0));
+        Some((sim, walker_input([11.5, 200.0, 20.5])))
+    }
+
+    #[test]
+    fn a_lead_knot_beside_a_sensor_is_ten_when_tied_and_fifteen_when_punched_off() {
+        let fence = (8, 200, 15);
+        let Some((mut sim, mut input)) = knot_beside_a_sensor(fence) else { return };
+        run_ticks(&mut sim, &mut input, true, 1);
+        assert!(sim.leash_fence(0, fence, false));
+        run_ticks(&mut sim, &mut input, true, 12);
+        assert_eq!(sensor_phase(&sim), "active");
+        assert_eq!(last_frequency(&sim), Some(10), "tying is block_attach");
+        let Some((mut sim, mut input)) = knot_beside_a_sensor(fence) else { return };
+        assert!(sim.leash_fence(0, fence, false));
+        sim.level.take_game_events();
+        run_ticks(&mut sim, &mut input, true, 1);
+        assert!(sim.acting(Some(0), |sim| sim.knot_action(fence, crate::leash_render::KnotAction::Punch)));
+        run_ticks(&mut sim, &mut input, true, 12);
+        assert_eq!(sensor_phase(&sim), "active");
+        assert_eq!(last_frequency(&sim), Some(15), "the punched knot dies");
+    }
+
+    #[test]
+    fn a_crouched_players_rocket_is_heard_where_it_lands_and_a_standing_ones_launch_first() {
+        let Some((mut sim, mut scene)) = sensor_world("minecraft:sculk_sensor") else { return };
+        place(&mut sim, &mut scene, (12, 203, 8), Block::new("minecraft:stone"));
+        let mut input = walker_input([14.5, 200.0, 8.5]);
+        input.controls = vec![minecraftoss_entities::controls::PlayerControls { id: 0, sneaking: true, ..Default::default() }];
+        run_ticks(&mut sim, &mut input, true, 1);
+        let plain = || crate::firework::RocketLaunch { at: glam::DVec3::new(12.5, 200.15, 8.5), fireworks: crate::firework::Fireworks { flight: 1, explosions: Vec::new() } };
+        assert!(sim.launch_rocket(0, plain()));
+        run_ticks(&mut sim, &mut input, true, 20);
+        assert_eq!(last_frequency(&sim), Some(2), "crouched, only its landing on the roof");
+        run_ticks(&mut sim, &mut input, true, 60);
+        assert!(sim.rockets.is_empty());
+        assert_eq!(sensor_phase(&sim), "inactive");
+        input.controls.clear();
+        assert!(sim.launch_rocket(0, plain()));
+        run_ticks(&mut sim, &mut input, true, 8);
+        assert_eq!(last_frequency(&sim), Some(3), "standing, its launch first");
+    }
+
+    #[test]
+    fn an_ominous_item_spawner_beside_a_sensor_is_fifteen_and_a_wind_charge_it_drops_lands_with_no_owner() {
+        use minecraftoss_core::item::ItemStack;
+        use minecraftoss_world::level::entity::Entity;
+        let Some((mut sim, _)) = sensor_world("minecraft:sculk_sensor") else { return };
+        let mut input = walker_input([20.5, 200.0, 20.5]);
+        run_ticks(&mut sim, &mut input, true, 1);
+        let at = [12.5, 202.5, 8.5];
+        let nbt = minecraftoss_core::snbt::parse_compound("{item:{id:\"minecraft:diamond\",count:1},spawn_item_after_ticks:2}").unwrap();
+        sim.summon(crate::trial_spawner::OMINOUS_ITEM_SPAWNER, at, Some(&nbt), 0.0).expect("/summon makes one");
+        run_ticks(&mut sim, &mut input, true, 3);
+        let picked = sim.listeners().listener(SENSOR).and_then(|listener| listener.current.as_ref()).map(|info| (info.event, info.pos));
+        assert_eq!(picked, Some((crate::game_events::ENTITY_DIE, glam::DVec3::from_array(at))), "its death outweighs its item's placing (14) at the same spot");
+        run_ticks(&mut sim, &mut input, true, 8);
+        assert_eq!(last_frequency(&sim), Some(15));
+        sim.level.add_entity(Entity::ominous_item_spawner(at, ItemStack::new("minecraft:wind_charge", 1), 1));
+        let mut landed = Vec::new();
+        for _ in 0..20 {
+            sim.tick();
+            sim.tick_thrown(&[]);
+            landed.extend(sim.level.take_game_events().into_iter().filter(|event| event.event == crate::game_events::PROJECTILE_LAND).map(|event| (event.source, event.owner)));
+        }
+        assert_eq!(landed, [(None, None)], "the spawner's wind charge lands with no player behind it");
+    }
+
+    fn holding_one(item: &str) -> minecraftoss_player::inventory::Inventory {
+        let mut inventory = minecraftoss_player::inventory::Inventory::default();
+        inventory.slots[0] = Some(minecraftoss_player::inventory::ItemStack::new(item, 1));
+        inventory
+    }
+
+    fn until_the_sensor_hears(sim: &mut ServerSim, input: &mut TickInput) -> Option<i64> {
+        for _ in 0..60 {
+            run_ticks(sim, input, true, 1);
+            if sensor_phase(sim) == "active" {
+                return last_frequency(sim);
+            }
+        }
+        None
+    }
+
+    #[test]
+    fn a_saddled_pig_beside_a_sensor_is_five_and_gold_given_to_a_piglin_four() {
+        let Some((mut sim, _)) = sensor_world("minecraft:sculk_sensor") else { return };
+        let mut input = walker_input([20.5, 200.0, 20.5]);
+        let still = minecraftoss_core::snbt::parse_compound("{NoAI:1b}").unwrap();
+        sim.summon("minecraft:pig", [12.5, 200.0, 8.5], Some(&still), 0.0).unwrap();
+        sim.summon("minecraft:piglin", [8.5, 200.0, 12.5], Some(&still), 0.0).unwrap();
+        run_ticks(&mut sim, &mut input, true, 45);
+        assert_eq!(sensor_phase(&sim), "inactive");
+        let pig = sim.mobs.pigs()[0].id;
+        sim.mobs.pig_mut(pig).unwrap().pig.interact_saddle(&mut holding_one("minecraft:saddle"), 0, false);
+        assert_eq!(until_the_sensor_hears(&mut sim, &mut input), Some(5), "a saddle is equipment");
+        run_ticks(&mut sim, &mut input, true, 45);
+        let piglin = sim.mobs.piglins()[0].id;
+        assert!(sim.mobs.piglin_admire_held(piglin, &mut holding_one("minecraft:gold_ingot"), 0, false).is_some());
+        assert_eq!(until_the_sensor_hears(&mut sim, &mut input), Some(4), "gold in its hand is not");
+    }
+
+    #[test]
+    fn a_silverfish_breaking_out_of_infested_stone_beside_a_sensor_is_twelve() {
+        use minecraftoss_entities::world::families::pests::silverfish::Silverfish;
+        let Some((mut sim, mut scene)) = sensor_world("minecraft:sculk_sensor") else { return };
+        let infested = (8, 200, 14);
+        place(&mut sim, &mut scene, infested, Block::new("minecraft:infested_stone"));
+        place(&mut sim, &mut scene, (8, 199, 24), Block::new("minecraft:dirt"));
+        for (x, z) in [(7, 24), (9, 24), (8, 23), (8, 25)] {
+            for y in [200, 201] {
+                place(&mut sim, &mut scene, (x, y, z), Block::new("minecraft:dirt"));
+            }
+        }
+        sim.summon("minecraft:silverfish", [8.5, 200.0, 24.5], None, 0.0).unwrap();
+        let mut input = idle_input();
+        run_ticks(&mut sim, &mut input, true, 45);
+        assert_eq!(sensor_phase(&sim), "inactive");
+        let fish = sim.mobs.family::<Silverfish>()[0].core.id;
+        let magic = minecraftoss_entities::world::families::Hurt::new(1.0, "minecraft:magic", minecraftoss_entities::world::DamageSourceKind::Magic);
+        assert!(sim.mobs.hurt_family(fish, &magic).unwrap().applied, "too far for the sensor to hear its hurt");
+        assert_eq!(until_the_sensor_hears(&mut sim, &mut input), Some(12));
+        assert!(sim.command_registries().blocks.is_air(sim.command_block(infested)), "it broke the block");
+    }
+
     #[test]
     fn a_frozen_tick_holds_items_and_falling_blocks() {
         let Some((mut sim, mut scene)) = frozen_sim() else { return };
@@ -15784,6 +15932,98 @@ mod tests {
     }
 
     #[test]
+    fn a_lead_knot_posts_block_attach_when_tied_entity_die_when_punched_and_shear_when_cut_from_the_player() {
+        use crate::game_events::{BLOCK_ATTACH, ENTITY_DIE, SHEAR};
+        use crate::leash_render::KnotAction;
+        use minecraftoss_entities::world::LeashHolder;
+        use minecraftoss_world::level::game_event::EventSource;
+        let Some((mut server, _)) = door_world() else { return };
+        for x in 0..=16 {
+            for z in 0..=16 {
+                server.player_edit_block((x, 200, z), Some(&Block::new("minecraft:oak_planks")), PlayerEdit::Place);
+            }
+        }
+        let fence = (8, 201, 10);
+        server.player_edit_block(fence, Some(&Block::new("minecraft:oak_fence")), PlayerEdit::Place);
+        server.take_changes();
+        server.set_players(&[[8.5, 201.0, 8.5]], 2);
+        server.set_simulation_area((0, 0), 4);
+        server.summon("minecraft:cow", [6.5, 201.0, 6.5], None, 0.0).unwrap();
+        let cow = server.mobs.cows().last().expect("a cow").id;
+        server.tick_mobs(&[candidate(0, [8.5, 201.0, 8.5])], true);
+        let posted = |server: &mut ServerSim| server.level.take_game_events().into_iter().map(|event| (event.event, event.pos, event.source)).collect::<Vec<_>>();
+        let me = Some(EventSource::Player(0));
+        let (block, knot) = ([8.5, 201.5, 10.5], [8.5, 201.375, 10.5]);
+        posted(&mut server);
+        server.mobs.set_leash(cow, LeashHolder::Player(0));
+        assert!(server.leash_fence(0, fence, false));
+        assert_eq!(posted(&mut server), [(BLOCK_ATTACH, block, me)], "tying is heard at the fence");
+        assert!(server.leash_fence(0, fence, false), "the player takes it back");
+        assert_eq!(posted(&mut server), [(BLOCK_ATTACH, block, me)]);
+        assert!(server.leash_fence(0, fence, false));
+        posted(&mut server);
+        assert!(server.acting(Some(0), |server| server.knot_action(fence, KnotAction::Punch)));
+        assert_eq!(posted(&mut server), [(ENTITY_DIE, knot, me)], "a punched knot dies where it hangs");
+        assert!(!server.acting(Some(0), |server| server.knot_action(fence, KnotAction::Punch)));
+        assert!(posted(&mut server).is_empty(), "no knot, nothing heard");
+        server.mobs.set_leash(cow, LeashHolder::Player(0));
+        assert!(server.leash_fence(0, fence, false));
+        posted(&mut server);
+        assert!(server.acting(Some(0), |server| server.knot_action(fence, KnotAction::Shear)));
+        assert_eq!(posted(&mut server), [(SHEAR, knot, me)], "shears cut at the knot");
+        assert!(!server.acting(Some(0), |server| server.knot_action(fence, KnotAction::Shear)));
+        assert!(posted(&mut server).is_empty());
+        assert!(!server.leash_fence(0, fence, false), "nothing to tie");
+        assert!(posted(&mut server).is_empty());
+    }
+
+    #[test]
+    fn a_lead_on_a_mob_posts_shear_when_cut_entity_interact_when_untied_and_entity_action_when_passed_on() {
+        use crate::game_events::{ENTITY_ACTION, ENTITY_INTERACT, SHEAR};
+        use minecraftoss_entities::world::{LeashHolder, MobHit};
+        use minecraftoss_player::inventory::{Inventory, ItemStack};
+        let Some((mut server, _)) = door_world() else { return };
+        for x in 0..=16 {
+            for z in 0..=16 {
+                server.player_edit_block((x, 200, z), Some(&Block::new("minecraft:oak_planks")), PlayerEdit::Place);
+            }
+        }
+        server.take_changes();
+        server.set_players(&[[8.5, 201.0, 8.5]], 2);
+        server.set_simulation_area((0, 0), 4);
+        let mut cows = Vec::new();
+        for x in [6.5, 10.5] {
+            server.summon("minecraft:cow", [x, 201.0, 6.5], None, 0.0).unwrap();
+            cows.push(server.mobs.cows().last().expect("a cow").id);
+        }
+        server.tick_mobs(&[candidate(0, [8.5, 201.0, 8.5])], true);
+        let holding = |item: Option<&str>| {
+            let mut inventory = Inventory::default();
+            inventory.slots[0] = item.map(|item| ItemStack::new(item, 1));
+            inventory
+        };
+        let posted = |server: &mut ServerSim| server.mobs.take_game_events().into_iter().filter(|event| event.mob == Some(crate::thrown::PLAYER_TARGET)).map(|event| (event.event, event.pos)).collect::<Vec<_>>();
+        let at = |server: &ServerSim, cow: u64| server.mobs.body_of(cow).expect("the cow").position;
+        posted(&mut server);
+        server.mob_action(0, MobHit::Cow(cows[0]), None, holding(Some("minecraft:lead")), 0, false);
+        assert_eq!(server.mobs.leash_holder(cows[0]), Some(LeashHolder::Player(0)));
+        assert!(posted(&mut server).is_empty(), "a lead put on posts nothing");
+        server.mob_action(0, MobHit::Cow(cows[0]), None, holding(None), 0, false);
+        assert_eq!(server.mobs.leash_holder(cows[0]), None);
+        assert_eq!(posted(&mut server), [(ENTITY_INTERACT, at(&server, cows[0]))], "untied by its holder");
+        server.mobs.set_leash(cows[0], LeashHolder::Player(0));
+        server.mob_action(0, MobHit::Cow(cows[0]), None, holding(Some("minecraft:shears")), 0, false);
+        assert_eq!(server.mobs.leash_holder(cows[0]), None);
+        assert_eq!(posted(&mut server), [(SHEAR, at(&server, cows[0]))], "cut at the cow");
+        server.mobs.set_leash(cows[0], LeashHolder::Player(0));
+        server.mobs.set_player_controls(&[minecraftoss_entities::controls::PlayerControls { id: 0, sneaking: true, ..Default::default() }]);
+        server.mob_action(0, MobHit::Cow(cows[1]), None, holding(None), 0, false);
+        assert_eq!(server.mobs.leash_holder(cows[0]), Some(LeashHolder::Mob(cows[1])));
+        let block = at(&server, cows[1]).floor() + glam::DVec3::splat(0.5);
+        assert_eq!(posted(&mut server), [(ENTITY_ACTION, block)], "passed on to the other cow, at its block");
+    }
+
+    #[test]
     fn a_wandering_trader_sells_two_buying_two_uncommon_and_five_common_trades_with_no_experience_bar() {
         use minecraftoss_player::inventory::Inventory;
         let Some((mut server, _)) = trading_server() else { return };
@@ -16234,6 +16474,48 @@ mod tests {
     }
 
     #[test]
+    fn a_bell_rung_by_a_players_projectile_is_the_players_block_change_and_by_a_mobs_no_ones() {
+        use minecraftoss_world::level::game_event::EventSource;
+        let Some((mut server, mut scene)) = door_world() else { return };
+        let rung = |server: &mut ServerSim| server.level.take_game_events().into_iter().filter(|event| event.event == crate::game_events::BLOCK_CHANGE).map(|event| (event.pos, event.source)).collect::<Vec<_>>();
+        let bell = (8, 200, 8);
+        let centre = [8.5, 200.5, 8.5];
+        bell_at(&mut server, &mut scene, bell, "floor", "north");
+        rung(&mut server);
+        server.throw(thrown_from("minecraft:snowball", [8.5, 200.6, 4.5], 0.0, 3));
+        for _ in 0..10 {
+            server.tick_thrown(&[]);
+        }
+        assert_eq!(bell_uses(&server), 1);
+        assert_eq!(rung(&mut server), [(centre, Some(EventSource::Player(0)))], "a snowball's thrower rings it");
+        let mut random = minecraftoss_player::rng::LegacyRandom::new(5);
+        let throw = crate::thrown::Throw { owner: 3, item: crate::trident::ITEM, components: None, eye: glam::DVec3::new(8.5, 200.6, 4.5), yaw: 0.0, pitch: 0.0, motion: glam::DVec3::ZERO, on_ground: true };
+        server.throw_trident(crate::trident::ThrownTrident::launch(&throw, minecraftoss_player::inventory::ItemStack::new(crate::trident::ITEM, 1), false, &mut random));
+        for _ in 0..10 {
+            server.tick_tridents(&[]);
+        }
+        assert_eq!(rung(&mut server), [(centre, Some(EventSource::Player(3)))], "so does a trident's");
+        let mut random = minecraftoss_player::rng::LegacyRandom::new(6);
+        let plain = crate::firework::Fireworks { flight: 1, explosions: Vec::new() };
+        for owner in [crate::firework_rocket::RocketOwner::Player(4), crate::firework_rocket::RocketOwner::Nobody] {
+            server.rockets.push(crate::firework_rocket::Rocket::shot(owner, glam::DVec3::new(8.5, 200.5, 5.5), glam::DVec3::Z, 0.5, 0.0, plain.clone(), &mut random));
+            for _ in 0..8 {
+                server.tick_rockets(&[]);
+            }
+            server.rockets.clear();
+            assert_eq!(rung(&mut server).first(), Some(&(centre, owner.player().map(EventSource::Player))), "a player's rocket rings it for its player, a dispenser's for no one");
+        }
+        let archer = server.mobs.spawn_skeleton(minecraftoss_entities::skeleton::Skeleton::new(glam::DVec3::new(8.5, 200.0, 2.5)), true);
+        let arrow = minecraftoss_entities::projectile::Arrow::in_flight(glam::DVec3::new(8.5, 200.5, 4.5), glam::DVec3::new(0.0, 0.0, 1.6), minecraftoss_player::rng::LegacyRandom::new(1));
+        server.mobs.spawn_owned_arrow(archer, arrow);
+        server.set_simulation_area((0, 0), 1);
+        for _ in 0..5 {
+            server.tick_mobs(&[], false);
+        }
+        assert_eq!(rung(&mut server), [(centre, None)], "a skeleton's arrow rings it for no player");
+    }
+
+    #[test]
     fn a_rung_bell_sends_block_event_one_with_its_direction() {
         let Some((mut server, mut scene)) = door_world() else { return };
         let bell = (8, 200, 8);
@@ -16359,6 +16641,61 @@ mod tests {
         }).collect();
         hits.sort_unstable();
         assert_eq!(hits, [(4, Some(4), None), (5, Some(4), None)], "the owner is hurt by its own rocket too");
+    }
+
+    #[test]
+    fn a_rocket_is_shot_on_its_first_tick_and_lands_on_the_block_or_mob_it_strikes_for_its_owner() {
+        use crate::firework::{Explosion, Fireworks, RocketLaunch};
+        use crate::firework_rocket::{Rocket, RocketOwner};
+        use crate::game_events::{EXPLODE, PROJECTILE_LAND, PROJECTILE_SHOOT};
+        use minecraftoss_world::level::game_event::EventSource;
+        let Some((mut server, mut scene)) = door_world() else { return };
+        if server.level.registries().entities.is_none() {
+            return;
+        }
+        place(&mut server, &mut scene, (8, 204, 8), Block::new("minecraft:stone"));
+        let roof = server.level.block(minecraftoss_core::BlockPos::new(8, 204, 8));
+        let red = || Fireworks { flight: 1, explosions: vec![Explosion::burst(11743532)] };
+        let fly = |server: &mut ServerSim| {
+            server.level.take_game_events();
+            let mut posted = Vec::new();
+            let mut ticks = 0;
+            while !server.rockets.is_empty() && ticks < 40 {
+                ticks += 1;
+                server.tick_rockets(&[]);
+                posted.extend(server.level.take_game_events().into_iter().map(|event| (ticks, event)));
+            }
+            posted
+        };
+        assert!(server.launch_rocket(4, RocketLaunch { at: glam::DVec3::new(8.5, 201.15, 8.5), fireworks: red() }));
+        let posted = fly(&mut server);
+        let me = Some(EventSource::Player(4));
+        let (shot_tick, shot) = &posted[0];
+        assert_eq!((*shot_tick, shot.event, shot.pos, shot.source, shot.owner), (1, PROJECTILE_SHOOT, [8.5, 201.15, 8.5], me, None), "shot by its player where it starts, on its first tick");
+        assert_eq!(posted.iter().filter(|(_, event)| event.event == PROJECTILE_SHOOT).count(), 1);
+        let landed: Vec<_> = posted.iter().filter(|(_, event)| event.event == PROJECTILE_LAND).map(|(_, event)| (event.pos, event.source, event.owner, event.affected)).collect();
+        assert_eq!(landed, [([8.5, 204.5, 8.5], None, me, Some(roof))], "it lands on the roof's centre with the roof, from its player");
+        assert!(posted.iter().any(|(_, event)| event.event == EXPLODE && event.source == me));
+        let villager = {
+            let before: Vec<u64> = server.mobs.mob_ids().collect();
+            server.summon("minecraft:villager", [4.5, 202.0, 4.5], None, 0.0).unwrap();
+            server.mobs.mob_ids().find(|id| !before.contains(id)).unwrap()
+        };
+        server.summon("minecraft:zombie", [4.5, 206.0, 4.5], None, 0.0).unwrap();
+        let mut random = minecraftoss_player::rng::LegacyRandom::new(5);
+        server.rockets.push(Rocket::launch(RocketOwner::Mob(villager), glam::DVec3::new(4.5, 201.8, 4.5), red(), &mut random));
+        let posted = fly(&mut server);
+        assert_eq!(posted[0].1.source, Some(EventSource::Mob(villager)));
+        let burst = server.firework_bursts.last().expect("it bursts on the zombie").position;
+        let landed: Vec<_> = posted.iter().filter(|(_, event)| event.event == PROJECTILE_LAND).map(|(_, event)| (event.pos, event.source, event.owner, event.affected)).collect();
+        assert_eq!(landed.len(), 1, "{landed:?}");
+        let (at, source, owner, affected) = landed[0];
+        assert_eq!((source, owner, affected), (None, Some(EventSource::Mob(villager)), None));
+        assert!(at[1] <= 206.0 && at[1] > 205.6 && at[1] < burst.y, "it lands where its path meets the zombie's box, below the burst at {burst}: {at:?}");
+        let mut random = minecraftoss_player::rng::LegacyRandom::new(6);
+        server.rockets.push(Rocket::shot(RocketOwner::Nobody, glam::DVec3::new(12.5, 201.5, 12.5), glam::DVec3::X, 0.5, 1.0, Fireworks::default(), &mut random));
+        let posted = fly(&mut server);
+        assert_eq!((posted[0].1.event, posted[0].1.source), (PROJECTILE_SHOOT, None), "a dispenser's rocket is shot by no one");
     }
 
     #[test]

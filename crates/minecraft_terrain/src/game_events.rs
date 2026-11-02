@@ -17,6 +17,7 @@ pub const PROJECTILE_LAND: &str = "minecraft:projectile_land";
 pub const EXPLODE: &str = "minecraft:explode";
 pub const TENDRILS_CLICKING: &str = "minecraft:sculk_sensor_tendrils_clicking";
 pub const BLOCK_CHANGE: &str = "minecraft:block_change";
+pub const BLOCK_ATTACH: &str = "minecraft:block_attach";
 pub const CONTAINER_OPEN: &str = "minecraft:container_open";
 pub const CONTAINER_CLOSE: &str = "minecraft:container_close";
 pub const FLUID_PLACE: &str = "minecraft:fluid_place";
@@ -25,6 +26,8 @@ pub const ENTITY_PLACE: &str = "minecraft:entity_place";
 pub const ENTITY_DIE: &str = "minecraft:entity_die";
 pub const ENTITY_DAMAGE: &str = "minecraft:entity_damage";
 pub const ENTITY_MOUNT: &str = "minecraft:entity_mount";
+pub const ENTITY_INTERACT: &str = "minecraft:entity_interact";
+pub const ENTITY_ACTION: &str = "minecraft:entity_action";
 pub const EAT: &str = "minecraft:eat";
 pub const DRINK: &str = "minecraft:drink";
 pub const EQUIP: &str = "minecraft:equip";
@@ -150,6 +153,26 @@ pub fn item_use_event(held: &str, block: &str) -> &'static str {
         BLOCK_PLACE
     } else {
         BLOCK_CHANGE
+    }
+}
+
+pub fn knot_event(action: crate::leash_render::KnotAction) -> &'static str {
+    match action {
+        crate::leash_render::KnotAction::Punch => ENTITY_DIE,
+        crate::leash_render::KnotAction::Shear => SHEAR,
+    }
+}
+
+pub fn leash_event(
+    used: minecraftoss_entities::world::LeashUse,
+    mob: DVec3,
+) -> Option<(&'static str, DVec3)> {
+    use minecraftoss_entities::world::LeashUse;
+    match used {
+        LeashUse::Snipped => Some((SHEAR, mob)),
+        LeashUse::Untied => Some((ENTITY_INTERACT, mob)),
+        LeashUse::Moved => Some((ENTITY_ACTION, mob.floor() + DVec3::splat(0.5))),
+        LeashUse::Tied | LeashUse::Pass => None,
     }
 }
 
@@ -498,6 +521,29 @@ mod tests {
         for (held, block, event) in cases {
             assert_eq!(item_use_event(held, block), event, "{held} on {block}");
         }
+    }
+
+    #[test]
+    fn a_lead_cut_untied_or_passed_on_and_a_knot_punched_or_cut_are_heard_like_vanilla() {
+        use crate::leash_render::KnotAction;
+        use minecraftoss_entities::world::LeashUse;
+        let cow = DVec3::new(3.7, 64.0, -2.2);
+        assert_eq!(leash_event(LeashUse::Snipped, cow), Some((SHEAR, cow)));
+        assert_eq!(
+            leash_event(LeashUse::Untied, cow),
+            Some((ENTITY_INTERACT, cow))
+        );
+        assert_eq!(
+            leash_event(LeashUse::Moved, cow),
+            Some((ENTITY_ACTION, DVec3::new(3.5, 64.5, -2.5)))
+        );
+        assert_eq!(leash_event(LeashUse::Tied, cow), None);
+        assert_eq!(leash_event(LeashUse::Pass, cow), None);
+        assert_eq!(knot_event(KnotAction::Punch), ENTITY_DIE);
+        assert_eq!(knot_event(KnotAction::Shear), SHEAR);
+        assert_eq!(frequency(BLOCK_ATTACH), 10);
+        assert_eq!(frequency(ENTITY_INTERACT), 6);
+        assert_eq!(frequency(ENTITY_ACTION), 4);
     }
 
     #[test]

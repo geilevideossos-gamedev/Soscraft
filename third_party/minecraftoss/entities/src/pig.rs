@@ -124,6 +124,7 @@ impl Pig {
             animal::consume_one(inventory, hand);
         }
         self.saddled = true;
+        self.body.equipment_changed(true);
         InteractionResult::SuccessPredicted
     }
 

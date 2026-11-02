@@ -852,6 +852,7 @@ impl EntityWorld {
         }
         if kind.saddleable() && !horse.saddled && !baby && item == "minecraft:saddle" {
             horse.saddled = true;
+            entity.cow.body.equipment_changed(true);
             entity
                 .voices
                 .push((Voice::Event("entity.horse.saddle", 1.0, 1.0), position));
@@ -868,6 +869,7 @@ impl EntityWorld {
             horse.body_components = inventory.slots[hand]
                 .as_ref()
                 .and_then(|s| s.components.clone());
+            entity.cow.body.equipment_changed(true);
             entity
                 .voices
                 .push((Voice::Event("entity.horse.armor", 1.0, 1.0), position));
@@ -881,6 +883,7 @@ impl EntityWorld {
             horse.body_components = inventory.slots[hand]
                 .as_ref()
                 .and_then(|s| s.components.clone());
+            entity.cow.body.equipment_changed(true);
             entity
                 .voices
                 .push((Voice::Event("entity.llama.swag", 1.0, 1.0), position));
@@ -926,6 +929,7 @@ impl EntityWorld {
         let mut sounds = Vec::new();
         if horse.kind.saddleable() && horse.saddled != saddled {
             horse.saddled = saddled;
+            entity.cow.body.equipment_changed(saddled);
             if saddled {
                 sounds.push("entity.horse.saddle");
             }
@@ -941,6 +945,7 @@ impl EntityWorld {
                 });
             }
             horse.body_item = body;
+            entity.cow.body.equipment_changed(horse.body_item.is_some());
         }
         if horse.chest && items.len() == horse.inventory.len() {
             horse.inventory = items;

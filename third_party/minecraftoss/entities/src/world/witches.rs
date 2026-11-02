@@ -108,6 +108,7 @@ impl WitchEntity {
             self.witch.using_time -= 1;
             if left <= 0 {
                 self.witch.drinking = None;
+                self.witch.body.equipment_changed(false);
                 // `forEachEffect` with the duration scaled by 1
                 // (`withScaledDuration`: at least a tick).
                 let mut effect = potion.effect();
@@ -118,6 +119,7 @@ impl WitchEntity {
             let eye_in_water = FluidFrame::eye_in_water(world, position, witch::EYE_HEIGHT);
             if let Some(potion) = self.witch.choose_drink(&mut self.random, eye_in_water, game_time, target_distance_sq) {
                 self.witch.drinking = Some(potion);
+                self.witch.body.equipment_changed(false);
                 self.witch.using_time = witch::DRINK_TICKS;
                 let pitch = 0.8 + self.random.next_float() * 0.4;
                 self.voices.push((Voice::Event("entity.witch.drink", 1.0, pitch), position));

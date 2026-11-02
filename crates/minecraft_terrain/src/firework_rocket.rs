@@ -37,6 +37,9 @@ pub struct Burst {
 pub enum RocketEvent {
     Launched,
     Exploded,
+    Entity {
+        at: DVec3,
+    },
     Block {
         pos: minecraftoss_player::Pos,
         at: DVec3,
@@ -63,7 +66,7 @@ pub struct Rocket {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum RocketHit {
-    Entity,
+    Entity(DVec3),
     Block(minecraftoss_player::Pos, DVec3),
 }
 
@@ -229,13 +232,16 @@ impl Rocket {
     fn after_hit(&mut self, hit: Option<RocketHit>) -> Vec<RocketEvent> {
         let mut events = Vec::new();
         let bursts = match hit {
-            Some(RocketHit::Entity) => true,
+            Some(RocketHit::Entity(_)) => true,
             Some(RocketHit::Block(..)) => !self.explosions.is_empty(),
             None => false,
         };
         if bursts {
             self.alive = false;
             events.push(RocketEvent::Exploded);
+        }
+        if let Some(RocketHit::Entity(at)) = hit {
+            events.push(RocketEvent::Entity { at });
         }
         if let Some(RocketHit::Block(pos, at)) = hit {
             events.push(RocketEvent::Block {
@@ -270,14 +276,17 @@ impl Rocket {
             .iter()
             .filter(|target| self.left_owner || !target.owner)
             .filter(|target| overlaps((target.min, target.max), search))
-            .any(|target| {
+            .filter_map(|target| {
                 let (min, max) = grown((target.min, target.max), margin);
-                minecraftoss_entities::sight::clip_box(min, max, from, to).is_some()
+                minecraftoss_entities::sight::clip_box(min, max, from, to)
+            })
+            .min_by(|a, b| {
+                a.distance_squared(from)
+                    .total_cmp(&b.distance_squared(from))
             });
-        if struck {
-            Some(RocketHit::Entity)
-        } else {
-            block.map(|(pos, at)| RocketHit::Block(pos, at))
+        match struck {
+            Some(at) => Some(RocketHit::Entity(at)),
+            None => block.map(|(pos, at)| RocketHit::Block(pos, at)),
         }
     }
 
@@ -452,11 +461,58 @@ mod tests {
         let mut rising = rocket(1, 2);
         let events = rising.tick(&world, &[zombie_at(DVec3::new(0.5, 65.7, 0.5))], None);
         assert!(!rising.alive);
-        assert_eq!(events, [RocketEvent::Exploded, RocketEvent::Launched]);
+        assert_eq!(events.len(), 3, "{events:?}");
+        assert_eq!(
+            (events[0], events[2]),
+            (RocketEvent::Exploded, RocketEvent::Launched)
+        );
+        let RocketEvent::Entity { at } = events[1] else {
+            panic!("{events:?}");
+        };
+        assert!(
+            (at.y - 65.7).abs() < 1e-9 && (at.x - 0.5).abs() < 0.01 && (at.z - 0.5).abs() < 0.01,
+            "it lands where its path meets the zombie's box, below where it bursts: {at}"
+        );
         assert!(
             (rising.position.y - (65.62 + RISE + LIFT)).abs() < 1e-9,
             "it bursts where its move ends: {}",
             rising.position
+        );
+    }
+
+    #[test]
+    fn a_rocket_lands_where_its_path_first_meets_a_mob() {
+        let world = Sky { roof: None };
+        let far = zombie_at(DVec3::new(0.5, 65.7, 0.5));
+        let near = PotionTarget {
+            id: 10,
+            ..zombie_at(DVec3::new(0.5, 65.66, 0.5))
+        };
+        let landed = |targets: &[PotionTarget]| {
+            let mut rising = rocket(1, 2);
+            rising
+                .tick(&world, targets, None)
+                .into_iter()
+                .find_map(|event| match event {
+                    RocketEvent::Entity { at } => Some(at.y),
+                    _ => None,
+                })
+        };
+        let (near_first, far_first) = (landed(&[near, far]), landed(&[far, near]));
+        assert!(
+            near_first.is_some_and(|y| (y - 65.66).abs() < 1e-9),
+            "{near_first:?}"
+        );
+        assert_eq!(near_first, far_first, "the nearer box wins in any order");
+        let mut wall = rocket(1, 1);
+        wall.position = DVec3::new(0.85, 65.0, 0.5);
+        wall.velocity = DVec3::new(0.2, RISE, 0.0);
+        let events = wall.tick(&Wall, &[], None);
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, RocketEvent::Entity { .. })),
+            "a block hit is no mob hit: {events:?}"
         );
     }
 

@@ -364,6 +364,11 @@ fn apply_blocks<W: World>(world: &mut EntityWorld, id: u64, level: &mut W) {
             Some(host) => level.set_block(pos, Some(host)),
             None => {
                 level.destroy_block(pos);
+                mob.core.body.game_events.push((
+                    "minecraft:block_destroy",
+                    DVec3::new(f64::from(pos.0), f64::from(pos.1), f64::from(pos.2)) + 0.5,
+                    None,
+                ));
             }
         }
     }

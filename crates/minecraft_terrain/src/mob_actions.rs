@@ -161,6 +161,9 @@ pub fn interact(world: &mut EntityWorld, hit: MobHit, actor: &mut Actor) -> MobO
     let mut outcome = MobOutcome::default();
     let sneaking = world.player_controls(actor.player).is_some_and(|controls| controls.sneaking);
     let leashed = world.leash_interact(hit.id(), actor.player, held.as_deref(), sneaking, infinite);
+    if let Some((event, at)) = world.body_of(hit.id()).and_then(|body| crate::game_events::leash_event(leashed, body.position)) {
+        world.game_event(event, at, Some(crate::thrown::PLAYER_TARGET + actor.player), None);
+    }
     if leashed != LeashUse::Pass {
         outcome.handled = true;
         match leashed {
