@@ -1411,3 +1411,23 @@ After 9c8c70c5.
 ```
 IW4L_MINECRAFT_KIT=minecraft:trident+loyalty=3,minecraft:trident,minecraft:snowball*16,minecraft:egg*16,minecraft:wind_charge*16,minecraft:end_crystal*4,minecraft:obsidian*8,minecraft:splash_potion@harming*2,minecraft:potion@slow_falling,minecraft:shield,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots,minecraft:golden_apple*16,minecraft:cooked_beef*32,minecraft:cobblestone*64
 ```
+
+## Segment e2b review fixes
+
+### 1. Minecraft friends who rejoin see the whole picture of their maps
+
+After bb0995c7.
+
+- **Defect (group `maps-held`, commit 2):** the host keeps each player's map sync state (vanilla's `HoldingPlayer`: the dirty rectangle, the dirty markers, the send count and the fill-in step) in `MapStore`, keyed by UUID, and only `tick_carried_by` of a map dropped the state of a player who had gone. When a friend was the only one carrying a map and left the game, nobody ticked that map, so the friend's old state stayed. On rejoining, the friend's client starts with an empty map cache, but the host found the old state with nothing dirty and sent only the markers: the friend's held map stayed a blank grey checkerboard with their arrow, until each pixel happened to change again.
+- **Vanilla (26.3, checked with javap):** `MapItemSavedData.carriedByPlayers` is keyed by the `Player` object, and a rejoining player is a new `ServerPlayer`, so `tickCarriedBy` gives it a new `HoldingPlayer` with the whole map dirty (`0,0` to `127,127`), and the client gets the whole picture again. The old holder is dropped, with its marker, the next time anyone ticks the map (`isRemoved`).
+- **Changed:** `minecraft_terrain/src/maps.rs`: at the end of `MapStore::tick_carried_on`, every held map forgets the holders that are not among this tick's carriers (a player who left, or one with no place yet), with their markers (`Held::forget_absent`). A map someone ticks this tick has already dropped them in `tick_carried_by`, so vanilla's order (and its skip of the next holder) is unchanged; a map nobody carries loses them at once instead of when it is next carried, which no one can see.
+- **Tests:** `maps::tests::a_holder_who_left_gets_the_whole_map_again_when_back`: a holder gets the whole map, then nothing; a tick without them leaves the map no holder, no tracked marker and only its red X; back, they get the whole 128 x 128 picture and both markers again. It fails without the change (the holder is still there). `test -p minecraft_terrain`, `test -p minecraft_survival` and `check -p launcher` pass.
+- **Protocol:** no message change.
+- **Test steps** (two windows with `scripts\mp-local.ps1`, `/kit @a` from the host; survival, by day):
+  1. **RV-E2B-1.** The friend right-clicks an empty map, holds the new map and walks 20 blocks so it fills in. The host carries no map.
+  2. The friend quits to the title screen and joins again. The friend selects the same map: it shows the land it had filled in, with the friend's arrow, not a grey checkerboard (**RV-E2B-1_rejoined**).
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:map*4,minecraft:compass,minecraft:cooked_beef*16
+```

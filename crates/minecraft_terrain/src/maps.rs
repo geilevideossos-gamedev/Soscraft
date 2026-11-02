@@ -855,6 +855,19 @@ impl Held {
             holding.dirty_decorations = true;
         }
     }
+
+    fn forget_absent(&mut self, carriers: &[Carrier]) {
+        let gone: Vec<PlayerUuid> = self
+            .holders
+            .iter()
+            .filter(|holding| !carriers.iter().any(|carrier| carrier.uuid == holding.uuid))
+            .map(|holding| holding.uuid.clone())
+            .collect();
+        for uuid in gone {
+            self.holders.retain(|holding| holding.uuid != uuid);
+            self.remove(&uuid.0);
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -1167,6 +1180,9 @@ impl MapStore {
                 let pending = self.pending.entry(carrier.uuid.clone()).or_default();
                 pending.extend(updates);
             }
+        }
+        for held in self.held.values_mut() {
+            held.forget_absent(carriers);
         }
         self.pending
             .retain(|uuid, _| carriers.iter().any(|carrier| carrier.uuid == *uuid));
@@ -2472,6 +2488,40 @@ mod tests {
             "the updates of a player who is gone are dropped"
         );
         assert_eq!(sent(&mut store, "alex").len(), 1);
+    }
+
+    #[test]
+    fn a_holder_who_left_gets_the_whole_map_again_when_back() {
+        let map = MapData::create_fresh(0.0, 0.0, 0, "minecraft:overworld", true, false);
+        let mut store = store_with(&[(0, map)]);
+        let carried_map = carried(
+            "minecraft:filled_map",
+            0,
+            &[("+", "minecraft:red_x", 0.0, 0.0)],
+        );
+        let steve = holder("steve", (2.0, 2.0, 0.0), vec![carried_map]);
+        store.tick_carried(std::slice::from_ref(&steve), 0);
+        assert_eq!(sent(&mut store, "steve").len(), 1);
+        store.tick_carried(std::slice::from_ref(&steve), 1);
+        assert!(sent(&mut store, "steve").is_empty());
+        store.tick_carried(&[], 2);
+        let held = store.held(0).expect("the map keeps its target");
+        assert_eq!(held.holders().count(), 0, "a player who left holds nothing");
+        assert_eq!(held.tracked(), 0);
+        assert_eq!(
+            shown(&store, 0),
+            [("minecraft:red_x", 0, 0, 8)],
+            "and leaves no marker behind"
+        );
+        store.tick_carried(std::slice::from_ref(&steve), 3);
+        let back = sent(&mut store, "steve");
+        assert_eq!(back.len(), 1);
+        let patch = back[0].patch.as_ref().expect("the whole map again");
+        assert_eq!(
+            (patch.x, patch.y, patch.width, patch.height),
+            (0, 0, 128, 128)
+        );
+        assert_eq!(back[0].decorations.as_ref().map(Vec::len), Some(2));
     }
 
     #[test]
