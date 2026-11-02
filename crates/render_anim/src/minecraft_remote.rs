@@ -1722,6 +1722,7 @@ fn present(
         darkness: *darkness,
         world_fog,
         credits,
+        sky_flash: level.view.sky_flash(),
     };
     view.weather = if view.weather_texture.is_some() {
         let rain = (weather[0], level.view.partial());
@@ -2036,6 +2037,7 @@ fn present_entities(
         raw(&meshes.shadows),
         raw(&meshes.glow),
         raw(&meshes.glow_cover),
+        raw(&meshes.additive),
     ];
     let (bytes, indices) = &mut view.particles;
     let vertex = std::mem::size_of::<minecraft_terrain::mesh::SectionVertex>();

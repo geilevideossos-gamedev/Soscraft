@@ -355,6 +355,7 @@ pub struct EntitySnapshot {
     pub tridents: Vec<crate::trident::TridentView>,
     pub eyes: crate::eye_of_ender::EyeSnapshot,
     pub crystals: Vec<crate::end_crystal::CrystalView>,
+    pub lightning: Vec<crate::lightning::BoltView>,
     pub dragons: Vec<crate::ender_dragon::DragonView>,
     pub dragon_fireballs: Vec<crate::dragon_fireball::FireballView>,
     pub breath_bursts: Vec<glam::DVec3>,
@@ -5166,7 +5167,7 @@ fn finish_batch(sim: &mut ServerSim, input: &TickInput, out: &mut Output) {
     out.tracked.merge(tracked);
     out.weather = Some(sim.weather(input.players.first().filter(|p| p.alive).map(|p| p.feet)));
     out.weather_data = sim.weather_data();
-    out.entities = Some(EntitySnapshot { items: sim.items(), ominous_items: crate::trial_spawner::ominous_item_views(&sim.level), tnt: sim.primed_tnt(), falling: sim.falling_blocks(), orbs: sim.orbs(), thrown_views: sim.thrown_views().into_iter().chain(sim.rocket_views()).collect(), clouds: sim.cloud_views(), tridents: sim.trident_views(), eyes: sim.eye_snapshot(), crystals: sim.crystal_views(), dragons: sim.dragon_views(), dragon_fireballs: sim.dragon_fireballs.views(), breath_bursts: sim.dragon_fireballs.take_bursts(), vibrations: std::mem::take(&mut sim.vibration_bursts), sculk_souls: std::mem::take(&mut sim.level.catalyst_blooms).into_iter().map(crate::vibrations::soul_burst).collect(), gateways: sim.gateway_views(), frames: sim.frame_views(), dragon_breath: std::mem::take(&mut sim.dragon_breath), dragon_explosions: std::mem::take(&mut sim.dragon_explosions), swirls: sim.swirl_views(), firework_bursts: std::mem::take(&mut sim.firework_bursts), mob_puffs: std::mem::take(&mut sim.mob_puffs) });
+    out.entities = Some(EntitySnapshot { items: sim.items(), ominous_items: crate::trial_spawner::ominous_item_views(&sim.level), tnt: sim.primed_tnt(), falling: sim.falling_blocks(), orbs: sim.orbs(), thrown_views: sim.thrown_views().into_iter().chain(sim.rocket_views()).collect(), clouds: sim.cloud_views(), tridents: sim.trident_views(), eyes: sim.eye_snapshot(), crystals: sim.crystal_views(), lightning: crate::lightning::views(&sim.level), dragons: sim.dragon_views(), dragon_fireballs: sim.dragon_fireballs.views(), breath_bursts: sim.dragon_fireballs.take_bursts(), vibrations: std::mem::take(&mut sim.vibration_bursts), sculk_souls: std::mem::take(&mut sim.level.catalyst_blooms).into_iter().map(crate::vibrations::soul_burst).collect(), gateways: sim.gateway_views(), frames: sim.frame_views(), dragon_breath: std::mem::take(&mut sim.dragon_breath), dragon_explosions: std::mem::take(&mut sim.dragon_explosions), swirls: sim.swirl_views(), firework_bursts: std::mem::take(&mut sim.firework_bursts), mob_puffs: std::mem::take(&mut sim.mob_puffs) });
     let (solves, ms) = sim.level.light_solves.replace((0, 0.0));
     let total = out.tick_nanos.last().map_or(0.0, |&nanos| nanos as f64 / 1_000_000.0);
     out.tick_phases = Some((sim.level.last_tick_phases, (solves, ms), total));
@@ -6533,6 +6534,38 @@ mod tests {
         assert_eq!(health, vec![5.0, 10.0], "the cow under the bolt takes five, the far one nothing");
         let blocks = &server.level.registries().blocks;
         assert_eq!(Some(blocks.block_of(server.level.block(minecraftoss_core::BlockPos::new(8, 200, 8)))), blocks.block_by_name("minecraft:fire"), "its block catches fire");
+    }
+
+    #[test]
+    fn a_summoned_bolt_reaches_the_snapshot_with_its_seed_until_it_is_gone() {
+        use minecraftoss_world::level::entity::EntityKind;
+        let Some((mut server, _)) = door_world() else { return };
+        let spot = [8.5, 200.0, 8.5];
+        server.summon(crate::lightning::BOLT, spot, None, 0.0).unwrap();
+        let seed = server.level.entities.iter().find_map(|e| match &e.kind {
+            EntityKind::LightningBolt(data) => Some(data.seed),
+            _ => None,
+        });
+        let mut input = idle_input();
+        let mut shown = Vec::new();
+        for _ in 0..100 {
+            let mut out = Output::default();
+            run_tick(&mut server, &mut input, true, &mut out);
+            finish_batch(&mut server, &input, &mut out);
+            let bolts = out.entities.expect("a snapshot").lightning;
+            let Some(bolt) = bolts.first() else { break };
+            assert_eq!((bolts.len(), bolt.position), (1, glam::DVec3::from_array(spot)));
+            shown.push((bolt.seed, bolt.life));
+        }
+        assert_eq!(shown.first().map(|&(seed, _)| seed), seed, "drawn from the seed it was born with");
+        let lives: Vec<i32> = shown.iter().map(|&(_, life)| life).collect();
+        assert_eq!(lives[..2], [1, 0], "lit for its first two ticks");
+        assert_eq!(lives.last(), Some(&0), "gone the tick after its last flash");
+        let reflashes = lives[1..].iter().filter(|&&life| life == 1).count();
+        assert!((1..=3).contains(&reflashes), "one to three more flashes: {lives:?}");
+        let seeds: std::collections::BTreeSet<i64> = shown.iter().map(|&(seed, _)| seed).collect();
+        assert_eq!(seeds.len(), reflashes + 1, "each flash a new shape");
+        assert!(lives.len() < 100);
     }
 
     #[test]

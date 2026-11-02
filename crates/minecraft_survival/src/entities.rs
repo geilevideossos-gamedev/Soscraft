@@ -121,6 +121,7 @@ pub struct MobMeshes {
     pub models: ChunkMesh,
     pub culled: ChunkMesh,
     pub translucent: ChunkMesh,
+    pub additive: ChunkMesh,
     pub shadows: ChunkMesh,
     pub items: ChunkMesh,
     pub glow: ChunkMesh,

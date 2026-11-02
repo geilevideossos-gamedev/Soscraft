@@ -6,6 +6,7 @@ use minecraftoss_core::nbt::Tag;
 use minecraftoss_entities::tempt::PlayerCandidate;
 use minecraftoss_entities::world::{Bolt, EntityWorld, ThunderOutcome};
 use minecraftoss_world::level::Level;
+use minecraftoss_world::level::entity::EntityKind;
 use minecraftoss_world::level::lightning::LightningHit;
 use minecraftoss_world::natural_spawner::SpawnLevel;
 use std::cell::RefCell;
@@ -29,6 +30,31 @@ const CARRIED: [&str; 7] = [
 pub struct PlayerStrike {
     pub player: u64,
     pub at: [f64; 3],
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct BoltView {
+    pub id: i32,
+    pub position: DVec3,
+    pub seed: i64,
+    pub life: i32,
+}
+
+pub fn views(level: &Level<'_>) -> Vec<BoltView> {
+    level
+        .entities
+        .iter()
+        .filter(|e| !e.removed)
+        .filter_map(|e| match &e.kind {
+            EntityKind::LightningBolt(data) => Some(BoltView {
+                id: e.id,
+                position: DVec3::from_array(e.pos),
+                seed: data.seed,
+                life: data.life,
+            }),
+            _ => None,
+        })
+        .collect()
 }
 
 pub fn summon(level: &mut Level<'static>, position: [f64; 3]) -> Result<(), String> {

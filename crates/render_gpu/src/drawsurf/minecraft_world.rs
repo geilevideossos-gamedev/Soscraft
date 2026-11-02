@@ -91,7 +91,7 @@ pub struct MinecraftWorldFrame {
     pub armor_glint_texture: Option<Arc<MinecraftAtlasImage>>,
     /// Mob models (cut out, back-face culled, translucent) and entity
     /// shadows: MinecraftOSS `Vertex` bytes (44 each) and indices.
-    pub entity_meshes: [(Vec<u8>, Vec<u32>); 6],
+    pub entity_meshes: [(Vec<u8>, Vec<u32>); 7],
     /// A black card to draw, in blocks: behind the inventory's character.
     pub backdrop: Option<[[f32; 3]; 4]>,
     pub puppet_gear: (Vec<u8>, Vec<u32>),
@@ -159,7 +159,7 @@ struct TerrainGpu {
     particles: Option<(Buffer, Buffer, u32)>,
     cracks: Option<(Buffer, Buffer, u32)>,
     /// This frame's entity meshes, in `MinecraftWorldFrame::entity_meshes` order.
-    entities: [Option<(Buffer, Buffer, u32)>; 6],
+    entities: [Option<(Buffer, Buffer, u32)>; 7],
     backdrop: Option<Buffer>,
     puppet_gear: Option<(Buffer, Buffer, u32)>,
     hand: Option<(Buffer, Buffer, u32)>,
@@ -169,7 +169,7 @@ struct TerrainGpu {
     bind: Option<BindGroup>,
     sections: HashMap<[i32; 3], SectionGpu>,
     visible: Vec<[i32; 3]>,
-    pipelines: HashMap<(TextureFormat, u32), [RenderPipeline; 16]>,
+    pipelines: HashMap<(TextureFormat, u32), [RenderPipeline; 17]>,
 }
 
 pub(super) fn register(app: &mut App) {
@@ -766,7 +766,7 @@ fn draw_terrain(
     let (target, depth, extracted_view, msaa) = view.into_inner();
     let format = target.main_texture_format();
     let samples = msaa.map_or(1, Msaa::samples);
-    let [sky, opaque, translucent, clouds, crack, entity, entity_culled, entity_translucent, shadow, backdrop, hand, sections, weather, glow, glow_mask, glow_clear] = gpu
+    let [sky, opaque, translucent, clouds, crack, entity, entity_culled, entity_translucent, shadow, backdrop, hand, sections, weather, glow, glow_mask, glow_clear, additive] = gpu
         .pipelines
         .entry((format, samples))
         .or_insert_with(|| pipelines(&device, &registry, format, samples))
@@ -865,6 +865,12 @@ fn draw_terrain(
     }
     if let Some((vertices, indices, count)) = gpu.cracks.as_ref() {
         pass.set_render_pipeline(&crack);
+        pass.set_vertex_buffer(0, vertices.slice(..));
+        pass.set_index_buffer(indices.slice(..), IndexFormat::Uint32);
+        pass.draw_indexed(0..*count, 0, 0..1);
+    }
+    if let Some((vertices, indices, count)) = gpu.entities[ADDITIVE_SLOT].as_ref() {
+        pass.set_render_pipeline(&additive);
         pass.set_vertex_buffer(0, vertices.slice(..));
         pass.set_index_buffer(indices.slice(..), IndexFormat::Uint32);
         pass.draw_indexed(0..*count, 0, 0..1);
@@ -1309,6 +1315,28 @@ fn entity_translucent_fragment(in: EntityOut) -> @location(0) vec4<f32> {
     return vec4<f32>(mix(lit, view.environment.fog.rgb, fog_value(in.world_pos)), texel.a * in.colour.a);
 }
 
+@vertex
+fn additive_vertex(
+    @location(0) position: vec3<f32>,
+    @location(1) uv: vec2<f32>,
+    @location(2) colour: vec4<f32>,
+) -> EntityOut {
+    var out: EntityOut;
+    out.clip = view.clip_from_rel * vec4<f32>(rel_from_block(position), 1.0);
+    out.uv = uv;
+    out.colour = colour;
+    out.world_pos = position;
+    out.light = vec3<f32>(1.0);
+    return out;
+}
+
+@fragment
+fn additive_fragment(in: EntityOut) -> @location(0) vec4<f32> {
+    let colour = textureSampleLevel(atlas, atlas_sampler, in.uv, 0.0) * in.colour;
+    let fade = colour.a * (1.0 - fog_value(in.world_pos));
+    return vec4<f32>(colour.rgb * fade, fade);
+}
+
 // The first-person hand: view-space vertices under the hand projection,
 // lit by the lightmap, cut out as items are (below 0.1).
 @vertex
@@ -1421,6 +1449,16 @@ fn weather_fragment(in: WeatherOut) -> @location(0) vec4<f32> {
 "#;
 
 const OUTLINE_STENCIL: u32 = 0x80;
+const ADDITIVE_SLOT: usize = 6;
+
+fn additive_blend() -> BlendState {
+    let add = bevy::render::render_resource::BlendComponent {
+        src_factor: bevy::render::render_resource::BlendFactor::One,
+        dst_factor: bevy::render::render_resource::BlendFactor::One,
+        operation: bevy::render::render_resource::BlendOperation::Add,
+    };
+    BlendState { color: add, alpha: add }
+}
 
 fn outline_states() -> [(DepthStencilState, ColorWrites); 3] {
     let state = |compare: CompareFunction, pass_op: StencilOperation| {
@@ -1455,7 +1493,7 @@ fn pipelines(
     registry: &ExactPipelineRegistry,
     format: TextureFormat,
     samples: u32,
-) -> [RenderPipeline; 16] {
+) -> [RenderPipeline; 17] {
     let shader = unsafe {
         device.create_shader_module(ShaderModuleDescriptor {
             label: Some("iw4l_minecraft_terrain"),
@@ -1754,6 +1792,7 @@ fn pipelines(
         glow,
         glow_mask,
         glow_clear,
+        make("additive_vertex", "additive_fragment", &entity_buffers, false, CompareFunction::GreaterEqual, Some(additive_blend()), None),
     ]
 }
 
@@ -1783,7 +1822,7 @@ mod tests {
         use bevy::render::render_resource::{ColorWrites, CompareFunction, DepthStencilState, StencilOperation};
         let module = naga::front::wgsl::parse_str(super::TERRAIN_WGSL).unwrap();
         assert!(module.entry_points.iter().any(|entry| entry.name == "glow_fragment"));
-        assert_eq!(std::mem::size_of::<[(Vec<u8>, Vec<u32>); 6]>(), std::mem::size_of_val(&super::MinecraftWorldFrame::default().entity_meshes));
+        assert_eq!(std::mem::size_of::<[(Vec<u8>, Vec<u32>); 7]>(), std::mem::size_of_val(&super::MinecraftWorldFrame::default().entity_meshes));
         let [mask, hull, clear] = super::outline_states();
         for (state, _) in [&mask, &hull, &clear] {
             assert_eq!((state.depth_write_enabled, state.depth_compare), (Some(false), Some(CompareFunction::Always)), "seen through walls, the depth left alone");
@@ -1826,6 +1865,28 @@ mod tests {
         assert_eq!(stencil, before, "the bit is given back, so the MW2 passes after read what they did before");
         let mw2 = super::super::scene_depth::stencil_state(0x40);
         assert_eq!(mw2.read_mask & super::OUTLINE_STENCIL, super::OUTLINE_STENCIL, "MW2 passes read every bit, so it must be cleared");
+    }
+
+    #[test]
+    fn lightning_draws_on_its_own_additive_slot_unlit_and_faded_by_fog() {
+        use bevy::render::render_resource::{BlendFactor, BlendOperation};
+        let module = naga::front::wgsl::parse_str(super::TERRAIN_WGSL).unwrap();
+        let entry = |name: &str| module.entry_points.iter().any(|entry| entry.name == name);
+        assert!(entry("additive_vertex") && entry("additive_fragment"));
+        assert_eq!(super::ADDITIVE_SLOT, super::MinecraftWorldFrame::default().entity_meshes.len() - 1, "the newest slot, after the glow");
+        let blend = super::additive_blend();
+        for part in [blend.color, blend.alpha] {
+            assert_eq!((part.src_factor, part.dst_factor, part.operation), (BlendFactor::One, BlendFactor::One, BlendOperation::Add));
+        }
+        let source = super::TERRAIN_WGSL;
+        let body = |name: &str| {
+            let from = &source[source.find(name).unwrap()..];
+            from[..from.find("\n}\n").unwrap()].to_owned()
+        };
+        let fragment = body("fn additive_fragment(");
+        assert!(fragment.contains("colour.rgb * fade"), "times its alpha, as vanilla's SRC_ALPHA, ONE blend");
+        assert!(fragment.contains("1.0 - fog_value(in.world_pos)"), "faded by fog, as rendertype_lightning is");
+        assert!(!body("fn additive_vertex(").contains("lightmap"), "unlit");
     }
 
     #[test]
