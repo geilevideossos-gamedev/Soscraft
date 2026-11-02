@@ -864,7 +864,7 @@ impl<S: Family> FamilyStore<S> {
         }
     }
 
-    pub fn take_deaths(&mut self, out: &mut Vec<(u64, MobDeath)>, mob_drops: bool) {
+    pub fn take_deaths(&mut self, out: &mut Vec<(u64, MobDeath)>, _mob_drops: bool) {
         for mob in &mut self.mobs {
             if mob.core.removed || mob.core.damage.death.is_none() {
                 continue;
@@ -882,7 +882,7 @@ impl<S: Family> FamilyStore<S> {
             else {
                 continue;
             };
-            if mob_drops && death.context.killed_by_player && (monster || !death.context.baby) {
+            if monster || !death.context.baby {
                 death.experience = S::experience(mob);
             }
             death.equipment = S::death_drops(mob);

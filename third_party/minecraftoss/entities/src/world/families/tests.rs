@@ -344,6 +344,26 @@ fn a_registered_mob_dies_with_its_table_experience_and_voices() {
 }
 
 #[test]
+fn a_registered_mob_feeds_sculk_catalysts_without_mob_drops() {
+    let mut world = EntityWorld::default();
+    world.set_mob_drops(false);
+    let monster = probe_at(&mut world, KIND, at(0.5));
+    let baby = probe_at(&mut world, ANIMAL, at(10.5));
+    probe_mut(&mut world, baby).core.baby = true;
+    probe_mut(&mut world, monster).state.drops = vec![ItemStack::new("minecraft:stick", 2)];
+    for id in [monster, baby] {
+        let near = world.body_of(id).unwrap().position - DVec3::Z;
+        assert!(world.player_attack(&attack(1, near, 100.0), id).died);
+    }
+    let deaths = world.take_deaths();
+    assert_eq!(deaths.iter().map(|d| d.id).collect::<Vec<_>>(), [monster, baby]);
+    let killed = &deaths[0];
+    assert_eq!((killed.table, killed.experience, killed.reward), (None, 0, 5));
+    assert!(killed.equipment.is_empty());
+    assert_eq!((deaths[1].experience, deaths[1].reward), (0, 0), "a baby animal gives none");
+}
+
+#[test]
 fn a_registered_mob_despawns_by_its_rule_leaves_with_its_chunk_and_is_copied_where_kept() {
     let mut world = EntityWorld::default();
     let monster = probe_at(&mut world, KIND, at(0.5));
