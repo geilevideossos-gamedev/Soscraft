@@ -164,7 +164,10 @@ pub(super) fn cow_fall(
 pub(super) fn horse_death_equipment(horse: &HorseState, mob_drops: bool) -> Vec<ItemStack> {
     let mut out = Vec::new();
     if let (Some(item), true) = (&horse.body_item, mob_drops) {
-        out.push(ItemStack::new(item, 1));
+        out.push(ItemStack {
+            components: horse.body_components.clone(),
+            ..ItemStack::new(item, 1)
+        });
     }
     if horse.saddled && mob_drops {
         out.push(ItemStack::new("minecraft:saddle", 1));
@@ -858,6 +861,9 @@ impl EntityWorld {
         }
         if kind.wears_armor() && horse.body_item.is_none() && item.ends_with("_horse_armor") {
             horse.body_item = Some(item);
+            horse.body_components = inventory.slots[hand]
+                .as_ref()
+                .and_then(|s| s.components.clone());
             entity
                 .voices
                 .push((Voice::Event("entity.horse.armor", 1.0, 1.0), position));
@@ -868,6 +874,9 @@ impl EntityWorld {
         }
         if kind.is_llama() && horse.body_item.is_none() && carpet(&item) {
             horse.body_item = Some(item);
+            horse.body_components = inventory.slots[hand]
+                .as_ref()
+                .and_then(|s| s.components.clone());
             entity
                 .voices
                 .push((Voice::Event("entity.llama.swag", 1.0, 1.0), position));
@@ -900,7 +909,7 @@ impl EntityWorld {
         &mut self,
         id: u64,
         saddled: bool,
-        body: Option<String>,
+        body: Option<ItemStack>,
         items: Vec<Option<ItemStack>>,
     ) {
         let Some(entity) = self.cows.iter_mut().find(|e| e.id == id) else {
@@ -917,7 +926,9 @@ impl EntityWorld {
                 sounds.push("entity.horse.saddle");
             }
         }
-        if horse.body_item != body {
+        let (body, components) = body.map_or((None, None), |s| (Some(s.id), s.components));
+        if horse.body_item != body || horse.body_components != components {
+            horse.body_components = components;
             if body.is_some() {
                 sounds.push(if horse.kind.is_llama() {
                     "entity.llama.swag"
@@ -1263,6 +1274,79 @@ mod tests {
         assert_eq!(
             dropped.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(),
             ["minecraft:white_carpet", "minecraft:chest"]
+        );
+    }
+
+    #[test]
+    fn equipping_and_dropping_dyed_leather_keeps_the_colour() {
+        let mut world = EntityWorld::default();
+        let id = equine(&mut world, HorseKind::Horse, DVec3::new(0.5, 64.0, 0.5));
+        world.cow_mut(id).unwrap().horse.as_mut().unwrap().tame = true;
+        let red = serde_json::json!({"minecraft:dyed_color": 0xB02E26});
+        let mut armor = holding("minecraft:leather_horse_armor");
+        armor.slots[0].as_mut().unwrap().components = Some(red.clone());
+        assert_eq!(
+            world.horse_interact(id, 0, &mut armor, 0, false),
+            InteractionResult::SuccessPredicted
+        );
+        let horse = world.cow_mut(id).unwrap().horse.clone().unwrap();
+        assert_eq!(
+            (horse.body_item.as_deref(), horse.body_components.as_ref()),
+            (Some("minecraft:leather_horse_armor"), Some(&red))
+        );
+        let left = armor.slots[0].as_ref().unwrap();
+        assert_eq!((left.count, left.components.as_ref()), (7, Some(&red)));
+        let dropped = &horse_death_equipment(&horse, true)[0];
+        assert_eq!(dropped.id, "minecraft:leather_horse_armor");
+        assert_eq!(
+            (dropped.count, dropped.components.as_ref()),
+            (1, Some(&red))
+        );
+        world.take_sounds();
+        let lime = ItemStack {
+            components: Some(serde_json::json!({"minecraft:dyed_color": 0x80C71F})),
+            ..ItemStack::new("minecraft:leather_horse_armor", 1)
+        };
+        world.set_mount_inventory(id, false, Some(lime.clone()), Vec::new());
+        let horse = world.cow_mut(id).unwrap().horse.clone().unwrap();
+        assert_eq!(horse.body_components, lime.components);
+        let armour_sounds = |world: &mut EntityWorld| {
+            world
+                .take_sounds()
+                .iter()
+                .filter(|s| s.event == "entity.horse.armor")
+                .count()
+        };
+        assert_eq!(armour_sounds(&mut world), 1, "a new dye is a new armour");
+        world.set_mount_inventory(id, false, Some(lime.clone()), Vec::new());
+        assert_eq!(armour_sounds(&mut world), 0, "the same armour is no change");
+        world.set_mount_inventory(
+            id,
+            false,
+            Some(ItemStack::new("minecraft:leather_horse_armor", 1)),
+            Vec::new(),
+        );
+        let horse = world.cow_mut(id).unwrap().horse.clone().unwrap();
+        assert_eq!(
+            (horse.body_item.as_deref(), horse.body_components),
+            (Some("minecraft:leather_horse_armor"), None)
+        );
+        assert_eq!(armour_sounds(&mut world), 1);
+        world.set_mount_inventory(id, false, Some(lime), Vec::new());
+        world.set_mount_inventory(id, false, None, Vec::new());
+        let horse = world.cow_mut(id).unwrap().horse.clone().unwrap();
+        assert_eq!((horse.body_item, horse.body_components), (None, None));
+        let llama = equine(&mut world, HorseKind::Llama, DVec3::new(4.5, 64.0, 0.5));
+        world.cow_mut(llama).unwrap().horse.as_mut().unwrap().tame = true;
+        let named = serde_json::json!({"minecraft:custom_name": "Rug"});
+        let mut carpet = holding("minecraft:red_carpet");
+        carpet.slots[0].as_mut().unwrap().components = Some(named.clone());
+        world.horse_interact(llama, 0, &mut carpet, 0, false);
+        let horse = world.cow_mut(llama).unwrap().horse.clone().unwrap();
+        assert_eq!(horse.body_components.as_ref(), Some(&named));
+        assert_eq!(
+            horse_death_equipment(&horse, true)[0].components.as_ref(),
+            Some(&named)
         );
     }
 
@@ -2020,7 +2104,7 @@ mod tests {
         world.set_mount_inventory(
             donkey,
             true,
-            Some("minecraft:iron_horse_armor".to_owned()),
+            Some(ItemStack::new("minecraft:iron_horse_armor", 1)),
             items.clone(),
         );
         let horse = world.cow_mut(donkey).unwrap().horse.clone().unwrap();

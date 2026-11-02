@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{Dimension, PlayerUuid};
 
-pub const PROTOCOL: u16 = 9;
+pub const PROTOCOL: u16 = 10;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Nbt(pub Vec<u8>);
@@ -625,6 +625,7 @@ pub struct GearItem {
     pub glint: bool,
     pub dye: Option<u32>,
     pub potion: Option<u32>,
+    pub look: String,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

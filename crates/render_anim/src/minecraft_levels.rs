@@ -539,6 +539,9 @@ fn tick_level(
     for (pos, apart) in entities.view.lids.take_apart_changes() {
         terrain.stream.draw_apart(pos, apart);
     }
+    for (pos, apart) in entities.view.banners.take_apart_changes(&terrain.scene) {
+        terrain.stream.draw_apart(pos, apart);
+    }
     entities.view.sounds.clear();
     entities.view.item_crumbs.clear();
     entities.view.potion_crumbs.clear();

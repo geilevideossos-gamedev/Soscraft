@@ -125,6 +125,7 @@ pub fn block_icon(
                 raster_triangle(
                     &mut output,
                     &mut depth,
+                    None,
                     &source,
                     side,
                     icon_size,
@@ -201,10 +202,12 @@ pub fn model_icon(
                 [(0.5 + point.x) * size, (0.5 - point.y) * size, point.z]
             });
             let uvs = face.corner_uvs();
+            let under = output.clone();
             for triangle in [[0, 1, 2], [0, 2, 3]] {
                 raster_triangle(
                     &mut output,
                     &mut depth,
+                    Some(&under),
                     source,
                     *side,
                     icon_size,
@@ -440,6 +443,7 @@ fn uv(corner: usize, [u0, v0, u1, v1]: [f32; 4]) -> [f32; 2] {
 fn raster_triangle(
     output: &mut RgbaImage,
     depth: &mut [Vec<f32>],
+    under: Option<&RgbaImage>,
     source: &RgbaImage,
     side: u32,
     icon_size: usize,
@@ -507,10 +511,26 @@ fn raster_triangle(
                 color[channel] =
                     (color[channel] as f32 * shade * tint[channel] as f32 / 255.0).round() as u8;
             }
+            if let Some(under) = under.filter(|_| texel[3] < 255) {
+                color = over(color, *under.get_pixel(x as u32, y as u32));
+            }
             output.put_pixel(x as u32, y as u32, color);
             depth[y][x] = z;
         }
     }
+}
+
+fn over(top: image::Rgba<u8>, under: image::Rgba<u8>) -> image::Rgba<u8> {
+    let top_alpha = f32::from(top[3]) / 255.0;
+    let under_alpha = f32::from(under[3]) / 255.0 * (1.0 - top_alpha);
+    let alpha = top_alpha + under_alpha;
+    let mut mixed = top;
+    for channel in 0..3 {
+        let sum = f32::from(top[channel]) * top_alpha + f32::from(under[channel]) * under_alpha;
+        mixed[channel] = (sum / alpha).round() as u8;
+    }
+    mixed[3] = (alpha * 255.0).round() as u8;
+    mixed
 }
 
 #[cfg(test)]

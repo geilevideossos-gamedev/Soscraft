@@ -345,7 +345,7 @@ pub fn append_illagers<'a>(
             held.push(HeldItem {
                 pose: head_item_pose(root, pose.head),
                 light: mob.light_probe.as_vec3(),
-                id: stack.id.clone(),
+                id: crate::item_look::held_key(stack, None),
                 display: HeldDisplay::Head,
                 first_tint: None,
             });
@@ -354,24 +354,18 @@ pub fn append_illagers<'a>(
             continue;
         }
         let (right, left) = if illager.left_handed {
-            (
-                &illager.equipment[il::OFFHAND],
-                &illager.equipment[il::MAINHAND],
-            )
+            (il::OFFHAND, il::MAINHAND)
         } else {
-            (
-                &illager.equipment[il::MAINHAND],
-                &illager.equipment[il::OFFHAND],
-            )
+            (il::MAINHAND, il::OFFHAND)
         };
-        for (stack, arm, is_left) in [(right, pose.right_arm, false), (left, pose.left_arm, true)] {
-            let Some(stack) = stack else {
+        for (slot, arm, is_left) in [(right, pose.right_arm, false), (left, pose.left_arm, true)] {
+            let Some(id) = hand_key(entity, slot) else {
                 continue;
             };
             held.push(HeldItem {
                 pose: hand_pose(root, arm, is_left),
                 light: mob.light_probe.as_vec3(),
-                id: stack.id.clone(),
+                id,
                 display: if is_left {
                     HeldDisplay::LeftHand
                 } else {
@@ -383,6 +377,12 @@ pub fn append_illagers<'a>(
     }
     crate::cow_render::apply_overlays(mesh, &marks);
     held
+}
+
+pub(crate) fn hand_key(entity: &IllagerEntity, slot: usize) -> Option<String> {
+    let stack = entity.illager.equipment.get(slot)?.as_ref()?;
+    let using = entity.using_item.filter(|_| slot == entity.illager.crossbow_hand());
+    Some(crate::item_look::held_key(stack, using))
 }
 
 #[cfg(test)]
@@ -523,5 +523,63 @@ mod tests {
         let (z, y, x) = arm_angles(pose.right_leg);
         assert!((x + 1.413_716_7).abs() < 1e-4 && (y - 0.314_159_27).abs() < 1e-4);
         assert!((z - 0.078_539_82).abs() < 1e-4);
+    }
+
+    #[test]
+    fn a_pillager_s_crossbow_pulls_in_its_using_hand_and_shows_its_arrow_when_loaded() {
+        use minecraftoss_entities::illager::Illager;
+        use minecraftoss_entities::world::EntityWorld;
+        use minecraftoss_player::inventory::ItemStack;
+        let atlas = crate::mesh::make_atlas(&crate::pack::PackStack::open(Vec::new()).unwrap(), Vec::new()).unwrap();
+        let light = SkyLight::from_levels((-2, 62, -2), (5, 5, 5), vec![15; 125], vec![0; 125]);
+        let drawn = |world: &EntityWorld| {
+            let mut poses = ClientMobs::default();
+            poses.spawn_missing(&crate::client_mobs::server_mobs(world));
+            let mut mesh = ChunkMesh::default();
+            let held = append_illagers(&mut mesh, world.illagers().iter(), &poses, &atlas, &light, 0.0);
+            held.into_iter().map(|item| (item.display, item.id)).collect::<Vec<_>>()
+        };
+        let mut world = EntityWorld::default();
+        let id = world.spawn_illager(Illager::pillager(glam::DVec3::new(0.5, 64.0, 0.5)), true);
+        let crossbow = "minecraft:crossbow".to_owned();
+        assert_eq!(drawn(&world), [(HeldDisplay::RightHand, crossbow.clone())]);
+        let charge = |world: &mut EntityWorld, ticks: Option<i32>| {
+            let e = world.illager_mut(id).unwrap();
+            e.illager.charging_crossbow = ticks.is_some();
+            e.arm_pose = if ticks.is_some() { IllagerArmPose::CrossbowCharge } else { IllagerArmPose::CrossbowHold };
+            e.using_item = ticks;
+        };
+        for ticks in [0, 15, 25] {
+            charge(&mut world, Some(ticks));
+            assert_eq!(drawn(&world), [(HeldDisplay::RightHand, format!("{crossbow}|use={ticks}"))]);
+        }
+        charge(&mut world, None);
+        world.illager_mut(id).unwrap().illager.set_crossbow_charged(true);
+        assert_eq!(drawn(&world), [(HeldDisplay::RightHand, format!("{crossbow}|charge=arrow"))]);
+        world.illager_mut(id).unwrap().illager.set_crossbow_charged(false);
+        {
+            let e = world.illager_mut(id).unwrap();
+            e.illager.left_handed = true;
+            e.illager.equipment[il::OFFHAND] = Some(ItemStack::new("minecraft:firework_rocket", 1));
+            e.illager.equipment[il::HEAD] = Some(ItemStack {
+                components: Some(serde_json::json!({"minecraft:banner_patterns": [{"pattern": "minecraft:rhombus", "color": "cyan"}]})),
+                ..ItemStack::new("minecraft:white_banner", 1)
+            });
+        }
+        charge(&mut world, Some(15));
+        assert_eq!(
+            drawn(&world),
+            [
+                (HeldDisplay::Head, "minecraft:white_banner|layer=cyan,minecraft:rhombus".to_owned()),
+                (HeldDisplay::RightHand, "minecraft:firework_rocket".to_owned()),
+                (HeldDisplay::LeftHand, format!("{crossbow}|use=15")),
+            ],
+            "a left-handed pillager pulls the crossbow in its left hand only"
+        );
+        {
+            let e = world.illager_mut(id).unwrap();
+            e.illager.equipment.swap(il::MAINHAND, il::OFFHAND);
+        }
+        assert_eq!(drawn(&world)[1..], [(HeldDisplay::RightHand, format!("{crossbow}|use=15")), (HeldDisplay::LeftHand, "minecraft:firework_rocket".to_owned())], "an offhand crossbow is the using hand");
     }
 }

@@ -37,7 +37,7 @@ Not a vanilla mob: the boss of track F (`docs/round10/track-f.md`, `docs/ELDEN-R
 
 | # | Mob | Where the player meets it | Exists beyond the default | Left | Size | Family | Hit key | Status | Commits |
 |---|---|---|---|---|---|---|---|---|---|
-| 52 | Breeze | trial chambers | wind charge burst (`wind.rs`), wind charges trigger blocks (f142f9c1), `BreezeAnimation` readable | brain, wind charges, `BreezeModel`, keyframes | L | `breezes` | 40 | left | |
+| 52 | Breeze | trial chambers | wind charge burst (`wind.rs`), wind charges trigger blocks (f142f9c1), `BreezeAnimation` readable | | L | `breezes` | 40 | done | ae5bcf0e, 0c83047f, a1ddd5ae, fbf3b5cc, "Minecraft breezes are drawn with their wind and eyes" |
 
 ## W: the deep dark (group `deep_dark`)
 

@@ -28,7 +28,8 @@ pub fn of_stack(stack: &ItemStack) -> String {
 pub fn of_stack_at(base: &str, stack: &ItemStack) -> String {
     let color = potions::stack_color(stack.components.as_ref())
         .or_else(|| crate::body_gear::dyed_color(stack));
-    key(base, color)
+    let look = crate::item_look::ItemLook::of(stack.components.as_ref(), None);
+    key(&crate::item_look::keyed(base, &look), color)
 }
 
 #[cfg(test)]

@@ -425,7 +425,8 @@ impl Level<'_> {
             // `spawnAfterBreak` without the player experience hack: no draws.
             let registries = self.lib.registries.clone();
             match registries.loot.block_drops(&registries, state, &params, &mut self.random_sequences, &mut self.random) {
-                Ok(drops) => {
+                Ok(mut drops) => {
+                    self.keep_block_entity_components(pos, state, &mut drops);
                     for stack in drops {
                         add_or_append_stack(self, stacks, stack, pos);
                     }

@@ -136,6 +136,8 @@ pub struct Probe {
     pub jumped: Vec<i32>,
     pub orders: Vec<(DVec3, f64)>,
     pub attachment: f64,
+    pub deflects: bool,
+    pub deflected: Vec<String>,
     pub ai: Box<MonsterAi>,
 }
 
@@ -169,6 +171,8 @@ impl Family for Probe {
                 jumped: Vec::new(),
                 orders: Vec::new(),
                 attachment: 0.0,
+                deflects: false,
+                deflected: Vec::new(),
                 ai: Box::new(ai),
             },
         })
@@ -269,6 +273,13 @@ impl Family for Probe {
 
     fn knockback_resistance(mob: &FamilyMob<Self>) -> f64 {
         mob.state.knockback_resistance
+    }
+
+    fn deflect(mob: &mut FamilyMob<Self>, projectile: &str) -> bool {
+        if mob.state.deflects {
+            mob.state.deflected.push(projectile.to_owned());
+        }
+        mob.state.deflects
     }
 
     fn death_drops(mob: &mut FamilyMob<Self>) -> Vec<ItemStack> {

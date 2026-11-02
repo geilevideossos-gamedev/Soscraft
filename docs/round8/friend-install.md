@@ -6,7 +6,7 @@ How it works in one paragraph: the host's game runs the whole world. The host's 
 
 ## Part A: the host, once
 
-Do this on the owner's PC, in PowerShell in the repo (`C:\Dev\mashup-crafting`). The game folder is `C:\Games\Mashup\2010-Rust-Rewrite-Mashup`.
+Do this on the owner's PC, in PowerShell in the repo (`C:\Dev\Soscraft\mashup-crafting`). The game folder is `C:\Games\Mashup\2010-Rust-Rewrite-Mashup`.
 
 1. **The game build.** The friend must run exactly the same exe as the host. With release 2 that is `iw4l-survival.exe`. Every command below passes it with `-Exe iw4l-survival.exe`; without `-Exe` the script takes the newest `iw4l-mp-*.exe` in the game folder and stops if there is none.
 2. **The relay.** Build it once and copy it next to the game:
@@ -61,7 +61,7 @@ If the script cannot be used, put these files in one folder and zip it. They are
 | File | From |
 |---|---|
 | `iw4l-survival.exe` | the game folder (the same build the host runs) |
-| `LICENSE`, `NOTICE`, `COPYING-FreeFont.txt`, `OFL-Oxanium.txt`, `README.txt` | the game folder |
+| `LICENSE`, `LICENSE-APACHE`, `NOTICE`, `COPYING-FreeFont.txt`, `OFL-Oxanium.txt`, `README.txt` | the game folder |
 | `iw4l-ca.pem` | `iw4l-artifacts\mp-local\certs\iw4l-ca.pem` |
 | `Join Minecraft World.bat` | the game folder, after step 6 |
 | `.env` | written by hand, with the six lines of part B step 3 |
@@ -118,7 +118,7 @@ If the script cannot be used, put these files in one folder and zip it. They are
 ## Part C: joining
 
 1. **The host starts the world.** The host double-clicks `Host Minecraft World.bat` in the game folder.
-   - It starts the relay minimised (`iw4l-master.exe serve --bind 0.0.0.0:4433`) when none is running, then the game hosting a room for up to 4 players.
+   - It starts the relay minimised (`iw4l-master.exe serve --bind 0.0.0.0:4433`) when none is running, then the game hosting a room for up to 5 players.
    - It opens the world named by `IW4L_MINECRAFT_WORLD` in the host's `.env` (default `world`). To try things out in a separate world first, change that line.
    - As soon as the world shows, the host's Minecraft chat reads "Friends join with the code [<code>]", the 32-character code in green. Press T if the line has faded. The same code is the `room=` line of `iw4l-artifacts\master.status`.
    - The host sends the code to the friend. A new room (the host's game started again) has a new code.

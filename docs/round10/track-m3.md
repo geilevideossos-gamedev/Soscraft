@@ -13,7 +13,7 @@ M3 builds:
 
 These are rows 23, 24, 39, 40, 41, 45, 47, 48 and 50 of `docs/round10/mobs.md`.
 
-Paths and line numbers are in `C:\Dev\mashup-crafting` on `minecraft-survival` at `d1a3d028` unless a section says otherwise. Registry names (`Family`, `FamilyMob`, `MobCore`, `Registered`, `TerrainFamily`, `FamilyShow`, `FamilySpawn`, `family_group!`, `terrain_group!`, `family_base_tick`, `family_goal_step`, `family_after_move`, `family_strike`, `PlayerHitKind::Typed`, `keyframes::shared()`, `flying.rs`) are D0's design (track-d0.md D0-2 to D0-6). D0's code may grow fields, so read the merged code before the first commit. Tracks D0, D, W, E1, E2, F, M1 and M2 run at the same time: re-check every line before editing. Vanilla facts were checked with javap on the 26.3 `client.jar` and against the 26.3 data in that jar this round, unless marked "javap during the work". No Mojang code or data is copied: numbers and behaviour only.
+Paths and line numbers are in `C:\Dev\Soscraft\mashup-crafting` on `minecraft-survival` at `d1a3d028` unless a section says otherwise. Registry names (`Family`, `FamilyMob`, `MobCore`, `Registered`, `TerrainFamily`, `FamilyShow`, `FamilySpawn`, `family_group!`, `terrain_group!`, `family_base_tick`, `family_goal_step`, `family_after_move`, `family_strike`, `PlayerHitKind::Typed`, `keyframes::shared()`, `flying.rs`) are D0's design (track-d0.md D0-2 to D0-6). D0's code may grow fields, so read the merged code before the first commit. Tracks D0, D, W, E1, E2, F, M1 and M2 run at the same time: re-check every line before editing. Vanilla facts were checked with javap on the 26.3 `client.jar` and against the 26.3 data in that jar this round, unless marked "javap during the work". No Mojang code or data is copied: numbers and behaviour only.
 
 ---
 
@@ -21,7 +21,7 @@ Paths and line numbers are in `C:\Dev\mashup-crafting` on `minecraft-survival` a
 
 ### Order and waiting
 
-- Branch `track-m3`, worktree `C:\Dev\mc-wt\track-m3`, target dir `D:\iw4l-wt\track-m3` (or `C:\iw4l-wt\track-m3` when D: is short, `decisions.md`). Log `docs/round10/track-m3-log.md`. Run specs `docs/round10/runs/m3a.json` to `m3g.json`.
+- Branch `track-m3`, worktree `C:\Dev\Soscraft\mc-wt\track-m3`, target dir `D:\iw4l-wt\track-m3` (or `C:\iw4l-wt\track-m3` when D: is short, `decisions.md`). Log `docs/round10/track-m3-log.md`. Run specs `docs/round10/runs/m3a.json` to `m3g.json`.
 - **Start:** the track starts on `minecraft-survival` once D0's segment d0a (`registry-core` to `silverfish-drawn`) is merged there. Each segment's base is tagged `r10-m3<x>-base` before its run starts.
 - **Segments run in order, m3a to m3g** (M3-groups). Some need another track's segment first. **Before such a segment, the orchestrator merges `minecraft-survival` into `track-m3`** (after that track's merge), then tags the base and starts the run. If the needed segment is not merged yet, the run waits. m3c and m3d are the only pair that do not depend on each other, so they may swap.
 
@@ -183,7 +183,7 @@ Run order: `lightning-strikes`, `lightning-turns`, `lightning-drawn` and `lightn
 
 Lightning is not a registered family: it has no hit-key byte, no `TerrainFamily`, no `FamilyShow` and no keyframes. It reaches shared files only through the one-line hooks below (D0-3, "Behaviour that still needs a shared file").
 
-### What exists today (`C:\Dev\mashup-crafting`, `minecraft-survival`)
+### What exists today (`C:\Dev\Soscraft\mashup-crafting`, `minecraft-survival`)
 
 - **The bolt** (`world/src/level/entity.rs`):
   - `:80-86` `LightningData { life, flashes, visual_only }`.
@@ -415,7 +415,7 @@ IW4L_MINECRAFT_KIT=minecraft:pig_spawn_egg*4,minecraft:villager_spawn_egg*2,mine
 
 Mob list row 39: today a phantom egg does nothing, `/summon minecraft:phantom` leaves a dormant tag, and three sleepless nights bring nothing.
 
-### What exists today (`C:\Dev\mashup-crafting`, `minecraft-survival`)
+### What exists today (`C:\Dev\Soscraft\mashup-crafting`, `minecraft-survival`)
 - **Insomnia clock:** `Player.time_since_rest` (`crates/minecraft_survival/src/player.rs:54`) counts awake ticks and resets on death (`sleep.rs:476-480`) and in bed (`sleep.rs:272`). It is saved as the vanilla stat `minecraft:time_since_rest` in `players/stats/<uuid>.json` (`save.rs:22`, `:122`, `:135`, `:148`). Nothing reads it for phantoms.
 - **Custom spawners (P6):** `CustomSpawners` (`crates/minecraft_terrain/src/custom_spawners.rs:29-61`, Overworld only). `PatrolSpawner` (`:157-171`) is the pattern: a countdown on the level random. Its tick is `ServerSim::tick_patrol_spawner` (`server.rs:1258-1288`), called at `server.rs:4223` beside the cat and trader spawners (`:4224-4225`). The rules are copied at `server.rs:3140-3141`. The `spawn_phantoms` rule exists (`third_party/minecraftoss/world/src/game_rules.rs:162`) but nothing reads it.
 - **Lists that already name the phantom:** `MobCategory::of_type` Monster (`world/src/natural_spawner/spawning.rs:100`), `wither::is_undead` (`entities/src/wither.rs:90`), the sleep test's list of mobs that never stop a player sleeping (`crates/minecraft_survival/src/sleep.rs:915-926`; vanilla's phantom is not a `Monster`, so `MONSTERS` at `:29` rightly leaves it out and M3 adds nothing there), `NOT_IN_PEACEFUL` (`generator/src/feature/mod.rs:161`), and membranes repairing elytra (`crates/minecraft_terrain/src/stations.rs:431`).
@@ -688,7 +688,7 @@ IW4L_MINECRAFT_KIT=minecraft:phantom_spawn_egg*16,minecraft:cat_spawn_egg*4,mine
 
 ## M3-3. Creakings and creaking hearts (groups `creakings-live`, `creakings-drawn`, `creakings-heart`, `creakings-crumble`)
 
-Family `creakings` in group `night`, type `Creaking`, kind `minecraft:creaking`, hit-key byte **83**. It is a brain family (D0-2.4: the brain lives in its state, so it has no `MonsterSpec`). Mob list row 48. Facts were checked with javap on the 26.3 `client.jar` this round unless marked "javap during the work". Paths are in `C:\Dev\mashup-crafting` at `d1a3d028`; re-check every line before editing.
+Family `creakings` in group `night`, type `Creaking`, kind `minecraft:creaking`, hit-key byte **83**. It is a brain family (D0-2.4: the brain lives in its state, so it has no `MonsterSpec`). Mob list row 48. Facts were checked with javap on the 26.3 `client.jar` this round unless marked "javap during the work". Paths are in `C:\Dev\Soscraft\mashup-crafting` at `d1a3d028`; re-check every line before editing.
 
 ### What exists today
 
@@ -1305,7 +1305,7 @@ Mob list rows 40 and 41: their eggs do nothing, `/summon` leaves a dormant tag, 
 
 The skeleton trap (its goal, its 18000-tick end and the four horsemen) is M3-6. This section only reads and saves the trap's two fields, so a trap horse from a storm or `/summon` lives from `undead-horses-live` on.
 
-### What exists today (`C:\Dev\mashup-crafting`, `minecraft-survival` at `d1a3d028`)
+### What exists today (`C:\Dev\Soscraft\mashup-crafting`, `minecraft-survival` at `d1a3d028`)
 - **Horse state.**
   - `HorseKind` (`third_party/minecraftoss/entities/src/horse.rs:11-17`) covers horse, donkey, mule, llama and trader llama.
   - Per-kind functions `:20-161`: `is_chested` `:45` is true for every non-horse kind, `wears_armor` `:61`, `passenger_attachment` `:65`, `food_tag`/`tempt_tag`/`eats` `:93-110`, `base_attributes` `:145`, `sound_family` `:153`.
@@ -1679,7 +1679,7 @@ IW4L_MINECRAFT_KIT=minecraft:skeleton_horse_spawn_egg*4,minecraft:saddle,minecra
 
 Mob list rows 23 and 24. Today a camel or camel husk egg does nothing, `/summon` leaves a dormant tag, and desert-village camels and the husk's camel-husk jockeys stay dormant. D0-2.5 keeps camels out of the registry: they extend `HorseKind` in the cow store, which already has saddles, riding, the mount screen and the jump bar. Only M3 edits those lines (D0-3, "The one exception").
 
-### What exists today (`C:\Dev\mashup-crafting`, `minecraft-survival`; vendored paths under `third_party/minecraftoss/`)
+### What exists today (`C:\Dev\Soscraft\mashup-crafting`, `minecraft-survival`; vendored paths under `third_party/minecraftoss/`)
 - **Horse family:**
   - `HorseKind` (`entities/src/horse.rs:11-17`) has its kind methods at `:19-162`, `HorseState` at `:166-208` and `RideJump` at `:514-550`.
   - `spawn_horse` (`world.rs:5255-5268`: goals, step height 1.0).
@@ -2002,7 +2002,7 @@ IW4L_MINECRAFT_KIT=minecraft:camel_spawn_egg*8,minecraft:camel_husk_spawn_egg*4,
 
 Family `happy_ghasts`, kind `minecraft:happy_ghast`, group `night`, hit-key byte and `Family::KEY` **84** (mob list row 50). The adult runs goals; the ghastling runs a brain kept in the state (D0-2.4).
 
-### What exists today (`C:\Dev\mashup-crafting`, `d1a3d028`)
+### What exists today (`C:\Dev\Soscraft\mashup-crafting`, `d1a3d028`)
 - **No entity.** `minecraft:happy_ghast` is not in `SIMULATED_KINDS` (`crates/minecraft_terrain/src/server_mobs.rs:433`): an egg does nothing and a saved one stays dormant.
 - **Ghast code to reuse** (26.3 shares `Ghast$GhastMoveControl`, `Ghast$RandomFloatAroundGoal` and `GhastModel.animateTentacles` with the happy ghast):
   - `entities/src/ghast.rs`: `face_toward` `:53`; `suitable_fly_to` `:57` (only the plain ±16 roll); `can_reach` `:69` (the non-careful sweep).

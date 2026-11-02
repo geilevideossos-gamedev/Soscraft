@@ -237,7 +237,7 @@ fn crossings(from: f32, to: f32) -> Vec<f32> {
     cuts
 }
 
-fn wrap_face(out: &mut ChunkMesh, quad: &[Vertex], region: [f32; 4], shift: Vec2) {
+pub(crate) fn wrap_face(out: &mut ChunkMesh, quad: &[Vertex], region: [f32; 4], shift: Vec2) {
     let size = Vec2::new(region[2] - region[0], region[3] - region[1]);
     let local = |v: &Vertex| (Vec2::new(v.uv[0] - region[0], v.uv[1] - region[1]) / size) + shift;
     let (p0, p1, p3) = (

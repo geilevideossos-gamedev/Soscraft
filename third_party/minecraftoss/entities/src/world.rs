@@ -4147,6 +4147,10 @@ impl EntityWorld {
         std::mem::take(&mut self.entity_events)
     }
 
+    pub fn broadcast_entity_event(&mut self, id: u64, event: u8) {
+        self.entity_events.push((id, event));
+    }
+
     pub fn villager_mut(&mut self, id: u64) -> Option<&mut VillagerEntity> {
         self.villagers.iter_mut().find(|entity| entity.id == id)
     }
@@ -6823,7 +6827,12 @@ impl EntityWorld {
                         .iter_mut()
                         .find(|entity| entity.id == id)
                         .and_then(|entity| entity.arrow.tick_world(world, &targets));
-                    if let Some(hit) = hit {
+                    let deflected = hit.is_some_and(|hit| hit.target_id < PLAYER_TARGET && self.families.deflect(hit.target_id, "minecraft:arrow"));
+                    if deflected {
+                        if let Some(entity) = self.arrows.iter_mut().find(|entity| entity.id == id) {
+                            entity.arrow.deflect();
+                        }
+                    } else if let Some(hit) = hit {
                         let accepted = if hit.target_id >= PLAYER_TARGET {
                             // `Player.hurtServer` turns arrows away from
                             // players who cannot be hurt (creative).

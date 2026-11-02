@@ -254,7 +254,7 @@ pub struct StateFrame { pub tick: u32, pub epoch: u32, pub mobs: Blob, pub entit
 
 **`RenameItem`** is vanilla's `ServerboundRenameItemPacket`: the anvil's name field (`Bench`'s name, `minecraft_terrain/src/stations.rs:472`), at most 50 characters, accepted only while an anvil menu is open.
 
-**`GearView`** mirrors `minecraft_terrain::body_gear::BodyGear`: `main`, `off`, `armor[4]` and `hides_gun`, with each `GearItem { id, glint, dye }`.
+**`GearView`** mirrors `minecraft_terrain::body_gear::BodyGear`: `main`, `off`, `armor[4]` and `hides_gun`, with each `GearItem { id, glint, dye, potion, look }`. `look` is the stack's `item_look` key part (a crossbow's loaded arrow or rocket, a banner's or shield's base colour and pattern layers), so friends see a loaded crossbow and patterned banners and shields in a player's hands.
 
 **`MobLook`** is the render state of a mob that is not in `ServerMob` and changes rarely: equipment item ids, villager type, profession and level, colours, saddle, custom name and baby. Section 9.2 says how it is sent.
 
@@ -849,7 +849,7 @@ The steps:
    IW4L_MASTER_SERVER_NAME=iw4l-prod
    IW4L_MASTER_CA_CERT=<game folder>\iw4l-artifacts\mp-local\certs\iw4l-ca.pem
    IW4L_MASTER_HOST_NAME=Local world
-   IW4L_MASTER_MAX_PLAYERS=4
+   IW4L_MASTER_MAX_PLAYERS=5
    IW4L_MASTER_STATUS_FILE=<host folder>\master.status
    IW4L_SETTINGS_PATH=<host folder>\settings.cfg
    IW4L_MINECRAFT_WORLD=<world>
@@ -916,7 +916,7 @@ The internet path is checked in M1 with plain MW2 (`-Map iw4:mp_rust`), because 
    - Allow it through the Windows firewall for UDP on private and public networks.
    - Forward **UDP 4433** on the router to the PC.
    - Alternatively run the master on a VPS (`docs/MASTER.md`), with the patched build.
-4. **Host:** the `.env` gets `IW4L_MASTER_PASSWORD=<room password>`. Start the world from `Host Minecraft World.bat` (`-Bats`). It sets `IW4L_MASTER_HOST_NAME`, `IW4L_MASTER_MAX_PLAYERS=4`, `IW4L_MASTER_ADDR=127.0.0.1:4433`, `IW4L_MASTER_SERVER_NAME=iw4l-prod`, `IW4L_MASTER_CA_CERT` and `IW4L_MASTER_STATUS_FILE=iw4l-artifacts\master.status` (its `room=` line is the join code) itself, and starts `iw4l-master.exe serve --bind 0.0.0.0:4433` minimised when no relay is running, so step 3 is done by the `.bat`. To host from the menu instead, put the three `IW4L_MASTER_ADDR`, `_SERVER_NAME` and `_CA_CERT` lines in `.env`.
+4. **Host:** the `.env` gets `IW4L_MASTER_PASSWORD=<room password>`. Start the world from `Host Minecraft World.bat` (`-Bats`). It sets `IW4L_MASTER_HOST_NAME`, `IW4L_MASTER_MAX_PLAYERS=5`, `IW4L_MASTER_ADDR=127.0.0.1:4433`, `IW4L_MASTER_SERVER_NAME=iw4l-prod`, `IW4L_MASTER_CA_CERT` and `IW4L_MASTER_STATUS_FILE=iw4l-artifacts\master.status` (its `room=` line is the join code) itself, and starts `iw4l-master.exe serve --bind 0.0.0.0:4433` minimised when no relay is running, so step 3 is done by the `.bat`. To host from the menu instead, put the three `IW4L_MASTER_ADDR`, `_SERVER_NAME` and `_CA_CERT` lines in `.env`.
 5. **Tell the friend** the public IP address, the room password and the join code from the chat.
 
 ### 18.2 The friend once
@@ -1334,7 +1334,7 @@ M4 also needs a creeper spawn egg; the friend gets it with `/give Friend creeper
   - bots in a Minecraft multiplayer world;
   - a vanilla player mesh instead of the MW2 soldier (the `bot_model` retarget path, `remote_body.rs:1236`);
   - skins;
-  - more than 4 players (nothing stops it, but it is untested).
+  - more than 5 players: the host `.bat` makes rooms for 5 (the relay allows up to 18), and more than 2 players at once is untested.
 - **Sessions:**
   - host migration;
   - the world surviving the host leaving;

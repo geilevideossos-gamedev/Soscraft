@@ -770,7 +770,8 @@ impl InventoryUi {
 
 fn icon_source<'a>(dials: &minecraft_terrain::dials::Dials, icon: &'a str) -> (&'a str, String) {
     let (base, potion) = minecraft_terrain::item_tint::split(icon);
-    (minecraft_terrain::dials::item_of(base), minecraft_terrain::item_tint::key(dials.key(base), potion))
+    let (base, look) = minecraft_terrain::item_look::split(base);
+    (minecraft_terrain::dials::item_of(base), minecraft_terrain::item_tint::key(&format!("{}{look}", dials.key(base)), potion))
 }
 
 fn stack_limit(recipes: &minecraftoss_player::crafting::RecipeBook, stack: &ItemStack) -> u8 {
@@ -1171,6 +1172,20 @@ mod tests {
         let dials = minecraft_terrain::dials::Dials::default();
         assert_eq!(icon_source(&dials, &red_icon), ("minecraft:leather_horse_armor", "minecraft:leather_horse_armor~b02e26".to_owned()));
         assert_eq!(icon_source(&dials, &plain_icon), ("minecraft:leather_horse_armor", "minecraft:leather_horse_armor".to_owned()));
+    }
+
+    #[test]
+    fn a_loaded_crossbow_icon_keeps_its_look_and_shares_its_name() {
+        let mut loaded = ItemStack::new("minecraft:crossbow", 1);
+        loaded.components = Some(serde_json::json!({"minecraft:charged_projectiles": [{"id": "minecraft:arrow"}]}));
+        let icon = minecraft_terrain::item_tint::of_stack(&loaded);
+        assert_ne!(icon, minecraft_terrain::item_tint::of_stack(&ItemStack::new("minecraft:crossbow", 1)));
+        let dials = minecraft_terrain::dials::Dials::default();
+        assert_eq!(icon_source(&dials, &icon), ("minecraft:crossbow", icon.clone()));
+        let mut shield = ItemStack::new("minecraft:shield", 1);
+        shield.components = Some(serde_json::json!({"minecraft:base_color": "red", "minecraft:dyed_color": 0xB02E26}));
+        let icon = minecraft_terrain::item_tint::of_stack(&shield);
+        assert_eq!(icon_source(&dials, &icon), ("minecraft:shield", "minecraft:shield|base=red~b02e26".to_owned()));
     }
 
     #[test]

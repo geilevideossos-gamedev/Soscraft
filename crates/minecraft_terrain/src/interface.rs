@@ -53,8 +53,17 @@ pub(crate) fn item_model_tints(
     model: &serde_json::Value,
     potion: Option<u32>,
 ) -> Result<Vec<[u8; 3]>> {
+    item_look_tints(packs, model, potion, &crate::item_look::ItemLook::default())
+}
+
+pub(crate) fn item_look_tints(
+    packs: &PackStack,
+    model: &serde_json::Value,
+    potion: Option<u32>,
+    look: &crate::item_look::ItemLook,
+) -> Result<Vec<[u8; 3]>> {
     let Some(tints) = model.get("tints").or_else(|| item_model_leaf(model)?.get("tints")).and_then(serde_json::Value::as_array) else {
-        return Ok(crate::special_models::special_tints(model));
+        return Ok(crate::special_models::special_tints(model, look));
     };
     tints
         .iter()

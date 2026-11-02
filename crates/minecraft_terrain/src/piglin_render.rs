@@ -641,13 +641,8 @@ pub fn append_piglins<'a>(
                 block,
             );
         }
-        let (right, left) = if piglin.left_handed {
-            (&piglin.offhand, &piglin.main_hand)
-        } else {
-            (&piglin.main_hand, &piglin.offhand)
-        };
-        for (arm, stack) in [(0, right), (1, left)] {
-            let Some(stack) = stack else {
+        for (arm, main) in [(0, !piglin.left_handed), (1, piglin.left_handed)] {
+            let Some(id) = hand_key(entity, main) else {
                 continue;
             };
             let (pivot, quat) = posed.arms[arm];
@@ -666,7 +661,7 @@ pub fn append_piglins<'a>(
             held.push(HeldItem {
                 pose,
                 light: mob.light_probe.as_vec3(),
-                id: stack.id.clone(),
+                id,
                 display,
                 first_tint: None,
             });
@@ -674,6 +669,13 @@ pub fn append_piglins<'a>(
     }
     crate::cow_render::apply_overlays(mesh, &marks);
     held
+}
+
+pub(crate) fn hand_key(entity: &PiglinEntity, main: bool) -> Option<String> {
+    let piglin = &entity.piglin;
+    let stack = if main { &piglin.main_hand } else { &piglin.offhand };
+    let using = entity.using_item.filter(|_| main == piglin.holds_crossbow());
+    Some(crate::item_look::held_key(stack.as_ref()?, using))
 }
 
 #[cfg(test)]
@@ -930,5 +932,58 @@ mod tests {
         assert!((z - moves.arms_z).abs() < 1.0e-4, "{z}");
         let (z, _, _) = dancing.arms[1].1.to_euler(EulerRot::ZYX);
         assert!((z + moves.arms_z).abs() < 1.0e-4, "{z}");
+    }
+
+    #[test]
+    fn a_piglin_s_crossbow_pulls_in_its_using_hand_and_shows_its_arrow_when_loaded() {
+        use crate::mesh::HeldDisplay::{LeftHand, RightHand};
+        use minecraftoss_entities::piglin::Piglin;
+        use minecraftoss_entities::world::EntityWorld;
+        use minecraftoss_player::inventory::ItemStack;
+        let atlas = crate::mesh::make_atlas(&crate::pack::PackStack::open(Vec::new()).unwrap(), Vec::new()).unwrap();
+        let light = SkyLight::from_levels((-2, 62, -2), (5, 5, 5), vec![15; 125], vec![0; 125]);
+        let drawn = |world: &EntityWorld| {
+            let mut poses = crate::client_mobs::ClientMobs::default();
+            poses.spawn_missing(&crate::client_mobs::server_mobs(world));
+            let mut mesh = ChunkMesh::default();
+            let held = append_piglins(&mut mesh, world.piglins().iter(), &poses, &atlas, &light, 0.0);
+            held.into_iter().map(|item| (item.display, item.id)).collect::<Vec<_>>()
+        };
+        let mut world = EntityWorld::default();
+        let mut piglin = Piglin::new(PiglinKind::Piglin, glam::DVec3::new(0.5, 64.0, 0.5));
+        piglin.main_hand = Some(ItemStack::new("minecraft:crossbow", 1));
+        piglin.offhand = Some(ItemStack::new("minecraft:gold_ingot", 1));
+        let id = world.spawn_piglin(piglin, true);
+        let gold = (LeftHand, "minecraft:gold_ingot".to_owned());
+        assert_eq!(drawn(&world), [(RightHand, "minecraft:crossbow".to_owned()), gold.clone()]);
+        for ticks in [0, 15, 25] {
+            {
+                let e = world.piglin_mut(id).unwrap();
+                e.piglin.charging_crossbow = true;
+                e.arm_pose = ArmPose::CrossbowCharge;
+                e.using_item = Some(ticks);
+            }
+            assert_eq!(drawn(&world), [(RightHand, format!("minecraft:crossbow|use={ticks}")), gold.clone()]);
+        }
+        {
+            let e = world.piglin_mut(id).unwrap();
+            e.piglin.charging_crossbow = false;
+            e.using_item = None;
+            e.piglin.set_crossbow_charged(true);
+            e.arm_pose = ArmPose::CrossbowHold;
+            e.piglin.left_handed = true;
+        }
+        assert_eq!(drawn(&world), [(RightHand, "minecraft:gold_ingot".to_owned()), (LeftHand, "minecraft:crossbow|charge=arrow".to_owned())]);
+        {
+            let e = world.piglin_mut(id).unwrap();
+            e.piglin.main_hand = Some(ItemStack::new("minecraft:golden_sword", 1));
+            e.piglin.offhand = Some(ItemStack::new("minecraft:crossbow", 1));
+            e.using_item = Some(10);
+        }
+        assert_eq!(
+            drawn(&world),
+            [(RightHand, "minecraft:crossbow|use=10".to_owned()), (LeftHand, "minecraft:golden_sword".to_owned())],
+            "with no crossbow in the main hand the off hand is the using hand"
+        );
     }
 }

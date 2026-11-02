@@ -1056,6 +1056,7 @@ mod tests {
                 glint: false,
                 dye: None,
                 potion: None,
+                look: String::new(),
             }),
             ..BodyGear::default()
         };
@@ -1083,6 +1084,7 @@ mod tests {
                     glint: false,
                     dye: None,
                     potion: None,
+                    look: String::new(),
                 }),
                 None,
                 None,
@@ -1128,6 +1130,7 @@ mod tests {
                     glint: false,
                     dye: None,
                     potion: None,
+                    look: String::new(),
                 }),
                 None,
                 None,
@@ -1179,10 +1182,11 @@ mod tests {
                 glint: false,
                 dye: None,
                 potion: None,
+                look: String::new(),
             }),
             ..BodyGear::default()
         };
-        let moved = |z: f32| {
+        let moved =|z: f32| {
             standing().map(|joint| {
                 joint.map(|joint| PosedJoint {
                     posed: Mat4::from_translation(Vec3::new(0.0, 0.0, z)) * joint.posed,

@@ -891,6 +891,16 @@ impl ChunkMap {
         }
     }
 
+    pub fn stored_block_entity(&self, pos: BlockPos) -> Option<&minecraftoss_core::nbt::Tag> {
+        let chunk = pos.chunk();
+        let at = (pos.x, pos.y, pos.z);
+        if let Some(edit) = self.entity_edits.get(&chunk).and_then(|edits| edits.get(&at)) {
+            return edit.as_ref();
+        }
+        let entities = &self.chunks.get(&chunk)?.block_entities;
+        entities.entities.get(&at).or_else(|| entities.pending.get(&at))
+    }
+
     /// Writes a chunk's waiting edits into its FULL slot and sendable copy.
     fn write_edits(&mut self, pos: ChunkPos) {
         let entities = self.entity_edits.remove(&pos);

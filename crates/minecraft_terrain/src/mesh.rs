@@ -483,6 +483,9 @@ fn build_internal<S: Scene>(scene: &S, packs: &PackStack, preload_blocks: bool) 
     for id in crate::special_models::textures()? {
         textures.insert(id, ());
     }
+    for id in crate::special_models::pattern_textures(packs)? {
+        textures.insert(id, ());
+    }
     textures.insert(ResourceId::parse("minecraft:entity/bat/bat")?, ());
     textures.insert(ResourceId::parse("minecraft:entity/zombie/zombie")?, ());
     textures.insert(ResourceId::parse("minecraft:entity/player/wide/steve")?, ());
@@ -936,11 +939,15 @@ impl ItemVisuals {
     fn model<'a>(&'a mut self, id: &str, packs: &PackStack) -> Result<Option<&'a ItemVisual>> {
         if !self.models.contains_key(id) {
             let (base, potion) = crate::item_tint::split(id);
+            let (base, look) = crate::item_look::split(base);
+            let look = crate::item_look::ItemLook::parse(look);
             let (key, dial) = crate::dials::split(base);
             let resource = ResourceId::parse(key)?;
-            let resolved = match dial {
+            let definition = packs.item_definition(&resource)?;
+            let chosen = definition.as_ref().and_then(|value| look.leaf(&value["model"], None));
+            let resolved = match dial.or(chosen) {
                 Some(leaf) => Some(crate::model::resolve_item_leaf(packs, &resource, leaf)?),
-                None => crate::model::resolve_item_model(packs, &resource)?,
+                None => crate::model::resolve_item_model_with(packs, &resource, None, &look)?,
             };
             let Some(model) = resolved else {
                 return Ok(None);
@@ -948,7 +955,6 @@ impl ItemVisuals {
             if model.elements.is_empty() {
                 return Ok(None);
             }
-            let definition = packs.item_definition(&resource)?;
             let hand = match definition.as_ref().map(|value| &value["model"]) {
                 Some(value) if crate::special_models::uses_item_geometry_in(value, Some("thirdperson_righthand")) && !crate::special_models::uses_item_geometry(value) => {
                     crate::model::resolve_item_model_in(packs, &resource, Some("thirdperson_righthand"))?.filter(|hand| !hand.elements.is_empty())
@@ -962,7 +968,7 @@ impl ItemVisuals {
             let head = crate::model::item_display_transform(packs, &resource, "head")?;
             let tints = definition
                 .as_ref()
-                .map(|value| crate::interface::item_model_tints(packs, &value["model"], potion))
+                .map(|value| crate::interface::item_look_tints(packs, &value["model"], potion, &look))
                 .transpose()?
                 .unwrap_or_default()
                 .into_iter()
@@ -1192,10 +1198,17 @@ impl ItemVisuals {
             return Ok(());
         };
         for lid in lids {
-            let Some(model) = crate::lids::lid_model(&lid.block, lid.progress)? else {
-                continue;
+            let variants = if crate::lids::LidKind::of(&lid.block) == Some(crate::lids::LidKind::Bell) {
+                let Ok(variants) = crate::model::swung_bell_variants(packs, &lid.block, lid.swing) else {
+                    continue;
+                };
+                variants
+            } else {
+                let Some(model) = crate::lids::lid_model(&lid.block, lid.progress)? else {
+                    continue;
+                };
+                vec![(model, 1)]
             };
-            let variants = [(model, 1)];
             let mut dry = lid.block.clone();
             dry.properties.remove("waterlogged");
             let scene = MovingBlockScene { level, block: &dry, at: lid.cell };
@@ -1273,7 +1286,7 @@ impl ItemVisuals {
             let Some(id) = view.item.as_deref() else {
                 continue;
             };
-            let id = &crate::item_tint::key(id, view.potion);
+            let id = &crate::item_tint::key(&format!("{id}{}", view.look), view.potion);
             let Some((fixed, tints)) = self.model(id, packs)?.map(|visual| (visual.fixed, visual.tints.clone())) else {
                 continue;
             };
@@ -3874,6 +3887,7 @@ mod tests {
             position: glam::DVec3::new(0.5, 1.5, 0.96875),
             item: Some("minecraft:potion".to_owned()),
             potion,
+            look: String::new(),
             glint: false,
             rotation: 0,
             invisible: true,
@@ -4123,7 +4137,7 @@ mod tests {
             append_block(&placed, cell, &block, || Ok(variants.as_slice()), |_, _| false, &atlas, &tint, &light, &mut whole, &mut whole_transparent).unwrap();
             let mut visuals = ItemVisuals { tint: Some(BiomeTint { grass: None, foliage: None, dry_foliage: None }), ..ItemVisuals::default() };
             let mut lid = ChunkMesh::default();
-            let posed = crate::lids::PosedLid { cell, block: block.clone(), progress: 0.0 };
+            let posed = crate::lids::PosedLid { cell, block: block.clone(), progress: 0.0, swing: [0.0; 2] };
             visuals.append_open_lids(&mut lid, &[posed], &placed, &packs, &atlas, &light).unwrap();
             let mut left = ChunkMesh::default();
             let mut left_transparent = Vec::new();
@@ -4137,11 +4151,76 @@ mod tests {
             assert_eq!(whole_transparent, left_transparent.iter().map(|i| i + n as u32).collect::<Vec<_>>());
             assert_eq!(wet, left.faces > 0, "only a waterlogged chest leaves water behind");
             let mut open = ChunkMesh::default();
-            let posed = crate::lids::PosedLid { cell, block: block.clone(), progress: 1.0 };
+            let posed = crate::lids::PosedLid { cell, block: block.clone(), progress: 1.0, swing: [0.0; 2] };
             visuals.append_open_lids(&mut open, &[posed], &placed, &packs, &atlas, &light).unwrap();
             assert_eq!(open.faces, lid.faces);
             assert!(open.vertices.iter().zip(&lid.vertices).any(|(a, b)| a.position != b.position), "{}", block.id.path);
         }
+    }
+
+    #[test]
+    fn a_still_bell_drawn_apart_matches_its_section_and_a_swung_one_keeps_its_pivot() {
+        let temp = crate::test_dir::tempdir().unwrap();
+        let root = temp.path();
+        std::fs::write(root.join("pack.mcmeta"), r#"{"pack":{"min_format":[97,1],"max_format":[97,1]}}"#).unwrap();
+        for (name, contents) in [
+            ("assets/minecraft/blockstates/bell.json", r#"{"variants":{"attachment=floor,facing=north":{"model":"minecraft:block/bell_floor"},"attachment=floor,facing=east":{"model":"minecraft:block/bell_floor","y":90}}}"#),
+            ("assets/minecraft/models/block/bell_floor.json", r##"{"textures":{"bar":"block/dark_oak_planks"},"elements":[{"from":[2,13,7],"to":[14,15,9],"faces":{"north":{"uv":[2,2,14,4],"texture":"#bar"},"south":{"uv":[2,3,14,5],"texture":"#bar"},"up":{"uv":[2,3,14,5],"texture":"#bar"},"down":{"uv":[2,3,14,5],"texture":"#bar"}}}]}"##),
+        ] {
+            let path = root.join(name);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, contents).unwrap();
+        }
+        let packs = PackStack::open(vec![root.into()]).unwrap();
+        let sheets = ["minecraft:block/dark_oak_planks", "minecraft:entity/bell/bell_body"].map(|id| ResourceId::parse(id).unwrap());
+        let atlas = Atlas {
+            pixels: RgbaImage::new(64, 32),
+            mipmaps: vec![],
+            slots: HashMap::from([(sheets[0].clone(), [0.0, 0.0, 0.5, 1.0]), (sheets[1].clone(), [0.5, 0.0, 1.0, 1.0])]),
+            missing: vec![],
+            animated: vec![],
+            animated_tiles: vec![],
+            translucent: HashMap::new(),
+        };
+        let tint = BiomeTint { grass: None, foliage: None, dry_foliage: None };
+        let cell = (8, 6, 8);
+        let pivot = Vec3::new(8.5, 6.75, 8.5);
+        let positions = |vertices: &[Vertex]| -> Vec<Vec3> { vertices.iter().map(|v| Vec3::from(v.position)).collect() };
+        let centre = |points: &[Vec3]| points.iter().copied().sum::<Vec3>() / points.len() as f32;
+        let mut bodies = Vec::new();
+        for (facing, swing, turn) in [("north", [0.18, 0.0], glam::Mat3::from_rotation_x(0.18)), ("east", [0.0, -0.15], glam::Mat3::from_rotation_z(-0.15))] {
+            let block = Block::new("minecraft:bell").with("attachment", "floor").with("facing", facing);
+            let mut placed = Placed((0..16).flat_map(|x| (0..16).map(move |z| ((x, 0, z), Block::new("minecraft:stone")))).collect());
+            placed.0.insert(cell, block.clone());
+            let light = SkyLight::build(&placed);
+            let variants = resolve_block_variants(&packs, &block).unwrap();
+            let mut whole = ChunkMesh::default();
+            let mut whole_transparent = Vec::new();
+            append_block(&placed, cell, &block, || Ok(variants.as_slice()), |_, _| false, &atlas, &tint, &light, &mut whole, &mut whole_transparent).unwrap();
+            let mut visuals = ItemVisuals { tint: Some(BiomeTint { grass: None, foliage: None, dry_foliage: None }), ..ItemVisuals::default() };
+            let posed = |swing| crate::lids::PosedLid { cell, block: block.clone(), progress: 0.0, swing };
+            let mut still = ChunkMesh::default();
+            visuals.append_open_lids(&mut still, &[posed([0.0; 2])], &placed, &packs, &atlas, &light).unwrap();
+            assert_eq!(still.faces, 16, "the bar, the bell and its lip");
+            assert!(whole_transparent.is_empty());
+            assert_eq!((still.faces, &still.vertices, &still.indices), (whole.faces, &whole.vertices, &whole.indices), "{facing}");
+            let mut swung = ChunkMesh::default();
+            visuals.append_open_lids(&mut swung, &[posed(swing)], &placed, &packs, &atlas, &light).unwrap();
+            assert_eq!((swung.faces, swung.vertices.len(), &swung.indices), (still.faces, still.vertices.len(), &still.indices));
+            let stand = still.vertices.len() - 48;
+            assert_eq!(swung.vertices[..stand], still.vertices[..stand], "the stand stays where it is");
+            let (rest, moved) = (positions(&still.vertices[stand..]), positions(&swung.vertices[stand..]));
+            for (rest, moved) in rest.iter().zip(&moved) {
+                assert!((*moved - (pivot + turn * (*rest - pivot))).length() < 1e-5, "{facing}: {rest} {moved}");
+            }
+            let (lip, swung_lip) = (centre(&rest[24..]), centre(&moved[24..]));
+            assert!((lip - Vec3::new(8.5, 6.0 + 5.0 / 16.0, 8.5)).length() < 1e-5, "{lip}");
+            assert!((swung_lip - lip).length() > 0.05, "the lip swings out: {swung_lip}");
+            bodies.push(moved);
+        }
+        let lip = |body: &[Vec3]| centre(&body[24..]);
+        assert!(lip(&bodies[0]).z < 8.5 - 0.05, "a south ring swings the lip north");
+        assert!(lip(&bodies[1]).x < 8.5 - 0.05, "an east ring swings it west");
     }
 
     #[test]

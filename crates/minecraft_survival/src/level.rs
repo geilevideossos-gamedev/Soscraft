@@ -244,6 +244,12 @@ pub fn save_server_block_entities(entities: &mut Entities, terrain: &mut Terrain
         entities.take_block_entity_changes()
     };
     terrain.stream.record_block_entities(&changes);
+    if let Some(friend_changes) = terrain.friend_changes.as_mut() {
+        friend_changes.extend(changes.iter().filter_map(|(pos, tag)| {
+            let kind = tag.as_ref().map(minecraftoss_world::level::components::kind);
+            (kind == Some(minecraftoss_world::level::components::BANNER)).then_some(*pos)
+        }));
+    }
 }
 
 pub fn player_blocks<'a>(

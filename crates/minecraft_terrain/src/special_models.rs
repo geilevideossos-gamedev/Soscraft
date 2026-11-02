@@ -1,5 +1,6 @@
+use crate::item_look::{Charge, ItemLook, ItemState, MAX_LAYERS};
 use crate::model::{Element, ElementRotation, Face, ResolvedModel};
-use crate::pack::ResourceId;
+use crate::pack::{PackStack, ResourceId};
 use crate::scene::Block;
 use anyhow::Result;
 use glam::{Mat3, Mat4, Quat, Vec3};
@@ -87,7 +88,7 @@ impl Cube {
 struct Sheet {
     texture: ResourceId,
     size: [f32; 2],
-    tinted: bool,
+    tint: Option<usize>,
 }
 
 impl Sheet {
@@ -95,13 +96,13 @@ impl Sheet {
         Ok(Self {
             texture: ResourceId::parse(texture)?,
             size,
-            tinted: false,
+            tint: None,
         })
     }
 
-    fn tinted(self) -> Self {
+    fn tinted(self, index: usize) -> Self {
         Self {
-            tinted: true,
+            tint: Some(index),
             ..self
         }
     }
@@ -269,6 +270,21 @@ pub(crate) fn textures() -> Result<Vec<ResourceId>> {
     Ok(textures)
 }
 
+pub(crate) fn pattern_textures(packs: &PackStack) -> Result<Vec<ResourceId>> {
+    let mut textures = Vec::new();
+    for sheet in ["banner", "shield"] {
+        for path in packs.list("minecraft", &format!("textures/entity/{sheet}/"))? {
+            if let Some(name) = path
+                .strip_prefix("assets/minecraft/textures/")
+                .and_then(|name| name.strip_suffix(".png"))
+            {
+                textures.push(ResourceId::parse(&format!("minecraft:{name}"))?);
+            }
+        }
+    }
+    Ok(textures)
+}
+
 pub(crate) fn block_model(block: &Block) -> Result<Option<ResolvedModel>> {
     if let Some(model) = crate::end_portal_look::block_model(block) {
         return Ok(Some(model));
@@ -292,16 +308,7 @@ pub(crate) fn block_model(block: &Block) -> Result<Option<ResolvedModel>> {
     } else if path == "shulker_box" || path.ends_with("_shulker_box") {
         elements = shulker_box_model(block, 0.0)?.elements;
     } else if banner_dye(block).is_some() {
-        let wall = path.ends_with("_wall_banner");
-        let degrees = if wall {
-            y_rot(property("facing").unwrap_or("north"))
-        } else {
-            segment_degrees(property("rotation"))
-        };
-        let pose = Mat4::from_translation(Vec3::new(0.5, 0.0, 0.5))
-            * Mat4::from_rotation_y((-degrees).to_radians())
-            * Mat4::from_scale(Vec3::new(BANNER_SCALE, -BANNER_SCALE, -BANNER_SCALE));
-        push_banner(&mut elements, !wall, pose)?;
+        elements = placed_banner_elements(block, &[])?;
     } else if path == "conduit" {
         push_conduit(&mut elements, Mat4::from_translation(Vec3::splat(0.5)))?;
     } else if path == "decorated_pot" {
@@ -312,6 +319,33 @@ pub(crate) fn block_model(block: &Block) -> Result<Option<ResolvedModel>> {
         return Ok(None);
     }
     Ok(Some(ResolvedModel { elements }))
+}
+
+pub(crate) fn placed_banner_model(
+    block: &Block,
+    layers: &[(String, &str)],
+) -> Result<Option<ResolvedModel>> {
+    if banner_dye(block).is_none() {
+        return Ok(None);
+    }
+    let elements = placed_banner_elements(block, layers)?;
+    Ok(Some(ResolvedModel { elements }))
+}
+
+fn placed_banner_elements(block: &Block, layers: &[(String, &str)]) -> Result<Vec<Element>> {
+    let property = |key: &str| block.properties.get(key).map(String::as_str);
+    let wall = block.id.path.ends_with("_wall_banner");
+    let degrees = if wall {
+        y_rot(property("facing").unwrap_or("north"))
+    } else {
+        segment_degrees(property("rotation"))
+    };
+    let pose = Mat4::from_translation(Vec3::new(0.5, 0.0, 0.5))
+        * Mat4::from_rotation_y((-degrees).to_radians())
+        * Mat4::from_scale(Vec3::new(BANNER_SCALE, -BANNER_SCALE, -BANNER_SCALE));
+    let mut elements = Vec::new();
+    push_banner(&mut elements, !wall, pose, layers)?;
+    Ok(elements)
 }
 
 pub(crate) fn shulker_box_model(block: &Block, progress: f32) -> Result<ResolvedModel> {
@@ -335,7 +369,7 @@ pub(crate) fn shulker_box_model(block: &Block, progress: f32) -> Result<Resolved
 pub(crate) fn extra_elements(block: &Block) -> Result<Vec<Element>> {
     let mut elements = Vec::new();
     match block.id.path.as_str() {
-        "bell" => push_bell(&mut elements)?,
+        "bell" => push_bell(&mut elements, [0.0; 2])?,
         "enchanting_table" => {
             let pose = Mat4::from_translation(Vec3::new(0.5, 0.75 + 0.1, 0.5))
                 * Mat4::from_rotation_z(80.0f32.to_radians());
@@ -366,7 +400,7 @@ pub(crate) fn extra_elements(block: &Block) -> Result<Vec<Element>> {
     Ok(elements)
 }
 
-pub(crate) fn item_model(special: &Value) -> Result<Option<ResolvedModel>> {
+pub(crate) fn item_model(special: &Value, look: &ItemLook) -> Result<Option<ResolvedModel>> {
     let field = |key: &str| special.get(key).and_then(Value::as_str);
     let mut elements = Vec::new();
     match field("type").unwrap_or("") {
@@ -380,7 +414,7 @@ pub(crate) fn item_model(special: &Value) -> Result<Option<ResolvedModel>> {
             let sheet = Sheet {
                 texture,
                 size: [64.0, 64.0],
-                tinted: false,
+                tint: None,
             };
             push_shulker(&mut elements, sheet, Mat4::IDENTITY, 0.0);
         }
@@ -396,11 +430,11 @@ pub(crate) fn item_model(special: &Value) -> Result<Option<ResolvedModel>> {
         "minecraft:player_head" => push_head(&mut elements, Head::Player, None, Mat4::IDENTITY, 0.0)?,
         "minecraft:banner" => {
             let standing = field("attachment") != Some("wall");
-            push_banner(&mut elements, standing, Mat4::IDENTITY)?;
+            push_banner(&mut elements, standing, Mat4::IDENTITY, &look.layers)?;
         }
         "minecraft:conduit" => push_conduit(&mut elements, Mat4::IDENTITY)?,
         "minecraft:decorated_pot" => push_decorated_pot(&mut elements, Mat4::IDENTITY)?,
-        "minecraft:shield" => push_shield(&mut elements)?,
+        "minecraft:shield" => push_shield(&mut elements, look)?,
         "minecraft:trident" => push_trident(&mut elements)?,
         _ => return Ok(None),
     }
@@ -427,16 +461,32 @@ pub(crate) fn worn_head_model(head: Head, animation: f32) -> Result<ResolvedMode
     Ok(ResolvedModel { elements })
 }
 
-pub(crate) fn special_tints(model: &Value) -> Vec<[u8; 3]> {
-    item_leaves(model, false)
-        .first()
-        .and_then(|leaf| leaf.special)
-        .filter(|special| special.get("type").and_then(Value::as_str) == Some("minecraft:banner"))
-        .and_then(|special| special.get("color").and_then(Value::as_str))
-        .and_then(dye_color)
-        .map_or_else(Vec::new, |rgb| {
-            vec![rgb.map(|channel| (channel * 255.0).round() as u8)]
-        })
+pub(crate) fn special_tints(model: &Value, look: &ItemLook) -> Vec<[u8; 3]> {
+    let leaves = item_leaves(model, false);
+    let field = |key: &str| {
+        leaves
+            .first()
+            .and_then(|leaf| leaf.special)
+            .and_then(|special| special.get(key))
+            .and_then(Value::as_str)
+    };
+    let base = match field("type") {
+        Some("minecraft:banner") => field("color"),
+        Some("minecraft:shield") if shield_patterned(look) => Some(look.base.unwrap_or("white")),
+        _ => None,
+    };
+    let Some(base) = base.and_then(dye_rgb) else {
+        return Vec::new();
+    };
+    let layers = look.layers.iter().take(MAX_LAYERS);
+    std::iter::once(base)
+        .chain(layers.map(|&(_, color)| dye_rgb(color).unwrap_or(0xFFFFFF)))
+        .map(|rgb| [(rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8])
+        .collect()
+}
+
+fn shield_patterned(look: &ItemLook) -> bool {
+    look.base.is_some() || !look.layers.is_empty()
 }
 
 pub(crate) fn uses_item_geometry(model: &Value) -> bool {
@@ -460,8 +510,16 @@ pub(crate) fn item_leaves_in<'a>(
     using_item: bool,
     context: Option<&str>,
 ) -> Vec<ItemLeaf<'a>> {
+    item_leaves_with(model, &ItemState::plain(using_item), context)
+}
+
+pub(crate) fn item_leaves_with<'a>(
+    model: &'a Value,
+    state: &ItemState,
+    context: Option<&str>,
+) -> Vec<ItemLeaf<'a>> {
     let mut leaves = Vec::new();
-    collect_leaves(model, using_item, context, Mat4::IDENTITY, &mut leaves);
+    collect_leaves(model, state, context, Mat4::IDENTITY, &mut leaves);
     leaves
 }
 
@@ -473,9 +531,48 @@ fn when_matches(when: Option<&Value>, context: &str) -> bool {
     }
 }
 
+fn chosen_by_state<'a>(
+    value: &'a Value,
+    entries: &[&'a Value],
+    state: &ItemState,
+) -> Option<&'a Value> {
+    let reading = match value.get("property").and_then(Value::as_str)? {
+        "minecraft:charge_type" => {
+            return entries
+                .iter()
+                .find(|entry| when_matches(entry.get("when"), state.charge.name()))
+                .and_then(|entry| entry.get("model"));
+        }
+        "minecraft:crossbow/pull" if state.charge == Charge::None => {
+            state.use_ticks as f32 / state.charge_duration.max(1) as f32
+        }
+        "minecraft:crossbow/pull" => 0.0,
+        "minecraft:use_duration" if value["remaining"] != true => {
+            if state.using {
+                state.use_ticks as f32
+            } else {
+                0.0
+            }
+        }
+        _ => return None,
+    };
+    let scale = value.get("scale").and_then(Value::as_f64).unwrap_or(1.0) as f32;
+    let reading = reading * scale;
+    entries
+        .iter()
+        .rev()
+        .find(|entry| {
+            entry
+                .get("threshold")
+                .and_then(Value::as_f64)
+                .is_some_and(|threshold| threshold as f32 <= reading)
+        })
+        .and_then(|entry| entry.get("model"))
+}
+
 fn collect_leaves<'a>(
     value: &'a Value,
-    using_item: bool,
+    state: &ItemState,
     context: Option<&str>,
     parent: Mat4,
     out: &mut Vec<ItemLeaf<'a>>,
@@ -484,7 +581,7 @@ fn collect_leaves<'a>(
     let first_yielding = |out: &mut Vec<ItemLeaf<'a>>, options: Vec<&'a Value>| {
         for option in options {
             let mut found = Vec::new();
-            collect_leaves(option, using_item, context, transform, &mut found);
+            collect_leaves(option, state, context, transform, &mut found);
             if !found.is_empty() {
                 out.extend(found);
                 return;
@@ -524,13 +621,13 @@ fn collect_leaves<'a>(
                 .into_iter()
                 .flatten()
             {
-                collect_leaves(model, using_item, context, transform, out);
+                collect_leaves(model, state, context, transform, out);
             }
         }
         "minecraft:condition" => {
             let on_true = value.get("on_true");
             let on_false = value.get("on_false");
-            let using = using_item
+            let using = state.using
                 && value.get("property").and_then(Value::as_str) == Some("minecraft:using_item");
             let order = if using {
                 [on_true, on_false]
@@ -557,6 +654,7 @@ fn collect_leaves<'a>(
                         .filter_map(|entry| entry.get("model")),
                 );
             }
+            options.extend(chosen_by_state(value, &entries, state));
             options.extend(value.get("fallback"));
             options.extend(entries.iter().filter_map(|entry| entry.get("model")));
             first_yielding(out, options);
@@ -820,8 +918,8 @@ fn push_cube(elements: &mut Vec<Element>, sheet: &Sheet, cube: Cube, pose: Mat4,
             ],
             cull: false,
             cullface: None,
-            tint: sheet.tinted,
-            tint_index: sheet.tinted.then_some(0),
+            tint: sheet.tint.is_some(),
+            tint_index: sheet.tint,
             force_translucent: false,
             uv_rotation: 0,
         });
@@ -876,7 +974,7 @@ fn push_head(
     let sheet = |size: [f32; 2]| Sheet {
         texture: texture.clone(),
         size,
-        tinted: false,
+        tint: None,
     };
     match head {
         Head::Dragon => {
@@ -931,9 +1029,14 @@ fn push_head(
     Ok(())
 }
 
-fn push_banner(elements: &mut Vec<Element>, standing: bool, pose: Mat4) -> Result<()> {
+fn push_banner(
+    elements: &mut Vec<Element>,
+    standing: bool,
+    pose: Mat4,
+    layers: &[(String, &str)],
+) -> Result<()> {
     let base = Sheet::new("minecraft:entity/banner/banner_base", [64.0, 64.0])?;
-    let flag = Sheet::new("minecraft:entity/banner/base", [64.0, 64.0])?.tinted();
+    let flag = Sheet::new("minecraft:entity/banner/base", [64.0, 64.0])?.tinted(0);
     let (bar_y, bar_z, flag_z) = if standing {
         (-44.0, -1.0, 0.0)
     } else {
@@ -948,6 +1051,24 @@ fn push_banner(elements: &mut Vec<Element>, standing: bool, pose: Mat4) -> Resul
     let flag_pose = pose * part([0.0, bar_y, flag_z], [BANNER_FLAG_ANGLE, 0.0, 0.0]);
     let cloth = Cube::new([0.0, 0.0], [-10.0, 0.0, -2.0], [20.0, 40.0, 1.0]);
     push_cube(elements, &flag, cloth, flag_pose, &ALL_FACES);
+    push_patterns(elements, "banner", layers, cloth, flag_pose)
+}
+
+fn push_patterns(
+    elements: &mut Vec<Element>,
+    sheet: &str,
+    layers: &[(String, &str)],
+    cube: Cube,
+    pose: Mat4,
+) -> Result<()> {
+    for (index, (asset, _)) in layers.iter().take(MAX_LAYERS).enumerate() {
+        let Ok(asset) = ResourceId::parse(asset) else {
+            continue;
+        };
+        let texture = format!("{}:entity/{sheet}/{}", asset.namespace, asset.path);
+        let layer = Sheet::new(&texture, [64.0, 64.0])?.tinted(index + 1);
+        push_cube(elements, &layer, cube, pose, &ALL_FACES);
+    }
     Ok(())
 }
 
@@ -1005,9 +1126,9 @@ fn push_decorated_pot(elements: &mut Vec<Element>, pose: Mat4) -> Result<()> {
     Ok(())
 }
 
-fn push_bell(elements: &mut Vec<Element>) -> Result<()> {
+pub(crate) fn push_bell(elements: &mut Vec<Element>, [x_rot, z_rot]: [f32; 2]) -> Result<()> {
     let sheet = Sheet::new("minecraft:entity/bell/bell_body", [32.0, 32.0])?;
-    let body = part([8.0, 12.0, 8.0], [0.0; 3]);
+    let body = part([8.0, 12.0, 8.0], [x_rot, 0.0, z_rot]);
     let bell = Cube::new([0.0, 0.0], [-3.0, -6.0, -3.0], [6.0, 7.0, 6.0]);
     push_cube(elements, &sheet, bell, body, &ALL_FACES);
     let lip = Cube::new([0.0, 13.0], [4.0, 4.0, 4.0], [8.0, 2.0, 8.0]);
@@ -1080,15 +1201,25 @@ fn push_book(
     Ok(())
 }
 
-fn push_shield(elements: &mut Vec<Element>) -> Result<()> {
+fn push_shield(elements: &mut Vec<Element>, look: &ItemLook) -> Result<()> {
+    let patterned = shield_patterned(look);
     let sheet = Sheet::new(
-        "minecraft:entity/shield/shield_base_nopattern",
+        if patterned {
+            "minecraft:entity/shield/shield_base"
+        } else {
+            "minecraft:entity/shield/shield_base_nopattern"
+        },
         [64.0, 64.0],
     )?;
     let plate = Cube::new([0.0, 0.0], [-6.0, -11.0, -2.0], [12.0, 22.0, 1.0]);
     let handle = Cube::new([26.0, 0.0], [-1.0, -3.0, -1.0], [2.0, 6.0, 6.0]);
     push_cube(elements, &sheet, plate, Mat4::IDENTITY, &ALL_FACES);
     push_cube(elements, &sheet, handle, Mat4::IDENTITY, &ALL_FACES);
+    if patterned {
+        let base = Sheet::new("minecraft:entity/shield/base", [64.0, 64.0])?.tinted(0);
+        push_cube(elements, &base, plate, Mat4::IDENTITY, &ALL_FACES);
+        push_patterns(elements, "shield", &look.layers, plate, Mat4::IDENTITY)?;
+    }
     Ok(())
 }
 
@@ -1214,7 +1345,7 @@ mod tests {
         let standing = block_model(&standing).unwrap().unwrap();
         assert_eq!(standing.elements.len(), 2, "head and hat");
         let special = serde_json::json!({"type": "minecraft:head", "kind": "zombie"});
-        let item = item_model(&special).unwrap().unwrap();
+        let item = item_model(&special, &ItemLook::default()).unwrap().unwrap();
         let transform = transformation(Some(&serde_json::json!({
             "translation": [0.5, 0.0, 0.5],
             "left_rotation": [1.0, 0.0, 0.0, 0.0]
@@ -1264,7 +1395,7 @@ mod tests {
         let sheet = Sheet {
             texture,
             size: [64.0, 64.0],
-            tinted: false,
+            tint: None,
         };
         let mut parts = Vec::new();
         let lid = Cube::new([0.0, 0.0], [1.0, 0.0, 0.0], [14.0, 5.0, 14.0]);
@@ -1355,7 +1486,186 @@ mod tests {
             "base": "minecraft:item/template_banner",
             "model": {"type": "minecraft:banner", "color": "red"}
         });
-        assert_eq!(special_tints(&item), vec![[176, 46, 38]]);
+        assert_eq!(special_tints(&item, &ItemLook::default()), vec![[176, 46, 38]]);
+    }
+
+    fn sheets(model: &ResolvedModel) -> Vec<(String, Option<usize>)> {
+        model
+            .elements
+            .iter()
+            .map(|element| {
+                let face = &element.faces[0];
+                assert!(element.faces.iter().all(|other| other.texture == face.texture && other.tint_index == face.tint_index && other.tint == face.tint_index.is_some()));
+                (face.texture.key(), face.tint_index)
+            })
+            .collect()
+    }
+
+    fn uvs(element: &Element) -> Vec<[f32; 4]> {
+        element.faces.iter().map(|face| face.uv).collect()
+    }
+
+    #[test]
+    fn a_patterned_banner_item_lays_one_tinted_flag_per_pattern_over_its_base() {
+        let banner = serde_json::json!({"type": "minecraft:banner", "color": "white"});
+        let definition = serde_json::json!({"type": "minecraft:special", "base": "minecraft:item/template_banner", "model": banner});
+        let plain = item_model(&banner, &ItemLook::default()).unwrap().unwrap();
+        assert_eq!(plain.elements.len(), 3, "pole, bar and flag");
+        let components = serde_json::json!({"minecraft:banner_patterns": [
+            {"pattern": "minecraft:creeper", "color": "black"},
+            {"pattern": "Not An Id", "color": "black"},
+            {"pattern": {"asset_id": "minecraft:border", "translation_key": "block.minecraft.banner.border"}, "color": "red"}
+        ]});
+        let look = ItemLook::of(Some(&components), None);
+        let patterned = item_model(&banner, &look).unwrap().unwrap();
+        let flag = &patterned.elements[2];
+        assert_eq!(element_points(flag), element_points(&plain.elements[2]));
+        assert_eq!(
+            sheets(&patterned)[2..],
+            [
+                ("minecraft:entity/banner/base".to_owned(), Some(0)),
+                ("minecraft:entity/banner/creeper".to_owned(), Some(1)),
+                ("minecraft:entity/banner/border".to_owned(), Some(2))
+            ]
+        );
+        for layer in &patterned.elements[3..] {
+            assert_eq!(element_points(layer), element_points(flag), "a layer lies on the flag");
+            assert_eq!(uvs(layer), uvs(flag), "and maps its sheet like the flag");
+        }
+        assert_eq!(special_tints(&definition, &look), vec![[249, 255, 254], [29, 29, 33], [176, 46, 38]]);
+        let wall = serde_json::json!({"type": "minecraft:banner", "color": "white", "attachment": "wall"});
+        assert_eq!(item_model(&wall, &look).unwrap().unwrap().elements.len(), 4, "bar, flag and two layers");
+        let crowded = ItemLook {
+            layers: (0..20).map(|i| (format!("minecraft:p{i}"), "blue")).collect(),
+            ..ItemLook::default()
+        };
+        let model = item_model(&banner, &crowded).unwrap().unwrap();
+        assert_eq!(model.elements.len(), 3 + MAX_LAYERS);
+        assert_eq!(sheets(&model).last().unwrap(), &("minecraft:entity/banner/p15".to_owned(), Some(16)));
+        assert_eq!(special_tints(&definition, &crowded).len(), 1 + MAX_LAYERS);
+        let odd = ItemLook {
+            layers: vec![("Not An Id".to_owned(), "red"), ("test:sun".to_owned(), "yellow")],
+            ..ItemLook::default()
+        };
+        let model = item_model(&banner, &odd).unwrap().unwrap();
+        assert_eq!(sheets(&model)[3..], [("test:entity/banner/sun".to_owned(), Some(2))]);
+        assert_eq!(special_tints(&definition, &odd), vec![[249, 255, 254], [176, 46, 38], [254, 216, 61]]);
+        let placed = block_model(&Block::new("minecraft:white_banner").with("rotation", "4")).unwrap().unwrap();
+        assert_eq!(placed.elements.len(), 3, "a baked banner has no layers: patterned ones are drawn apart");
+    }
+
+    #[test]
+    fn the_ominous_banner_lays_its_eight_patterns_on_white() {
+        let stack = crate::item_frame::stack_of_tag(&minecraftoss_world::natural_spawner::spawning::ominous_banner()).unwrap();
+        let key = crate::item_tint::of_stack(&stack);
+        let (rest, colour) = crate::item_tint::split(&key);
+        assert_eq!(colour, None);
+        let (id, suffix) = crate::item_look::split(rest);
+        assert_eq!(id, "minecraft:white_banner");
+        let look = ItemLook::parse(suffix);
+        assert_eq!(look, ItemLook::of(stack.components.as_ref(), None));
+        let expected = [
+            ("rhombus", "cyan"),
+            ("stripe_bottom", "light_gray"),
+            ("stripe_center", "gray"),
+            ("border", "light_gray"),
+            ("stripe_middle", "black"),
+            ("half_horizontal", "light_gray"),
+            ("circle", "light_gray"),
+            ("border", "black"),
+        ];
+        assert_eq!(look.layers, expected.map(|(pattern, colour)| (format!("minecraft:{pattern}"), colour)));
+        let banner = serde_json::json!({"type": "minecraft:banner", "color": "white"});
+        let model = item_model(&banner, &look).unwrap().unwrap();
+        assert_eq!(model.elements.len(), 3 + 8);
+        let layers: Vec<_> = sheets(&model)[3..].iter().map(|(texture, _)| texture.clone()).collect();
+        assert_eq!(layers, expected.map(|(pattern, _)| format!("minecraft:entity/banner/{pattern}")));
+        let definition = serde_json::json!({"type": "minecraft:special", "base": "minecraft:item/template_banner", "model": banner});
+        let tints = special_tints(&definition, &look);
+        assert_eq!(tints.len(), 9);
+        assert_eq!((tints[0], tints[1], tints[8]), ([249, 255, 254], [22, 156, 156], [29, 29, 33]));
+    }
+
+    #[test]
+    fn a_shield_takes_the_patterned_base_only_with_a_base_colour_or_patterns() {
+        let shield = serde_json::json!({"type": "minecraft:shield"});
+        let definition = serde_json::json!({
+            "type": "minecraft:condition",
+            "property": "minecraft:using_item",
+            "on_false": {"type": "minecraft:special", "base": "minecraft:item/shield", "model": shield},
+            "on_true": {"type": "minecraft:special", "base": "minecraft:item/shield_blocking", "model": shield}
+        });
+        let plain_sheet = ("minecraft:entity/shield/shield_base_nopattern".to_owned(), None);
+        let plain = item_model(&shield, &ItemLook::default()).unwrap().unwrap();
+        assert_eq!(sheets(&plain), [plain_sheet.clone(), plain_sheet]);
+        assert!(special_tints(&definition, &ItemLook::default()).is_empty());
+        let base = ("minecraft:entity/shield/shield_base".to_owned(), None);
+        let colour = ("minecraft:entity/shield/base".to_owned(), Some(0));
+        let red = ItemLook::of(Some(&serde_json::json!({"minecraft:base_color": "red"})), None);
+        let model = item_model(&shield, &red).unwrap().unwrap();
+        assert_eq!(sheets(&model), [base.clone(), base.clone(), colour.clone()]);
+        assert_eq!(element_points(&model.elements[2]), element_points(&model.elements[0]), "the colour covers the plate");
+        assert_eq!(uvs(&model.elements[2]), uvs(&model.elements[0]));
+        assert_eq!(special_tints(&definition, &red), vec![[176, 46, 38]]);
+        let crossed = ItemLook::of(Some(&serde_json::json!({"minecraft:banner_patterns": [{"pattern": "minecraft:cross", "color": "yellow"}]})), None);
+        let model = item_model(&shield, &crossed).unwrap().unwrap();
+        let cross = ("minecraft:entity/shield/cross".to_owned(), Some(1));
+        assert_eq!(sheets(&model), [base.clone(), base.clone(), colour.clone(), cross.clone()]);
+        assert_eq!(element_points(&model.elements[3]), element_points(&model.elements[0]));
+        assert_eq!(special_tints(&definition, &crossed), vec![[249, 255, 254], [254, 216, 61]], "white under the patterns");
+        let both = ItemLook::of(
+            Some(&serde_json::json!({
+                "minecraft:base_color": "red",
+                "minecraft:banner_patterns": [{"pattern": "minecraft:cross", "color": "yellow"}, {"pattern": "minecraft:border", "color": "black"}]
+            })),
+            None,
+        );
+        let model = item_model(&shield, &both).unwrap().unwrap();
+        let border = ("minecraft:entity/shield/border".to_owned(), Some(2));
+        assert_eq!(sheets(&model), [base.clone(), base, colour, cross, border]);
+        assert_eq!(special_tints(&definition, &both), vec![[176, 46, 38], [254, 216, 61], [29, 29, 33]]);
+    }
+
+    #[test]
+    fn every_vanilla_pattern_is_in_the_atlas_and_patterned_icons_differ_from_plain_ones() {
+        let Some(root) = std::env::var_os("MINECRAFTOSS_ROOT") else {
+            return;
+        };
+        let root = std::path::Path::new(&root);
+        let pack = root.join("resourcepacks/local/minecraft-26.3");
+        let registry = minecraftoss_core::registries::DataPaths::under(root)
+            .datapack
+            .join("data/minecraft/banner_pattern");
+        if !pack.is_dir() || !registry.is_dir() {
+            return;
+        }
+        let packs = PackStack::open(vec![pack]).unwrap();
+        let scene = crate::scene::HandcraftedScene::default();
+        let build = crate::mesh::build_minimal(&scene, &packs).unwrap();
+        let mut patterns = 0;
+        for entry in fs::read_dir(&registry).unwrap() {
+            let pattern: Value = serde_json::from_slice(&fs::read(entry.unwrap().path()).unwrap()).unwrap();
+            let asset = ResourceId::parse(pattern["asset_id"].as_str().unwrap()).unwrap();
+            for sheet in ["banner", "shield"] {
+                let texture = ResourceId::parse(&format!("{}:entity/{sheet}/{}", asset.namespace, asset.path)).unwrap();
+                assert!(build.atlas.contains(&texture), "{}", texture.key());
+            }
+            patterns += 1;
+        }
+        assert_eq!(patterns, 43);
+        for texture in ["minecraft:entity/banner/banner_base", "minecraft:entity/shield/shield_base", "minecraft:entity/shield/shield_base_nopattern"] {
+            assert!(build.atlas.contains(&ResourceId::parse(texture).unwrap()), "{texture}");
+        }
+        let icon = |key: &str| crate::item_icons::item_icon(&packs, key, 32).unwrap().unwrap();
+        let alphas = |icon: &RgbaImage| icon.pixels().map(|pixel| pixel[3]).collect::<Vec<_>>();
+        let ominous = crate::item_frame::stack_of_tag(&minecraftoss_world::natural_spawner::spawning::ominous_banner()).unwrap();
+        let mut shield = minecraftoss_player::inventory::ItemStack::new("minecraft:shield", 1);
+        shield.components = Some(serde_json::json!({"minecraft:base_color": "red", "minecraft:banner_patterns": [{"pattern": "minecraft:gradient", "color": "yellow"}]}));
+        for (plain, stack) in [("minecraft:white_banner", ominous), ("minecraft:shield", shield)] {
+            let (plain, patterned) = (icon(plain), icon(&crate::item_tint::of_stack(&stack)));
+            assert!(plain != patterned, "{}", stack.id);
+            assert_eq!(alphas(&plain), alphas(&patterned), "{}: the layers keep the outline whole", stack.id);
+        }
     }
 
     #[test]
@@ -1533,9 +1843,72 @@ mod tests {
     }
 
     #[test]
+    fn crossbows_and_bows_pick_their_charge_and_pull_like_vanilla() {
+        let model = |name: &str| serde_json::json!({"type": "minecraft:model", "model": format!("minecraft:item/{name}")});
+        let crossbow = serde_json::json!({
+            "type": "minecraft:select",
+            "property": "minecraft:charge_type",
+            "cases": [{"when": "arrow", "model": model("crossbow_arrow")}, {"when": "rocket", "model": model("crossbow_firework")}],
+            "fallback": {
+                "type": "minecraft:condition",
+                "property": "minecraft:using_item",
+                "on_false": model("crossbow"),
+                "on_true": {
+                    "type": "minecraft:range_dispatch",
+                    "property": "minecraft:crossbow/pull",
+                    "entries": [{"threshold": 0.58, "model": model("crossbow_pulling_1")}, {"threshold": 1.0, "model": model("crossbow_pulling_2")}],
+                    "fallback": model("crossbow_pulling_0")
+                }
+            }
+        });
+        let bow = serde_json::json!({
+            "type": "minecraft:condition",
+            "property": "minecraft:using_item",
+            "on_false": model("bow"),
+            "on_true": {
+                "type": "minecraft:range_dispatch",
+                "property": "minecraft:use_duration",
+                "scale": 0.05,
+                "entries": [{"threshold": 0.65, "model": model("bow_pulling_1")}, {"threshold": 0.9, "model": model("bow_pulling_2")}],
+                "fallback": model("bow_pulling_0")
+            }
+        });
+        let state = |charge: Charge, using: Option<u32>| ItemState { using: using.is_some(), charge, use_ticks: using.unwrap_or(0), charge_duration: 25 };
+        let leaf = |tree: &Value, state: ItemState| {
+            let leaves = item_leaves_with(tree, &state, None);
+            assert_eq!(leaves.len(), 1);
+            leaves[0].model.strip_prefix("minecraft:item/").unwrap().to_owned()
+        };
+        assert_eq!(item_leaves(&crossbow, false)[0].model, "minecraft:item/crossbow");
+        assert_eq!(item_leaves(&crossbow, true)[0].model, "minecraft:item/crossbow_pulling_0");
+        assert_eq!(leaf(&crossbow, ItemState::plain(false)), "crossbow");
+        for (ticks, expected) in [(0, "crossbow_pulling_0"), (14, "crossbow_pulling_0"), (15, "crossbow_pulling_1"), (24, "crossbow_pulling_1"), (25, "crossbow_pulling_2"), (40, "crossbow_pulling_2")] {
+            assert_eq!(leaf(&crossbow, state(Charge::None, Some(ticks))), expected, "{ticks} ticks");
+        }
+        assert_eq!(leaf(&crossbow, state(Charge::Arrow, None)), "crossbow_arrow");
+        assert_eq!(leaf(&crossbow, state(Charge::Arrow, Some(20))), "crossbow_arrow", "an arrow shows even while the crossbow is used");
+        assert_eq!(leaf(&crossbow, state(Charge::Rocket, None)), "crossbow_firework");
+        let quick = ItemState { charge_duration: 15, ..state(Charge::None, Some(15)) };
+        assert_eq!(leaf(&crossbow, quick), "crossbow_pulling_2");
+        assert_eq!(leaf(&bow, ItemState::plain(false)), "bow");
+        for (ticks, expected) in [(0, "bow_pulling_0"), (12, "bow_pulling_0"), (13, "bow_pulling_1"), (17, "bow_pulling_1"), (18, "bow_pulling_2")] {
+            assert_eq!(leaf(&bow, state(Charge::None, Some(ticks))), expected, "{ticks} ticks");
+        }
+        assert_eq!(leaf(&bow, state(Charge::Arrow, None)), "bow");
+        let counting_down = serde_json::json!({
+            "type": "minecraft:range_dispatch",
+            "property": "minecraft:use_duration",
+            "remaining": true,
+            "entries": [{"threshold": 1.0, "model": model("late")}],
+            "fallback": model("early")
+        });
+        assert_eq!(leaf(&counting_down, state(Charge::None, Some(30))), "early");
+    }
+
+    #[test]
     fn the_held_trident_is_the_pole_base_and_spikes_of_the_thrown_one() {
         let special = serde_json::json!({"type": "minecraft:trident"});
-        let model = item_model(&special).unwrap().unwrap();
+        let model = item_model(&special, &ItemLook::default()).unwrap().unwrap();
         assert_eq!(model.elements.len(), 5);
         let (low, high) = bounds(&corners(&model));
         assert!(close(low, Vec3::new(-2.5, -4.0, -0.5) / 16.0), "{low}");

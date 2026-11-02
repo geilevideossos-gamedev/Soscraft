@@ -654,6 +654,7 @@ pub fn spawn_saved(world: &mut EntityWorld, tag: &Tag) -> Option<u64> {
                 horse.despawn_delay = int(tag, "DespawnDelay").unwrap_or(minecraftoss_entities::horse::TRADER_DESPAWN_DELAY);
             }
             horse.body_item = tag.get("equipment").and_then(|e| e.get("body")).and_then(|b| b.get("id")).and_then(Tag::as_str).map(str::to_owned);
+            horse.body_components = tag.get("equipment").and_then(|e| e.get("body")).filter(|_| horse.body_item.is_some()).and_then(|b| b.get("components")).map(tag_json);
             horse.saddled = horse.kind.saddleable() && tag.get("equipment").and_then(|e| e.get("saddle")).and_then(|b| b.get("id")).and_then(Tag::as_str) == Some("minecraft:saddle");
             horse.owner = tag.get("Owner").and_then(Tag::as_ints).and_then(|ints| <[i32; 4]>::try_from(ints).ok()).map(minecraftoss_entities::gossip::uuid_from_ints);
             horse.chest = int(tag, "ChestedHorse").unwrap_or(0) != 0;
@@ -1472,7 +1473,7 @@ fn fresh_uuid(id: u64, position: DVec3) -> Tag {
     Tag::IntArray(vec![(a >> 32) as i32, a as i32, (b >> 32) as i32, b as i32])
 }
 
-fn body_equipment(original: Option<&Tag>, body: Option<&str>) -> Option<Tag> {
+fn body_equipment(original: Option<&Tag>, body: Option<&str>, components: Option<&serde_json::Value>) -> Option<Tag> {
     let mut slots = match original.and_then(|tag| tag.get("equipment")) {
         Some(Tag::Compound(slots)) => slots.clone(),
         _ if body.is_none() => return None,
@@ -1480,8 +1481,14 @@ fn body_equipment(original: Option<&Tag>, body: Option<&str>) -> Option<Tag> {
     };
     match body {
         Some(item) => {
-            let kept = slots.remove("body").filter(|b| b.get("id").and_then(Tag::as_str) == Some(item));
-            let worn = kept.unwrap_or_else(|| Tag::Compound([("id".to_owned(), Tag::String(item.to_owned())), ("count".to_owned(), Tag::Int(1))].into_iter().collect()));
+            let kept = slots.remove("body").filter(|b| b.get("id").and_then(Tag::as_str) == Some(item) && b.get("components").map(tag_json).as_ref() == components);
+            let worn = kept.unwrap_or_else(|| {
+                let mut worn: std::collections::BTreeMap<String, Tag> = [("id".to_owned(), Tag::String(item.to_owned())), ("count".to_owned(), Tag::Int(1))].into_iter().collect();
+                if let Some(components) = components {
+                    worn.insert("components".to_owned(), json_tag(components));
+                }
+                Tag::Compound(worn)
+            });
             slots.insert("body".to_owned(), worn);
         }
         None => {
@@ -1760,7 +1767,7 @@ pub fn mob_tags_where(world: &EntityWorld, keep: impl Fn(u64, DVec3) -> bool, or
                     .collect();
                 fields.push(("Items", Tag::List(items)));
             }
-            let worn = body_equipment(originals.get(&e.id), horse.body_item.as_deref()).map(|slots| Tag::Compound([("equipment".to_owned(), slots)].into_iter().collect()));
+            let worn = body_equipment(originals.get(&e.id), horse.body_item.as_deref(), horse.body_components.as_ref()).map(|slots| Tag::Compound([("equipment".to_owned(), slots)].into_iter().collect()));
             if let Some(equipment) = saddle_equipment(worn.as_ref().or(originals.get(&e.id)), horse.saddled) {
                 fields.push(("equipment", equipment));
             }
@@ -2449,6 +2456,34 @@ mod tests {
         let spawned = spawn_saved_all(&mut world, &llama);
         assert_eq!(spawned.len(), 2, "a zombie rides a llama too");
         assert!(!world.cow_mut(spawned[0].0).unwrap().horse.as_ref().unwrap().saddled, "a llama never takes a saddle");
+    }
+
+    #[test]
+    fn a_horse_keeps_dyed_leather_armour_through_save_and_load() {
+        let horse = minecraftoss_core::snbt::parse_compound("{id:\"minecraft:horse\",Pos:[1.5d,64.0d,2.5d],Tame:1b,equipment:{saddle:{id:\"minecraft:saddle\",count:1},body:{id:\"minecraft:leather_horse_armor\",count:1,components:{\"minecraft:dyed_color\":11546150}}}}").unwrap();
+        let mut world = EntityWorld::default();
+        let id = spawn_saved(&mut world, &horse).expect("a dressed horse loads");
+        let h = world.cow_mut(id).unwrap().horse.clone().unwrap();
+        assert_eq!((h.body_item.as_deref(), h.body_components), (Some("minecraft:leather_horse_armor"), Some(serde_json::json!({"minecraft:dyed_color": 0xB02E26}))));
+        let originals: std::collections::HashMap<u64, Tag> = [(id, horse.clone())].into_iter().collect();
+        let body = |tag: &Tag| tag.get("equipment").and_then(|e| e.get("body")).cloned().expect("it wears its armour");
+        let saved = mob_tags(&world, |_| true, &originals);
+        assert_eq!(body(&saved[0].1), body(&horse), "unchanged armour keeps its saved tag");
+        assert!(saved[0].1.get("equipment").and_then(|e| e.get("saddle")).is_some());
+        world.cow_mut(id).unwrap().horse.as_mut().unwrap().body_components = Some(serde_json::json!({"minecraft:dyed_color": 0x80C71F}));
+        let saved = mob_tags(&world, |_| true, &originals);
+        let worn = body(&saved[0].1);
+        assert_eq!(text(&worn, "id"), Some("minecraft:leather_horse_armor"));
+        assert_eq!(worn.get("components").and_then(|c| c.get("minecraft:dyed_color")).and_then(Tag::as_i64), Some(0x80C71F), "a re-dyed armour under the same id saves its new colour");
+        let mut fresh = EntityWorld::default();
+        let back = spawn_saved(&mut fresh, &saved[0].1).expect("the saved horse loads");
+        assert_eq!(fresh.cow_mut(back).unwrap().horse.as_ref().unwrap().body_components, Some(serde_json::json!({"minecraft:dyed_color": 0x80C71F})));
+        world.cow_mut(id).unwrap().horse.as_mut().unwrap().body_components = None;
+        let saved = mob_tags(&world, |_| true, &originals);
+        assert!(body(&saved[0].1).get("components").is_none(), "an undyed armour saves no components");
+        let plain = minecraftoss_core::snbt::parse_compound("{id:\"minecraft:horse\",Pos:[1.5d,64.0d,2.5d],equipment:{body:{id:\"minecraft:iron_horse_armor\",count:1}}}").unwrap();
+        let id = spawn_saved(&mut world, &plain).expect("a horse in iron loads");
+        assert_eq!(world.cow_mut(id).unwrap().horse.as_ref().unwrap().body_components, None);
     }
 
     #[test]

@@ -21,6 +21,14 @@ pub enum Charge {
 }
 
 impl Charge {
+    pub fn of(item: &str) -> Self {
+        if item == crate::breeze_charge::ENTITY {
+            Self::Breeze
+        } else {
+            Self::Player
+        }
+    }
+
     pub fn radius(self) -> f32 {
         match self {
             Self::Player => RADIUS,

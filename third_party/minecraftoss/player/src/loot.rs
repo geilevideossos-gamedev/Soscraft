@@ -335,14 +335,7 @@ fn apply_modifiers(
         match modifier["type"].as_str()? {
             "minecraft:explosion_decay" => {} // No explosion for player mining.
             "minecraft:copy_components" => {
-                // Current chest/furnace state has no custom name; other copied
-                // block-entity components (notably shulker contents) need data.
-                if modifier["source"] != "block_entity"
-                    || modifier["include"]
-                        .as_array()?
-                        .iter()
-                        .any(|id| id != "minecraft:custom_name")
-                {
+                if modifier["source"] != "block_entity" {
                     return None;
                 }
             }
@@ -483,6 +476,16 @@ mod tests {
                 None,
                 vec![ItemStack::new("minecraft:chest", 1)],
             ),
+            (
+                "minecraft:yellow_shulker_box",
+                None,
+                vec![ItemStack::new("minecraft:yellow_shulker_box", 1)],
+            ),
+            (
+                "minecraft:red_wall_banner",
+                None,
+                vec![ItemStack::new("minecraft:red_banner", 1)],
+            ),
         ] {
             assert_eq!(
                 book.deterministic_drops(&Block::new(block), tool),
@@ -501,7 +504,6 @@ mod tests {
             Block::new("minecraft:oak_leaves"),
             Block::new("minecraft:redstone_ore"),
             Block::new("minecraft:wheat").with("age", "7"),
-            Block::new("minecraft:yellow_shulker_box"),
         ] {
             assert_eq!(book.deterministic_drops(&block, None), None, "{}", block.id);
         }
@@ -555,6 +557,39 @@ mod tests {
         assert_eq!(drops[0].id, "minecraft:red_banner");
         assert_eq!(
             book.deterministic_drops(&Block::new("minecraft:cobblestone_wall"), None),
+            None
+        );
+    }
+
+    #[test]
+    fn components_copied_from_the_block_entity_leave_the_item_to_the_caller() {
+        let mut book = LootBook::default();
+        let table = |source: &str| {
+            serde_json::json!({
+                "type": "minecraft:block",
+                "pools": [{
+                    "condition": {"type": "minecraft:survives_explosion"},
+                    "rolls": 1,
+                    "entries": [{
+                        "type": "minecraft:item",
+                        "name": "minecraft:white_banner",
+                        "modifier": {
+                            "type": "minecraft:copy_components",
+                            "source": source,
+                            "include": ["minecraft:custom_name", "minecraft:banner_patterns"]
+                        }
+                    }]
+                }]
+            })
+        };
+        book.tables.insert("minecraft:white_banner".into(), table("block_entity"));
+        book.tables.insert("minecraft:sample".into(), table("this"));
+        assert_eq!(
+            book.deterministic_drops(&Block::new("minecraft:white_wall_banner"), None),
+            Some(vec![ItemStack::new("minecraft:white_banner", 1)])
+        );
+        assert_eq!(
+            book.deterministic_drops(&Block::new("minecraft:sample"), None),
             None
         );
     }

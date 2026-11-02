@@ -41,7 +41,10 @@ impl MountInventory {
         let columns = horse.inventory_columns().max(0) as usize;
         let mut cells = vec![
             horse.saddled.then(|| stack("minecraft:saddle")),
-            horse.body_item.as_deref().map(stack),
+            horse.body_item.as_deref().map(|id| ItemStack {
+                components: horse.body_components.clone(),
+                ..stack(id)
+            }),
         ];
         cells.extend(horse.inventory.iter().cloned());
         cells.resize(CHEST + columns * 3, None);
@@ -81,6 +84,10 @@ impl MountInventory {
             .get(BODY)
             .and_then(Option::as_ref)
             .map(|stack| stack.id.clone())
+    }
+
+    pub fn body_stack(&self) -> Option<ItemStack> {
+        self.cells.get(BODY).cloned().flatten()
     }
 
     pub fn items(&self) -> Vec<Option<ItemStack>> {
@@ -329,6 +336,55 @@ mod tests {
         d.swap(&mut inventory, CHEST, 3);
         assert_eq!(inventory.slots[3].as_ref().map(|s| s.count), Some(63));
         assert_eq!((d.items().len(), d.body()), (15, None));
+    }
+
+    #[test]
+    fn the_body_slot_keeps_its_dye_both_ways() {
+        let recipes = RecipeBook::default();
+        let mut world = EntityWorld::default();
+        let horse = equine(&mut world, HorseKind::Horse, true, false);
+        let red = serde_json::json!({"minecraft:dyed_color": 0xB02E26});
+        let lime = serde_json::json!({"minecraft:dyed_color": 0x80C71F});
+        {
+            let h = world.cow_mut(horse).unwrap().horse.as_mut().unwrap();
+            h.body_item = Some("minecraft:leather_horse_armor".to_owned());
+            h.body_components = Some(red.clone());
+        }
+        let mut screen = MountInventory::of(&world, horse, &recipes).unwrap();
+        let worn = screen.body_stack().unwrap();
+        assert_eq!(
+            (worn.id.as_str(), worn.count, worn.components),
+            ("minecraft:leather_horse_armor", 1, Some(red.clone()))
+        );
+        let mut inventory = Inventory::default();
+        screen.click(&mut inventory, BODY, false, false);
+        assert_eq!(
+            inventory.cursor.as_ref().and_then(|s| s.components.clone()),
+            Some(red)
+        );
+        assert_eq!((screen.body(), screen.body_stack()), (None, None));
+        inventory.slots[0] = Some(ItemStack {
+            components: Some(lime.clone()),
+            ..stack("minecraft:leather_horse_armor", 1)
+        });
+        screen.quick_move_from_player(&mut inventory, 0);
+        assert!(inventory.slots[0].is_none());
+        assert_eq!(
+            screen.body().as_deref(),
+            Some("minecraft:leather_horse_armor")
+        );
+        assert_eq!(
+            screen.body_stack().and_then(|s| s.components),
+            Some(lime.clone())
+        );
+        world.set_mount_inventory(horse, screen.saddled(), screen.body_stack(), screen.items());
+        let h = world.cow_mut(horse).unwrap().horse.clone().unwrap();
+        assert_eq!(
+            (h.body_item.as_deref(), h.body_components.as_ref()),
+            (Some("minecraft:leather_horse_armor"), Some(&lime))
+        );
+        let again = MountInventory::of(&world, horse, &recipes).unwrap();
+        assert_eq!(again.body_stack().and_then(|s| s.components), Some(lime));
     }
 
     #[test]
