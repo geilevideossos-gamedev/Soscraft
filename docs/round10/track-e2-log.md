@@ -1444,3 +1444,18 @@ After f8745db5.
   - `minecraft_terrain/src/maps.rs` `MapStore::take_updates`: takes the player's waiting updates with `get_mut(..).map_or_else(Vec::new, std::mem::take)`, as `minecraft_survival/src/entities.rs` takes its queues (`unwrap_or_else(Vec::new)` trips `clippy::unwrap_or_default` and `map_or_else(Vec::new, |updates| updates)` trips `clippy::unnecessary_option_map_or_else`). The emptied list stays in the map until the end of the next `tick_carried_on`, which keeps only the carriers' lists, so nothing that reaches a player changes.
 - **Tests:** none added (no behaviour change). The test run is the next entry.
 - **Test steps and kit:** none (no change in game).
+
+### 2. Test run
+
+After 34ab991b (the clippy fix). Log only.
+
+- **Tests:** on the code of `34ab991b`, `test -p <crate> --locked --no-fail-fast` for every crate the segment touched, in one run: `frame` 28, `hud` 205, `minecraft_net` 27, `minecraft_survival` 809 + 1, `minecraft_terrain` 1606 with 3 ignored, `render_anim` 219, `minecraftoss-entities` 499 and `minecraftoss-player` 207 (with the stand-in scenario files). All passed, with no flaky reruns. `check -p launcher --locked` is clean.
+- **Owner's test steps:** the steps of each commit of the segment above stand (groups `fw-shapes` to `ti4-end-targets` and the review fix), with the combined kit below. The steps that name E1's `bells-swing`, `banner-items` or kit parser work once E1 is in, which `minecraft-survival` has since 0b24cb27.
+
+## Segment e2b combined kit
+
+One kit for the whole segment (27 stacks): the trail, two-star and three-star rockets and a plain stack for `fw-shapes` and `fw-elytra`, a star's makings for `fw-craft`, a banner and plain shields for the shield, a bell and the throws for `bell-hits`, empty maps and the shipwreck gear for the map groups and the review fix, and the crystals for `ti4-end-targets`. Anything else a step needs comes from that step's own kit line or `/give`: the lime rocket of FW-S1, lime and blue dye, glowstone dust and the creeper head, the patterned banner and the worn and red shields, the stick, the dispenser and lever, the splash water and harming potions, the villager, zombie, skeleton, blaze, llama and witch spawn eggs, the bed, the pearls, the second (plain) trident, the diamond armour, the night vision and slow falling potions, the compass, the torch, the water bucket, the diamond tools, cobblestone and planks.
+
+```
+IW4L_MINECRAFT_KIT=minecraft:elytra,minecraft:firework_rocket*64,minecraft:firework_rocket[fireworks={flight_duration:1,explosions:[{shape:large_ball,colors:[I;11743532],has_trail:1b}]}]*64,minecraft:firework_rocket[fireworks={flight_duration:2,explosions:[{shape:star,colors:[I;14602026],fade_colors:[I;2437522]},{shape:creeper,colors:[I;4312372],has_twinkle:1b}]}]*64,minecraft:firework_rocket[fireworks={flight_duration:0,explosions:[{shape:burst,colors:[I;15790320,11743532]},{shape:small_ball,colors:[I;2437522]},{shape:large_ball,colors:[I;14602026]}]}]*64,minecraft:crafting_table,minecraft:gunpowder*64,minecraft:paper*32,minecraft:red_dye*16,minecraft:fire_charge*8,minecraft:diamond*8,minecraft:black_banner*4,minecraft:shield*2,minecraft:bell*4,minecraft:trident+loyalty=3,minecraft:snowball*16,minecraft:egg*16,minecraft:wind_charge*16,minecraft:map*8,minecraft:potion@long_water_breathing,minecraft:oak_boat,minecraft:iron_shovel,minecraft:spyglass,minecraft:end_crystal*4,minecraft:obsidian*8,minecraft:golden_apple*16,minecraft:cooked_beef*32
+```
