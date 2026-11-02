@@ -20,6 +20,7 @@ Files under `third_party/minecraftoss` this track patched or added.
 - Patched (water-buckets 1): `world/src/level/mod.rs` (`pub mod mob_bucket;` after `pub mod dispenser;`).
 - Added (water-buckets 1): `world/src/level/mob_bucket.rs` (the seven bucket rows, `entity_data`, `Level::empty_mob_bucket`), `world/src/level/mob_bucket/tests.rs` (test only).
 - Changed again (water-buckets 2): `world/src/level/mob_bucket.rs` (`bucket_of`, `bucket_entity_data`).
+- Patched (water-buckets 3): `world/src/level/dispenser.rs` (the arm for the six water mob buckets after `"water_bucket" | "lava_bucket"`). Changed again: `world/src/level/mob_bucket.rs` (`dispense_mob_bucket`) and its test file.
 
 ## Hooks
 
@@ -50,14 +51,15 @@ None yet. The mob bucket posts `entity_place` at the block the mob comes out in 
   - `MobBucketItem.spawn` plays the new mob's ambient sound; a dormant kind has none, so each family plays it when it goes live (`fish-buckets`, `axolotls-buckets`, the tadpoles, the sulfur cube's items group).
   - The landing height uses the kind's spawn-row width; until a family adds its row (`squids-live`, `fish-spawning`, ..) it is the spawn eggs' 0.6.
   - The family components (salmon size, tropical pattern, axolotl variant, sulfur cube content) start empty in the rows (`MobBucket.components`); each family group fills its own.
+- **Mob buckets in dispensers (water-buckets 3):** 26.3 dispenses the sulfur cube bucket with the same behaviour as the fish buckets; the sulfur cube groups add `"sulfur_cube_bucket"` to the dispenser arm (the level side already lets a cube out without water). A dispensed water mob bucket plays no hiss where water evaporates, as the fork's plain water bucket plays none from a dispenser.
 - **Mob bucket pickup (water-buckets 2):** vanilla copies the mob's custom name onto the bucket (`saveDefaultDataToBucketTag`), but `MobCore` holds no name (only the server's tag for the mob keeps it), so a picked-up mob loses its name. A name on the bucket item itself still names the poured mob.
 
 ## Combined kit
 
-Everything this track's test steps need so far (24 stacks):
+Everything this track's test steps need so far (27 stacks; water-buckets 1 counted 24 where its line held 23).
 
 ```
-IW4L_MINECRAFT_KIT=minecraft:rabbit_spawn_egg*4,minecraft:polar_bear_spawn_egg*2,minecraft:silverfish_spawn_egg*2,minecraft:zombie_spawn_egg*2,minecraft:drowned_spawn_egg*2,minecraft:cow_spawn_egg*2,minecraft:water_bucket,minecraft:glass*16,minecraft:stone*64,minecraft:iron_shovel,minecraft:iron_sword,minecraft:cod_bucket,minecraft:salmon_bucket,minecraft:tropical_fish_bucket,minecraft:axolotl_bucket,minecraft:tadpole_bucket,minecraft:sulfur_cube_bucket,minecraft:lava_bucket,minecraft:bucket*16,minecraft:cauldron,minecraft:campfire,minecraft:obsidian*10,minecraft:flint_and_steel
+IW4L_MINECRAFT_KIT=minecraft:rabbit_spawn_egg*4,minecraft:polar_bear_spawn_egg*2,minecraft:silverfish_spawn_egg*2,minecraft:zombie_spawn_egg*2,minecraft:drowned_spawn_egg*2,minecraft:cow_spawn_egg*2,minecraft:water_bucket,minecraft:glass*16,minecraft:stone*64,minecraft:iron_shovel,minecraft:iron_sword,minecraft:cod_bucket,minecraft:salmon_bucket,minecraft:tropical_fish_bucket,minecraft:pufferfish_bucket,minecraft:axolotl_bucket,minecraft:tadpole_bucket,minecraft:sulfur_cube_bucket,minecraft:sulfur_cube_bucket,minecraft:lava_bucket,minecraft:bucket*16,minecraft:cauldron,minecraft:campfire,minecraft:obsidian*10,minecraft:flint_and_steel,minecraft:dispenser*2,minecraft:lever*2
 ```
 
 ## Segment m2a
@@ -369,4 +371,46 @@ After 1322d5fb.
 
 ```
 IW4L_MINECRAFT_KIT=minecraft:water_bucket,minecraft:bucket,minecraft:cow_spawn_egg*2,minecraft:silverfish_spawn_egg*2,minecraft:stone*64
+```
+
+#### 3. Dispensers empty fish buckets like vanilla
+
+After 6c0c1ea0.
+
+- **javap (26.3 `client.jar`):**
+  - `DispenseItemBehavior.bootStrap` registers one `DefaultDispenseItemBehavior` (`DispenseItemBehavior$3`) for the lava, water, powder snow, salmon, cod, pufferfish, tropical fish, axolotl, sulfur cube and tadpole buckets.
+  - Its `execute`:
+    - `emptyContents(null, level, front, null)` on the block in front;
+    - on success, `checkExtraContent(null, level, stack, front)` and `consumeWithRemainder(source, stack, new ItemStack(BUCKET))`;
+    - otherwise the default behaviour, which throws one item out.
+  - So a dispensed mob bucket plays its own empty sound at the front block (except where the water evaporates) and lets its mob out there, with no player as the game event's source.
+- **Changed (vendored world crate):**
+  - `level/dispenser.rs`: one arm after `"water_bucket" | "lava_bucket"` for the six water mob buckets (cod, salmon, tropical fish, pufferfish, axolotl, tadpole). It mirrors `dispense_filled_bucket`: the front block, then `consume_with_remainder` with an empty bucket, or `default_dispense`. `OTHER_BEHAVIOURS` is untouched; the earlier arm wins.
+  - `level/mob_bucket.rs`: `Level::dispense_mob_bucket(front, stack)`. It runs `empty_mob_bucket(front, front, ..)` with the stack's components, and pushes the row's empty sound as a `LevelSound` at the front block's centre, unless the water evaporates there.
+- **Tests added** (`level::mob_bucket::tests`):
+  - `a_dispenser_empties_a_cod_bucket_and_keeps_the_empty_bucket`:
+    - the water flows out in front and the dispenser keeps one empty bucket;
+    - the cod comes out with `FromBucket` and its `Health`, standing on the front block;
+    - the fish splash plays at the front block, and `entity_place` is posted with no source;
+    - a second pulse takes the water back into a water bucket;
+    - a tadpole bucket facing stone is thrown out whole, with no mob and no sound.
+  - `a_sulfur_cube_bucket_is_still_not_dispensed`: it stays in the dispenser, no mob comes out, and the level notes the unsupported behaviour.
+- **Decisions:**
+  - **The sulfur cube bucket stays unported in dispensers.** 26.3 dispenses it with the same behaviour (javap above), but M2-1 gives its dispenser behaviour to the sulfur cube groups. Its whole port is adding `"sulfur_cube_bucket"` to this arm: the level side already lets a cube out without water. Recorded under "Left for later".
+  - **The arm is a block in `dispenser.rs`**, mirroring `dispense_filled_bucket`, so the dispenser's private helpers (`dispenser_facing`, `consume_with_remainder`, `default_dispense`) keep their visibility and no existing line changes. The mob-bucket part lives in `mob_bucket.rs`.
+  - **No hiss from a dispenser** where water evaporates, as for the plain water bucket, which plays no sound from a dispenser in this fork. The mob bucket's splash plays everywhere else.
+- **Protocol:** none.
+- **Runs:**
+  - `test -p minecraftoss-world --locked --lib`: 142 passed, among them the 7 `mob_bucket` tests.
+  - `test -p minecraft_terrain --locked --lib -- dispens bucket`: 33 passed.
+  - `check -p launcher --locked`: green, with only the old render_frame and skate warnings.
+  - The changed new files pass `rustfmt --check` with empty output.
+- **Test steps.** Release build, survival, Normal, by day, flat ground. Name each screenshot by its label.
+  1. Place a dispenser on the ground facing open ground, put the pufferfish bucket in it and place a lever on the dispenser. Flip the lever: water flows out in front with the fish-bucket splash, and the dispenser now holds an empty bucket. **m2-buckets-5**
+  2. Flip the lever off and on again: the empty bucket takes the water back, and the dispenser holds a water bucket.
+  3. Put the sulfur cube bucket in the second dispenser with its own lever and flip it: nothing comes out, and the bucket stays in the dispenser.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:pufferfish_bucket,minecraft:sulfur_cube_bucket,minecraft:dispenser*2,minecraft:lever*2,minecraft:stone*64
 ```

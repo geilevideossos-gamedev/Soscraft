@@ -1,4 +1,7 @@
 use super::Level;
+use super::burning::LevelSound;
+use super::container::Stack;
+use super::game_event::centre;
 use super::physics::{Aabb, collide_shapes};
 use minecraftoss_core::BlockPos;
 use minecraftoss_core::entity_data::wrap_degrees;
@@ -185,6 +188,25 @@ impl Level<'_> {
             return false;
         }
         self.let_out(bucket, at, components);
+        true
+    }
+
+    pub(super) fn dispense_mob_bucket(&mut self, target: BlockPos, stack: &Stack) -> bool {
+        let Some(bucket) = mob_bucket(&stack.id) else {
+            return false;
+        };
+        let hisses = bucket.water && self.gameplay_attribute(target, "gameplay/water_evaporates");
+        if !self.empty_mob_bucket(target, target, &stack.id, stack.components.as_ref()) {
+            return false;
+        }
+        if !hisses {
+            self.sounds.push(LevelSound {
+                event: bucket.empty_sound,
+                pos: centre(target),
+                volume: 1.0,
+                pitch: 1.0,
+            });
+        }
         true
     }
 

@@ -108,6 +108,14 @@ impl Level<'_> {
         let name = stack.id.trim_start_matches("minecraft:").to_owned();
         let result = match name.as_str() {
             "water_bucket" | "lava_bucket" => self.dispense_filled_bucket(pos, stack),
+            "cod_bucket" | "salmon_bucket" | "tropical_fish_bucket" | "pufferfish_bucket" | "axolotl_bucket" | "tadpole_bucket" => {
+                let target = pos.relative(self.dispenser_facing(pos), 1);
+                if self.dispense_mob_bucket(target, &stack) {
+                    self.consume_with_remainder(pos, stack, Stack::new("minecraft:bucket", 1))
+                } else {
+                    self.default_dispense(pos, stack)
+                }
+            }
             "bucket" => self.dispense_empty_bucket(pos, stack),
             "honeycomb" => self.dispense_honeycomb(pos, stack),
             "firework_rocket" => self.dispense_rocket(pos, stack),

@@ -293,3 +293,105 @@ fn the_bucket_data_keeps_vanillas_keys_with_their_types() {
         None
     );
 }
+
+fn dispenser(level: &mut Level<'_>, at: BlockPos, facing: &str, stack: Stack) {
+    place(
+        level,
+        at,
+        &format!("minecraft:dispenser[facing={facing},triggered=false]"),
+    );
+    assert!(level.replace_block_item(at, 0, stack));
+    level.sounds.clear();
+    level.take_game_events();
+}
+
+fn held(level: &Level<'_>, at: BlockPos) -> Vec<(String, i32)> {
+    let items = level.block_container_items(at).unwrap();
+    items
+        .into_iter()
+        .filter(|stack| !stack.is_empty())
+        .map(|stack| (stack.id, stack.count))
+        .collect()
+}
+
+#[test]
+fn a_dispenser_empties_a_cod_bucket_and_keeps_the_empty_bucket() {
+    let Some(lib) = library() else {
+        return;
+    };
+    let Some(mut level) = level(&lib) else {
+        return;
+    };
+    let at = BlockPos::new(2, FLOOR + 1, 2);
+    let front = BlockPos::new(3, FLOOR + 1, 2);
+    let mut cod = Stack::new("minecraft:cod_bucket", 1);
+    cod.components = Some(bucket(vec![("Health", Tag::Float(2.0))]));
+    dispenser(&mut level, at, "east", cod);
+    level.dispense_from(at, false);
+    assert_eq!(name(&level, front), "minecraft:water");
+    assert_eq!(held(&level, at), [("minecraft:bucket".to_owned(), 1)]);
+    let fish = only_spawned(&mut level);
+    assert_eq!(fish.get("id").and_then(Tag::as_str), Some("minecraft:cod"));
+    assert_eq!(fish.get("FromBucket"), Some(&Tag::Byte(1)));
+    assert_eq!(fish.get("Health"), Some(&Tag::Float(2.0)));
+    assert_eq!(position(&fish), [3.5, 65.0, 2.5]);
+    let splashes: Vec<(&str, [f64; 3])> = level
+        .sounds
+        .iter()
+        .map(|sound| (sound.event, sound.pos))
+        .collect();
+    assert_eq!(splashes, [(EMPTY_FISH, [3.5, 65.5, 2.5])]);
+    let placed = level.take_game_events();
+    let entity_place = placed
+        .iter()
+        .find(|event| event.event == "minecraft:entity_place")
+        .expect("entity_place");
+    assert_eq!(
+        (entity_place.pos, entity_place.source),
+        ([3.5, 65.5, 2.5], None)
+    );
+    level.dispense_from(at, false);
+    assert_eq!(
+        held(&level, at),
+        [("minecraft:water_bucket".to_owned(), 1)],
+        "the empty bucket takes the water back"
+    );
+    let below = BlockPos::new(6, FLOOR + 1, 6);
+    dispenser(
+        &mut level,
+        below,
+        "down",
+        Stack::new("minecraft:tadpole_bucket", 1),
+    );
+    level.dispense_from(below, false);
+    assert!(
+        held(&level, below).is_empty(),
+        "into stone it is thrown out whole"
+    );
+    assert!(level.spawned.is_empty());
+    assert!(level.sounds.is_empty());
+}
+
+#[test]
+fn a_sulfur_cube_bucket_is_still_not_dispensed() {
+    let Some(lib) = library() else {
+        return;
+    };
+    let Some(mut level) = level(&lib) else {
+        return;
+    };
+    let at = BlockPos::new(2, FLOOR + 1, 2);
+    let cube = Stack::new("minecraft:sulfur_cube_bucket", 1);
+    dispenser(&mut level, at, "east", cube);
+    level.unsupported.clear();
+    level.dispense_from(at, false);
+    assert_eq!(
+        held(&level, at),
+        [("minecraft:sulfur_cube_bucket".to_owned(), 1)]
+    );
+    assert!(level.spawned.is_empty());
+    assert_eq!(
+        level.unsupported,
+        ["dispensing minecraft:sulfur_cube_bucket"]
+    );
+}
