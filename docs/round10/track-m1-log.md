@@ -33,6 +33,7 @@ Files under `third_party/minecraftoss` this track patched or added.
 - Patched (pandas-thunder 1, hook H4): `player/src/lib.rs` (`World::raining`, `World::thundering`), `world/src/level/fire.rs` (`Level::is_raining` made `pub` with vanilla's `canHaveWeather`, `Level::is_thundering`).
 - Changed again, no new file (pandas-thunder 2): `entities/src/world/families/land/pandas.rs` (`scare`, the thunder half of `worry`), `entities/src/world/families/land/pandas/tests.rs` (its test, `Grove.thunder` and `Grove.pool`).
 - Changed again, no new file (m1b review fix 1): `entities/src/world/families/land/pandas/tests.rs` (two statements wrapped as rustfmt wants).
+- Patched (foxes-live 1, hook): `entities/src/world/families.rs` (`Family::spared_blocks` and the generic `Exposed` impl's `spared_blocks`), `entities/src/world/hazards.rs` (`Exposed::spared_blocks`, passed on by `blocks_act`), `entities/src/inside_blocks.rs` (`block_effects` takes the spared blocks and skips their `entityInside`; its test), `entities/src/world/families/pests/probe.rs` (the probe's `spares`), `entities/src/world/families/tests.rs` (its test). Game code: `crates/minecraft_survival/src/survival.rs` (the player spares nothing).
 
 ## Hooks
 
@@ -51,6 +52,7 @@ Root hooks this track added (M10, "Hooks this track adds").
 - **H2 "Registered Minecraft mobs can scatter item crumbs"** (pandas-eating 2): `ClientFx.item_crumbs: &mut Vec<(String, DVec3, Vec<Vec3>)>` (terrain root `families.rs`, after `poof`), the type of `EntityView.item_crumbs`. Survival's `advance` builds the `ClientFx` with `item_crumbs: &mut self.item_crumbs` (the hook's one line in `entity_view.rs`, a never-edit file), so a family's `client_effects` pushes `(item id, position, velocities)` into the list that `present_crumbs` (`render_anim/src/minecraft_world.rs` for the host, `minecraft_remote.rs` for a friend) already drains into `spawn_item_crumbs`, the eye of ender's and thrown eggs' path. Every crumb is one item particle at its own position with one velocity per entry (`spawn_item` adds a tenth of a random push, as vanilla's `BreakingItemParticle` does). Pandas use it now, foxes (event 45) later; M2's sulfur cube should use this field rather than a `crumbs` field of its own.
 - **H3 "Living Minecraft mobs can drop gifts from loot tables"** (pandas-moods 1): `EntityWorld::family_gift(table, this_type, at)` queues a `FamilyGift` on the root `Families.gifts` and `take_family_gifts()` drains them (entities root `families.rs`; a view made by `clone_where` carries none). `EntityLootBook::roll_table(table, loot_type, this_type)` (`loot.rs`, beside `roll_hero_gift`) rolls any loaded table of that type from its named random sequence over the private `roll_of_type`, with `this_type` as the `THIS_ENTITY` type. The server drains the queue right after `drop_cat_gifts` with one line in `server.rs`, `crate::families::drop_family_gifts(&mut self.mobs, self.entity_loot.as_mut(), &mut self.level)`; the body lives in the terrain root `families.rs`: each gift rolls its table as `minecraft:gift` and every stack goes through `Level::spawn_at_location` at the queued spot (vanilla `dropFromGiftLootTable` with `spawnAtLocation`: the default pickup delay of 10 and the random push of a new `ItemEntity`). A gift without a loot book, of an unknown table or of a table of another type drops nothing. The family decides when to give (vanilla gates the panda's sneeze on `mob_drops`, the armadillo's shedding on nothing). Pandas use it now; armadillos (`gameplay/armadillo_shed`), sniffers (`gameplay/sniffer_digging`) and turtles (`gameplay/turtle_grow`) later.
 - **H4 "Minecraft mobs know when it rains and thunders"** (pandas-thunder 1): `World::raining()` and `World::thundering()` (`player/src/lib.rs`, right after `rain_at`, false by default) answer vanilla's `Level.isRaining` and `Level.isThundering`. The server's `MobWorld` answers them right after its `rain_at` (`server_mobs.rs`) through the level's `is_raining` (now `pub`) and the new `is_thundering` beside it (`level/fire.rs`): a level that can have weather, with the rain level above 0.2, or the thunder level times the rain level above 0.9 (`getThunderLevel(1)` is thunder times rain, so thunder needs rain). There is no `EntityWorld` field and no `world.rs` or `server.rs` line: goals and family ticks see the `World` and ask it where they need it. Pandas use it now (`isScared`), foxes and bees later. The spawner's own `thundering` (`level/spawning.rs:162`) stays M3's to correct; neither touches the other's line.
+- **"Registered Minecraft mobs can be spared by the blocks they walk through"** (foxes-live 1): `Family::spared_blocks(mob) -> &'static [&'static str]` (root `families.rs`, beside `fire_immune`, `&[]` by default) and a defaulted `Exposed::spared_blocks` beside `fire_immune` (`hazards.rs`), which the generic `impl Exposed for FamilyMob<S>` answers from the family. `blocks_act` passes it to `inside_blocks::block_effects`, which now takes `spared: &[&str]` and skips the `entityInside` of a spared block (vanilla `SweetBerryBushBlock.entityInside` returns at once for `EntityTypes.FOX` and `EntityTypes.BEE`: no `makeStuckInBlock`, no prick); the block still counts as visited and still advances the effect step, as vanilla's walk does. The player's own walk (`survival.rs`) passes `&[]`. Foxes use it now, bees later.
 
 ## Protocol
 
@@ -1016,4 +1018,33 @@ One line for every step of segment m1b (pandas-live, pandas-drawn, pandas-eating
 
 ```
 IW4L_MINECRAFT_KIT=minecraft:panda_spawn_egg*16,minecraft:bamboo*64,minecraft:bamboo*64,minecraft:bone_meal*32,minecraft:cake,minecraft:cake,minecraft:cake,minecraft:iron_sword,minecraft:bow,minecraft:arrow*64,minecraft:shield,minecraft:flint_and_steel,minecraft:cactus*4,minecraft:sand*8,minecraft:cobblestone*64,minecraft:zombie_spawn_egg*2,minecraft:spawner,minecraft:golden_dandelion*2,minecraft:water_bucket,minecraft:water_bucket,minecraft:iron_shovel,minecraft:cooked_beef*32
+```
+
+## Segment m1c
+
+### Group foxes-live
+
+#### 1. Registered Minecraft mobs can be spared by the blocks they walk through
+
+After 1a2f03c1 (`r10-m1c-base`).
+
+- **javap this round:** `SweetBerryBushBlock.entityInside` starts with `if (!(entity instanceof LivingEntity) || entity.is(EntityTypes.FOX) || entity.is(EntityTypes.BEE)) return;`, so a fox or a bee is neither held (`makeStuckInBlock` 0.8, 0.75, 0.8) nor pricked by a bush. It is the only block of 26.3 that spares mobs by type.
+- **Changed (vendored entities crate):**
+  - `world/families.rs`: `Family::spared_blocks(mob) -> &'static [&'static str]`, `&[]` by default, beside `fire_immune`; the generic `impl Exposed for FamilyMob<S>` answers `Exposed::spared_blocks` from it.
+  - `world/hazards.rs`: `Exposed::spared_blocks`, `&[]` by default, beside `fire_immune`; `blocks_act` passes it to `block_effects`.
+  - `inside_blocks.rs`: `block_effects(world, body, old_position, moves, spared)` skips the `entityInside` (`inside_block`) of a block whose id is spared. The block is still visited and still advances the collector's step, as vanilla's `checkInsideBlocks` does before it calls `entityInside`.
+  - `world/families/pests/probe.rs`: the test probe's `spares` (empty), so the root test can spare a block.
+- **Changed (game code):** `crates/minecraft_survival/src/survival.rs`: the player's own `block_effects` call passes `&[]`.
+- **Tests added:** `inside_blocks::tests::a_spared_block_neither_holds_nor_pricks` (a body moving through a grown bush is held and pricked; sparing the bush gives no effect; sparing another block changes nothing), `world::families::tests::a_registered_mob_spared_by_berry_bushes_walks_through_unhurt` (two probes pushed through grown bushes: the plain one loses a heart and is held, the one that spares bushes keeps its health, is not held and goes on through).
+- **Decisions:**
+  - Decision 1 as recommended: one `spared_blocks` hook rather than a fox-only workaround; bees (M1-10) reuse it.
+  - The hook takes the mob (`spared_blocks(mob)`, as `fire_immune(mob)` does) rather than nothing, as M1-4 wrote it, so the root test's probe can spare per mob. A family that always spares the same blocks ignores the argument.
+  - The skip sits in `block_effects` around the one `inside_block` call (a separate line from E3's `Hazard::Fall` beside `InWall` and `Cramming`), so `inside_block` and its tests keep their signature.
+- **Runs:** `test -p minecraftoss-entities --locked --lib spared` (2 new tests passed), `check -p launcher --locked` on this commit alone (green; only the old warnings).
+- **Test steps:** nothing new to see; no family spares a block yet (foxes do from the next commit). Release build, survival, Normal.
+  1. Plant sweet berries on grass, bone-meal them until the bush is red, then walk into it: you are slowed and pricked as before. **m1-hook-spared-1**
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:sweet_berries*16,minecraft:bone_meal*16
 ```

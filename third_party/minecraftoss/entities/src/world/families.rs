@@ -610,6 +610,10 @@ pub trait Family: Clone + Send + Sized + 'static {
         hazards::fire_immune(mob.core.kind)
     }
 
+    fn spared_blocks(_mob: &FamilyMob<Self>) -> &'static [&'static str] {
+        &[]
+    }
+
     fn breathes_water(mob: &FamilyMob<Self>) -> bool {
         crate::wither::is_undead(mob.core.kind)
     }
@@ -955,6 +959,10 @@ impl<S: Family> Exposed for FamilyMob<S> {
 
     fn fire_immune(&self) -> bool {
         S::fire_immune(self)
+    }
+
+    fn spared_blocks(&self) -> &'static [&'static str] {
+        S::spared_blocks(self)
     }
 }
 

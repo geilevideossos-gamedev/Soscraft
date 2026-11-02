@@ -657,7 +657,7 @@ impl Survival {
         if motion.on_ground {
             body.supporting_block = standing_on(world, feet);
         }
-        let effects = if self.no_physics { Vec::new() } else { block_effects(world, &body, DVec3::from_array(from), &[]) };
+        let effects = if self.no_physics { Vec::new() } else { block_effects(world, &body, DVec3::from_array(from), &[], &[]) };
         let before = self.fire_ticks;
         let was_freezing = self.ticks_frozen > 0;
         self.stuck = false;

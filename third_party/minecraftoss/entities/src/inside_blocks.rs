@@ -378,7 +378,7 @@ fn cauldron_content(block: &minecraftoss_player::Block, pos: Pos) -> Option<(boo
 /// during the walk, then the collected effects). `moves` are the moves
 /// this tick; with none, the entity counts as having moved from
 /// `old_position` to where it is. The caller stops once the mob dies.
-pub fn block_effects(world: &impl World, body: &Body, old_position: DVec3, moves: &[Move]) -> Vec<BlockEffect> {
+pub fn block_effects(world: &impl World, body: &Body, old_position: DVec3, moves: &[Move], spared: &[&str]) -> Vec<BlockEffect> {
     let mut finals: Vec<Move> = moves.to_vec();
     match finals.last() {
         None => finals.push(Move { from: old_position, to: body.position, delta: None }),
@@ -427,7 +427,9 @@ pub fn block_effects(world: &impl World, body: &Body, old_position: DVec3, moves
                     return true;
                 }
                 collector.advance(step);
-                inside_block(&block, pos, pos == feet, collector, now, moved_horizontally);
+                if !spared.contains(&block.id.as_str()) {
+                    inside_block(&block, pos, pos == feet, collector, now, moved_horizontally);
+                }
                 if let Some((lava, _, _)) = fluid {
                     collector.advance(step);
                     if lava {
@@ -545,6 +547,26 @@ mod tests {
             true
         });
         assert_eq!(met, vec![((0, 0, 0), 0), ((0, 1, 0), 0)]);
+    }
+
+    struct Bush;
+
+    impl World for Bush {
+        fn block(&self, pos: Pos) -> Option<minecraftoss_player::Block> {
+            (pos == (0, 64, 0)).then(|| minecraftoss_player::Block::new("minecraft:sweet_berry_bush").with("age", "3"))
+        }
+
+        fn set_block(&mut self, _: Pos, _: Option<minecraftoss_player::Block>) {}
+    }
+
+    #[test]
+    fn a_spared_block_neither_holds_nor_pricks() {
+        let body = Body::new(DVec3::new(0.5, 64.0, 0.5), 0.6, 0.7);
+        let old = DVec3::new(0.3, 64.0, 0.5);
+        let held = vec![BlockEffect::Stuck(DVec3::new(f64::from(0.8_f32), 0.75, f64::from(0.8_f32))), BlockEffect::Hurt(Hazard::SweetBerryBush, 1.0)];
+        assert_eq!(block_effects(&Bush, &body, old, &[], &[]), held);
+        assert_eq!(block_effects(&Bush, &body, old, &[], &["minecraft:sweet_berry_bush"]), Vec::new());
+        assert_eq!(block_effects(&Bush, &body, old, &[], &["minecraft:cobweb"]), held, "only the blocks it names");
     }
 
     #[test]

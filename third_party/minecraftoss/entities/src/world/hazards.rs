@@ -22,6 +22,9 @@ pub(crate) trait Exposed {
     fn fire_immune(&self) -> bool {
         false
     }
+    fn spared_blocks(&self) -> &'static [&'static str] {
+        &[]
+    }
 }
 
 pub fn fire_immune(kind: &str) -> bool {
@@ -85,9 +88,10 @@ pub(crate) fn suffocate<W: World>(mob: &mut impl Exposed, world: &W, eye_height:
 /// while it lives, rain putting fire out, the hiss of fire going out, and
 /// the fire timer settling at 0 when not burning.
 pub(crate) fn blocks_act<W: World>(mob: &mut impl Exposed, world: &W, old_position: DVec3, game_time: i64) {
+    let spared = mob.spared_blocks();
     let body = mob.body();
     let moves = std::mem::take(&mut body.moves);
-    let effects = block_effects(world, body, old_position, &moves);
+    let effects = block_effects(world, body, old_position, &moves, spared);
     let before = body.fire_ticks;
     let immune = mob.fire_immune();
     let was_on_fire = before > 0;

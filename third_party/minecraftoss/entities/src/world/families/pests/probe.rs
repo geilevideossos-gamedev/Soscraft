@@ -119,6 +119,7 @@ impl Goal<MonsterGoalContext> for ProbeGoal {
 pub struct Probe {
     pub undead: bool,
     pub fire_immune: bool,
+    pub spares: &'static [&'static str],
     pub immune_to_poison: bool,
     pub leashable: bool,
     pub unpushable: bool,
@@ -154,6 +155,7 @@ impl Family for Probe {
             state: Probe {
                 undead: false,
                 fire_immune: false,
+                spares: &[],
                 immune_to_poison: false,
                 leashable: false,
                 unpushable: false,
@@ -257,6 +259,10 @@ impl Family for Probe {
 
     fn fire_immune(mob: &FamilyMob<Self>) -> bool {
         mob.state.fire_immune
+    }
+
+    fn spared_blocks(mob: &FamilyMob<Self>) -> &'static [&'static str] {
+        mob.state.spares
     }
 
     fn leashable(mob: &FamilyMob<Self>) -> bool {

@@ -513,6 +513,39 @@ fn a_fireball_spares_a_fire_immune_registered_mob() {
     );
 }
 
+struct Bushes;
+
+impl World for Bushes {
+    fn block(&self, pos: Pos) -> Option<Block> {
+        if pos.1 == 64 && (pos.0 == 0 || pos.0 == 6) && (0..=1).contains(&pos.2) {
+            return Some(Block::new("minecraft:sweet_berry_bush").with("age", "3"));
+        }
+        (pos.1 < 64).then(|| Block::new("minecraft:stone"))
+    }
+
+    fn set_block(&mut self, _: Pos, _: Option<Block>) {}
+}
+
+#[test]
+fn a_registered_mob_spared_by_berry_bushes_walks_through_unhurt() {
+    let mut world = EntityWorld::default();
+    let mut bushes = Bushes;
+    let plain = probe_at(&mut world, KIND, DVec3::new(0.5, 64.0, 0.5));
+    let spared = probe_at(&mut world, KIND, DVec3::new(6.5, 64.0, 0.5));
+    probe_mut(&mut world, spared).state.spares = &["minecraft:sweet_berry_bush"];
+    for id in [plain, spared] {
+        probe_mut(&mut world, id).core.body.velocity = DVec3::new(0.0, 0.0, 0.1);
+    }
+    world.tick(&mut bushes);
+    let plain = probe(&world, plain);
+    assert_eq!(plain.core.health, probe::MAX_HEALTH - 1.0, "pricked");
+    assert!(plain.core.body.stuck.is_some(), "held");
+    let spared = probe(&world, spared);
+    assert_eq!(spared.core.health, probe::MAX_HEALTH);
+    assert_eq!(spared.core.body.stuck, None);
+    assert!(spared.core.body.position.z > 0.55, "it went on through");
+}
+
 #[test]
 fn a_registered_mob_that_deflects_turns_arrows_and_fireballs_back() {
     let mut world = EntityWorld::default();
