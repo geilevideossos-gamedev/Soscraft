@@ -66,21 +66,21 @@ Not a vanilla mob: the boss of track F (`docs/round10/track-f.md`, `docs/ELDEN-R
 |---|---|---|---|---|---|---|---|---|---|
 | 25 | Squid | oceans, rivers | category only | swimming (P2), swim impulse, ink | M | `squids` | 64 | left | |
 | 26 | Glow squid | underground water (dormant today) | spawn row and rules | glow ink, glow | S | `squids` | 64 | left | |
-| 27 | Cod | oceans | category only | swimming (P2), schools, flopping, bucket | L | `fish` | 65 | left | |
-| 28 | Salmon | oceans, rivers | category only | sizes, bucket | L | `fish` | 65 | left | |
-| 29 | Tropical fish | warm oceans, lush caves | category only | patterns, bucket | L | `fish` | 65 | left | |
-| 30 | Pufferfish | warm oceans | category only | puffing, poison, bucket | L | `fish` | 65 | left | |
+| 27 | Cod | oceans | category only; its bucket pours water and lets out a dormant cod | swimming (P2), schools, flopping, bucket | L | `fish` | 65 | left | |
+| 28 | Salmon | oceans, rivers | category only; its bucket pours water and lets out a dormant salmon | sizes, bucket | L | `fish` | 65 | left | |
+| 29 | Tropical fish | warm oceans, lush caves | category only; its bucket pours water and lets out a dormant fish | patterns, bucket | L | `fish` | 65 | left | |
+| 30 | Pufferfish | warm oceans | category only; its bucket pours water and lets out a dormant pufferfish | puffing, poison, bucket | L | `fish` | 65 | left | |
 | 31 | Dolphin | oceans | category only | breathing, treasure leading, dolphin's grace | L | `dolphins` | 66 | left | |
-| 32 | Axolotl | lush caves (dormant today) | size row | brain, playing dead, variants, bucket | L | `axolotls` | 67 | left | |
+| 32 | Axolotl | lush caves (dormant today) | size row; its bucket pours water and lets out a dormant axolotl | brain, playing dead, variants, bucket | L | `axolotls` | 67 | left | |
 | 33 | Frog | swamps (dormant today) | size row | brain, variants, tongue, froglights, keyframes | L | `frogs` | 68 | left | |
-| 34 | Tadpole | frogspawn | | hatching, bucket, growth | M | `tadpoles` | 69 | left | |
+| 34 | Tadpole | frogspawn | its bucket pours water and lets out a dormant tadpole | hatching, bucket, growth | M | `tadpoles` | 69 | left | |
 | 35 | Guardian | ocean monuments | mining fatigue effect | laser, spikes | L | `guardians` | 70 | left | |
 | 36 | Elder guardian | ocean monuments | mining fatigue effect | elder curse, shares `guardians` | L | `guardians` | 70 | left | |
 | 37 | Nautilus | oceans (26.3) | | brain, riding (D0 mount hooks), dash, keyframes | L | `nautiluses` | 71 | left | |
 | 38 | Zombie nautilus | oceans (26.3) | | drowned rider, shares `nautiluses` | L | `nautiluses` | 71 | left | |
-| 49 | Sulfur cube | sulfur caves (26.3) | `AbstractCubeMob` like the slime; `Bucketable`, `Shearable` | bucket, shearing, archetypes, fuse | M-L | `sulfur_cubes` | 72 | left | |
+| 49 | Sulfur cube | sulfur caves (26.3) | `AbstractCubeMob` like the slime; `Bucketable`, `Shearable`; its bucket lets out a dormant cube | bucket, shearing, archetypes, fuse | M-L | `sulfur_cubes` | 72 | left | |
 
-Key 79 is M2-1's `#[cfg(test)]` probe `minecraft:swim_probe` (`world/families/water/swimming/swim_probe.rs`); 73-78 stay free. M2-1's shared hooks, which make no mob live on their own: `Family::breath` with vanilla's lungs, the water animals' gills (squids, the four fish, tadpoles) and a family's own air (axolotls, nautiluses), the dolphin's 4800 air as lungs ("Registered Minecraft mobs breathe like vanilla water animals", after 4c42b0ae). `Family::swim_sounds` and `Family::quiet_steps`: a family's own swim and splash, and no steps for the fish, tadpoles and nautiluses, which still swim aloud ("Registered Minecraft mobs make their own swim and step sounds", after 0fa9ec48). M2-1's water paths, which M2's swimmers and M1's turtles use: the A* over any node evaluator ("Minecraft path search takes any node evaluator", after 287abc2f), vanilla's swim evaluator with the dolphin's breaching, the amphibious mode of the walk search with the shallow preference, `WaterNav` with `tick_water` in the navigation, and `water_bound_random_position` with an optional home ("Minecraft mobs find paths through water like vanilla swimmers and amphibians", after d0c0cd7b).
+Key 79 is M2-1's `#[cfg(test)]` probe `minecraft:swim_probe` (`world/families/water/swimming/swim_probe.rs`); 73-78 stay free. M2-1's shared hooks, which make no mob live on their own: `Family::breath` with vanilla's lungs, the water animals' gills (squids, the four fish, tadpoles) and a family's own air (axolotls, nautiluses), the dolphin's 4800 air as lungs ("Registered Minecraft mobs breathe like vanilla water animals", after 4c42b0ae). `Family::swim_sounds` and `Family::quiet_steps`: a family's own swim and splash, and no steps for the fish, tadpoles and nautiluses, which still swim aloud ("Registered Minecraft mobs make their own swim and step sounds", after 0fa9ec48). M2-1's water paths, which M2's swimmers and M1's turtles use: the A* over any node evaluator ("Minecraft path search takes any node evaluator", after 287abc2f), vanilla's swim evaluator with the dolphin's breaching, the amphibious mode of the walk search with the shallow preference, `WaterNav` with `tick_water` in the navigation, and `water_bound_random_position` with an optional home ("Minecraft mobs find paths through water like vanilla swimmers and amphibians", after d0c0cd7b). M2-1's mob buckets: the seven bucket rows (`world/src/level/mob_bucket.rs`), emptying one pours its water (none for the sulfur cube) with its own splash and lets out its mob from the bucket's data with `FromBucket`, waiting dormant until its family is live ("Minecraft mob buckets pour their water and let out the mob they hold", after 166f11a8).
 
 ## M3: night, built mobs and the horse family (group `night`, bytes 80-95)
 

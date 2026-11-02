@@ -167,7 +167,7 @@ mod land;
 mod night;
 pub(crate) mod pests;
 mod trial;
-mod water;
+pub mod water;
 
 #[cfg(test)]
 mod tests;

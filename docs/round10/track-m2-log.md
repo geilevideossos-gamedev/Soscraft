@@ -17,6 +17,8 @@ Files under `third_party/minecraftoss` this track patched or added.
 - Added (water-paths 1): `entities/src/walk_path/tests.rs` (test only).
 - Patched (water-paths 2): `entities/src/navigation.rs` (`WaterNav`, `plan_water_path`, `can_update_path`, `tick_water`, `#[cfg(test)] mod tests;`), `entities/src/stroll.rs` (`water_bound_random_position`, `#[cfg(test)] mod tests;`). Changed again: `entities/src/walk_path.rs` (the amphibious mode, `SwimEvaluator`) and its test file.
 - Added (water-paths 2): `entities/src/navigation/tests.rs`, `entities/src/stroll/tests.rs` (both test only).
+- Patched (water-buckets 1): `world/src/level/mod.rs` (`pub mod mob_bucket;` after `pub mod dispenser;`).
+- Added (water-buckets 1): `world/src/level/mob_bucket.rs` (the seven bucket rows, `entity_data`, `Level::empty_mob_bucket`), `world/src/level/mob_bucket/tests.rs` (test only).
 
 ## Hooks
 
@@ -30,26 +32,30 @@ Root hooks this track added (M20, "Owners of shared pieces"). The shared path pi
 
 ## Protocol
 
-No commit of this track has changed a `ToClient`/`ToServer` message or the codec yet. `minecraft_net::PROTOCOL` is not bumped here.
+No commit of this track has changed a `ToClient`/`ToServer` message or the codec yet. `minecraft_net::PROTOCOL` is not bumped here. The mob buckets (water-buckets 1) add `Change::MobBucket` and `Command::EmptyMobBucket`, which stay in-process and are not serialized: a friend's click runs on the host.
 
 ## State doc changes
 
-None yet: the hooks change nothing a player sees.
+- `docs/MINECRAFT-SURVIVAL.md` (water-buckets 1): "Cod, salmon, tropical fish, pufferfish, axolotl and tadpole buckets pour their water with their own splash (a hiss in the Nether; in creative the mob bucket stays in the hand); the sulfur cube bucket pours nothing. Each lets out its mob with the bucket's data and `FromBucket`; until the mob's family is live it is kept in the world but not shown."
 
 ## Game events still to add
 
-None yet.
+None yet. The mob bucket posts `entity_place` at the block the mob comes out in (`Level::empty_mob_bucket`, water-buckets 1); its `fluid_place` comes from `empty_bucket_into`, as for every water bucket.
 
 ## Left for later
 
 - **Water paths (water-paths 2):** the 26.3 shelf mushroom (`ShelfMushroomBlock`) refuses every path, water ones too, but its block ids are not known here, so `refuses_water_paths` leaves it out.
+- **Mob buckets (water-buckets 1):**
+  - `MobBucketItem.spawn` plays the new mob's ambient sound; a dormant kind has none, so each family plays it when it goes live (`fish-buckets`, `axolotls-buckets`, the tadpoles, the sulfur cube's items group).
+  - The landing height uses the kind's spawn-row width; until a family adds its row (`squids-live`, `fish-spawning`, ..) it is the spawn eggs' 0.6.
+  - The family components (salmon size, tropical pattern, axolotl variant, sulfur cube content) start empty in the rows (`MobBucket.components`); each family group fills its own.
 
 ## Combined kit
 
-Everything this track's test steps need so far (11 stacks):
+Everything this track's test steps need so far (24 stacks):
 
 ```
-IW4L_MINECRAFT_KIT=minecraft:rabbit_spawn_egg*4,minecraft:polar_bear_spawn_egg*2,minecraft:silverfish_spawn_egg*2,minecraft:zombie_spawn_egg*2,minecraft:drowned_spawn_egg*2,minecraft:cow_spawn_egg*2,minecraft:water_bucket,minecraft:glass*16,minecraft:stone*64,minecraft:iron_shovel,minecraft:iron_sword
+IW4L_MINECRAFT_KIT=minecraft:rabbit_spawn_egg*4,minecraft:polar_bear_spawn_egg*2,minecraft:silverfish_spawn_egg*2,minecraft:zombie_spawn_egg*2,minecraft:drowned_spawn_egg*2,minecraft:cow_spawn_egg*2,minecraft:water_bucket,minecraft:glass*16,minecraft:stone*64,minecraft:iron_shovel,minecraft:iron_sword,minecraft:cod_bucket,minecraft:salmon_bucket,minecraft:tropical_fish_bucket,minecraft:axolotl_bucket,minecraft:tadpole_bucket,minecraft:sulfur_cube_bucket,minecraft:lava_bucket,minecraft:bucket*16,minecraft:cauldron,minecraft:campfire,minecraft:obsidian*10,minecraft:flint_and_steel
 ```
 
 ## Segment m2a
@@ -227,4 +233,78 @@ After d0c0cd7b.
 
 ```
 IW4L_MINECRAFT_KIT=minecraft:drowned_spawn_egg*2,minecraft:cow_spawn_egg*2,minecraft:zombie_spawn_egg*2,minecraft:water_bucket,minecraft:iron_shovel,minecraft:iron_sword
+```
+
+### Group water-buckets
+
+#### 1. Minecraft mob buckets pour their water and let out the mob they hold
+
+After 166f11a8.
+
+- **javap (26.3 `client.jar`):**
+  - `Items`: the cod, salmon, tropical fish and pufferfish buckets are `MobBucketItem(type, WATER, BUCKET_EMPTY_FISH)`; the axolotl's and tadpole's use `BUCKET_EMPTY_AXOLOTL` and `BUCKET_EMPTY_TADPOLE`; `sulfur_cube_bucket` is `MobBucketItem(SULFUR_CUBE, EMPTY, BUCKET_EMPTY_SULFUR_CUBE)`. All stack to 1 and start with an empty `bucket_entity_data`. `SoundEvents`: `item.bucket.empty_{fish,axolotl,tadpole,sulfur_cube}` and `item.bucket.fill_{fish,axolotl,tadpole,sulfur_cube}`.
+  - `BucketItem.use`: the ray-cast uses `getFluidContext()` (`NONE` for mob buckets). `posToPlace` is the clicked block when it is a `LiquidBlockContainer` and the content is `WATER`, else the block against the clicked face. Then `emptyContents(player, level, posToPlace, hit)` (which may retry against the face), `checkExtraContent(player, level, stack, posToPlace)` with the first `posToPlace`, and `createFilledResult(stack, player, getEmptySuccessItem)`: an empty bucket, or the same stack for a player with infinite materials.
+  - `MobBucketItem.emptyContents`: an `EMPTY` content only plays the empty sound and succeeds; otherwise `BucketItem.emptyContents`, whose evaporation branch hisses and never calls `playEmptySound`. `playEmptySound` plays the item's own sound (`NEUTRAL`, 1, 1) instead of `item.bucket.empty`.
+  - `MobBucketItem.checkExtraContent`: on the server `spawn`, then `gameEvent(player, ENTITY_PLACE, posToPlace)`. `spawn`: `EntityType.create(level, createDefaultStackConfig(level, stack, null), posToPlace, BUCKET, true, false)`, then for a `Bucketable` `loadFromBucketTag(bucket_entity_data)` and `setFromBucket(true)`, then `addFreshEntityWithPassengers` and `playAmbientSound`.
+  - `EntityType.create(.., true, false)`: the entity at `(x + 0.5, y + 1, z + 0.5)`, `getYOffset` (`1 + Shapes.collide(Y, box, collisions of AABB(pos), -1)`), `snapTo(x + 0.5, y + offset, z + 0.5, wrapDegrees(level.random.nextFloat() * 360), 0)`, head and body yaw as the yaw, `finalizeSpawn(.., BUCKET, null)`, then the stack's components and custom name (`appendDefaultStackConfig`).
+  - `Bucketable.loadDefaultDataFromBucketTag`: `NoAI`, `Silent`, `NoGravity`, `Glowing` and `Invulnerable` from `getBoolean` when present, `PersistenceRequired` only when true, `Health` from `getFloat`. The axolotl also reads `Age`, `AgeLocked` and `HuntingCooldown`, the tadpole `Age` and `AgeLocked`, the sulfur cube `age` and `age_locked` (left to its group's converters).
+- **Changed:**
+  - Vendored world crate, new `level/mob_bucket.rs`:
+    - `MobBucket` rows for the seven buckets in `MOB_BUCKETS` (item, kind, water, empty and fill sounds, the row's bucket keys, and a component converter that starts as `no_components`), with `mob_bucket(item)`.
+    - `entity_data(row, components)`: the bucket's `bucket_entity_data` read as vanilla's `loadDefaultDataFromBucketTag` (flags as bytes, `PersistenceRequired` only when true, `Health` as a float), the row's keys, `CustomName` from `minecraft:custom_name`, the row's converter, and `FromBucket: 1b`. Anything else in the data (`Pos`, `UUID`, unknown keys) is ignored.
+    - `Level::empty_mob_bucket(pos, at, item, components)`: `empty_bucket_into(pos, true)` for a water row (false when it cannot pour), then the mob at `at`: vanilla's landing height from the collision shapes there, a yaw from the level random, `summon_mob(kind, .., None, yaw)` (the creature finalize; an unsimulated kind gets its fresh tag), the bucket data merged in, the tag pushed to `Level.spawned`, and `entity_place` posted.
+  - `world/src/level/mod.rs`: `pub mod mob_bucket;` after `pub mod dispenser;`.
+  - Terrain:
+    - `families.rs`: `mod water;` becomes `pub mod water;`. `families/water.rs` gains `pub mod buckets;`.
+    - New `families/water/buckets.rs`: `MobBucketUse { pos, at, item, components }` and `bucket_use`. It finds the row by item and aims as a water bucket (`pour`, now `pub(crate)` with `liquid_container`). `at` is vanilla's first `posToPlace`. The empty sound becomes the row's (douse sounds and the Nether hiss stay). The sulfur cube goes against the clicked face with only its sound. The item's components travel as a tag, and the result is an empty bucket.
+    - `bucket.rs`: `Change::MobBucket(MobBucketUse)` after `Server`; the first lines of `bucket_use` hand a mob bucket to `buckets::bucket_use`; `evaporated` also answers a mob bucket (the smoke); the test helper's arm.
+    - `campfire.rs`: `doused` also answers a mob bucket (the douse puff).
+    - `server.rs`: `Command::EmptyMobBucket { player, bucket }` after `ItemOnBlock`; `ServerHandle::empty_mob_bucket` after `item_on_block`; its dispatch after `ItemOnBlock`'s (into `out.item_uses`, acting as the player); `ServerSim::empty_mob_bucket` after `item_on_block_by`, which hands the new mob to the entity world at once (`take_spawned`; an unsimulated kind waits dormant).
+  - Survival: `Entities::empty_mob_bucket(player, bucket, sent, infinite)` after `item_on_block` (in creative the answered use keeps the mob bucket), and its `actions.rs` arm after `Change::Server`.
+- **Tests added:**
+  - `level::mob_bucket::tests::a_cod_bucket_pours_water_and_summons_a_cod_from_the_bucket`:
+    - the water is placed, and the cod stands at the block's centre on its floor;
+    - `FromBucket`, `Health` 1.5 as a float, `NoAI`, `PersistenceRequired` and `Silent` are kept; `Pos`, an unknown key and another row's key are ignored;
+    - its yaw is within ±180, and `fluid_place` and `entity_place` are posted;
+    - the cod from a bucket without data is still `FromBucket`, and `PersistenceRequired: 0b` leaves the default.
+  - `level::mob_bucket::tests::a_bucketed_mob_lands_on_what_the_water_went_into` (into a bottom slab: waterlogged, the axolotl on top at +0.5 with its `Age` and `AgeLocked`; into stone nothing pours and nothing comes out; a plain water bucket is no mob bucket).
+  - `level::mob_bucket::tests::a_sulfur_cube_bucket_pours_nothing` (no water, the cube with `FromBucket`, only `entity_place`).
+  - `level::mob_bucket::tests::a_fish_bucket_in_the_nether_hisses_and_still_leaves_its_fish` (no water in the Nether, the salmon still comes out; the hiss is the client's and is checked in the terrain test below).
+  - `level::mob_bucket::tests::the_bucket_data_keeps_vanillas_keys_with_their_types` (number types become bytes and a float, `UUID` is dropped, `CustomName` comes from the name component; the seven rows).
+  - `families::water::buckets::tests::a_fish_bucket_aims_like_water_with_its_own_splash` (through `bucket::bucket_use`: the empty bucket and the fish splash; each row's own splash; into a waterloggable block; the cube against the face; sneaking pours on top while the fish comes out where the bucket aimed).
+  - `families::water::buckets::tests::a_fish_bucket_hisses_where_water_evaporates_and_douses_a_campfire` (only the hiss, the smoke and the fish; the douse sound before the fish splash).
+  - `families::water::buckets::tests::a_mob_bucket_sends_its_components_and_other_items_pass`.
+  - `server::tests::an_emptied_mob_bucket_spawns_its_tag_with_the_bucket_data` (the water; the cod handed over at once and dormant at the block's centre with its data; the data's `Motion` ignored; into stone nothing).
+  - `entities::tests::a_friend_empties_a_fish_bucket_through_the_host` (the friend's use is answered only to the friend, with the empty bucket; the water is there for the friend's next bucket; in creative the answer keeps the fish bucket).
+- **Decisions:**
+  - **The seven rows live in the world crate** (`level/mob_bucket.rs`), not in terrain's `buckets.rs`. Dispensers (world crate, commit 3) empty the same buckets and cannot see terrain, so one table serves players, dispensers and the pickup. Terrain's `buckets.rs` holds the player's side (`bucket_use`, and `Bucketable` and `pickup` next).
+  - **`Change::MobBucket(MobBucketUse { pos, at, item, components })`** instead of the brief's `{ pos, water, kind, data }`:
+    - the item names the row, and with it the water and the kind;
+    - `at` is vanilla's first `posToPlace`, where the mob comes out, which differs from the water's block when sneaking against a waterloggable block;
+    - the item's components travel whole, so the level reads the bucket data, the name and later the family components the same way for players and dispensers.
+  - **The yaw comes from the level random on the server** (vanilla `EntityType.create`), not from the client's view random as `hatch_egg` draws it: dispensers need the server's draw anyway.
+  - **The landing height is computed on the server** with vanilla's `getYOffset` (`block_collisions` and `collide_shapes`), with the kind's spawn-row width or the spawn eggs' 0.6.
+  - **A player's mob joins at once:** `ServerSim::empty_mob_bucket` takes `Level.spawned` right away, as vanilla's `addFreshEntity` does; a dispensed one waits for the tick's `take_spawned`.
+  - **Creative keeps the mob bucket** (vanilla `getEmptySuccessItem`): `Entities::empty_mob_bucket` drops the answer's result for a player with infinite materials. The plain water bucket still empties in creative in this fork; that is not changed here.
+  - **`pub mod water`**, not `pub(crate)`, in terrain's `families.rs`, folded into this commit as its first need: `crate::bucket` and `crate::server` call into it, and a public path keeps the hooks only later families use (`Bucketable`, `pickup`) free of dead-code warnings.
+  - **The custom name** (`minecraft:custom_name`) names the mob, as vanilla's `appendDefaultStackConfig` does.
+  - **The client-side tests** sit in M2's `families/water/buckets/tests.rs`, with a small world and material rules of their own, rather than in the shared `bucket.rs` test module the brief names.
+- **Protocol:** no message or codec change (`Change` and `Command` are in-process).
+- **Runs:**
+  - `test -p minecraftoss-world --locked --lib mob_bucket`: 5 passed, also with the game data required.
+  - `test -p minecraft_terrain --locked --lib -- bucket an_emptied campfire`: 56 passed.
+  - `test -p minecraft_survival --locked --lib -- a_friend_empties a_friends_picks item_use`: 2 passed, the friend test also with its world required.
+  - `check -p launcher --locked`: green, with only the old render_frame and skate warnings.
+  - The four new files pass `rustfmt --check` with empty output.
+- **Test steps.** Release build, survival, Normal, by day, flat ground in a normal world. No mob is shown yet: the fish, axolotls, tadpoles and sulfur cubes come with later segments, and until then they are kept in the world. Name each screenshot by its label.
+  1. Pour the water bucket and take the water back with an empty bucket. Pour the lava bucket and take it back. Use the water bucket on the cauldron. Everything works as before.
+  2. Place stone 3 blocks away and use the cod bucket on it: a water source appears, you hear the fish-bucket splash (not the plain pour), and you hold an empty bucket. **m2-buckets-1**
+  3. Use the axolotl bucket and the tadpole bucket on the stone too: each pours water with its own splash. Use the sulfur cube bucket on the side of a block: no water, its own sound, and you hold an empty bucket.
+  4. Place the campfire. `/gamemode creative`, then use the salmon bucket on the ground: water appears and you keep the salmon bucket. Use it on the lit campfire: the fire goes out with a hiss and a puff of smoke. `/gamemode survival`.
+  5. Build a Nether portal from the obsidian and light it with the flint and steel. In the Nether, use the tropical fish bucket on the ground: it hisses with a little smoke and leaves no water, and you hold an empty bucket. **m2-buckets-2**
+  6. Friend window (`scripts\mp-local.ps1`, the friend with the same kit): the friend uses the cod bucket on the ground. Both windows show the water, the friend hears the splash and holds an empty bucket. **m2-buckets-3**
+- **Kit** (14 stacks):
+
+```
+IW4L_MINECRAFT_KIT=minecraft:cod_bucket,minecraft:salmon_bucket,minecraft:tropical_fish_bucket,minecraft:axolotl_bucket,minecraft:tadpole_bucket,minecraft:sulfur_cube_bucket,minecraft:water_bucket,minecraft:lava_bucket,minecraft:bucket*16,minecraft:cauldron,minecraft:campfire,minecraft:obsidian*10,minecraft:flint_and_steel,minecraft:stone*64
 ```

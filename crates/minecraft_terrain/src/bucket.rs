@@ -144,6 +144,7 @@ impl Sound {
 pub enum Change {
     Set(Pos, Block),
     Server(Pos, ItemOnBlock),
+    MobBucket(crate::families::water::buckets::MobBucketUse),
     ThrowEye(crate::ender_eye::EyeThrow),
     Rocket(i32),
     LaunchRocket(crate::firework::RocketLaunch),
@@ -207,7 +208,7 @@ fn holds_water(block: &Block) -> bool {
     block.id != "minecraft:lava" && minecraftoss_player::holds_fluid(block)
 }
 
-fn liquid_container(block: &Block) -> bool {
+pub(crate) fn liquid_container(block: &Block) -> bool {
     block.property("waterlogged").is_some() || WATER_PLANTS.contains(&block.id.as_str())
 }
 
@@ -295,8 +296,11 @@ pub fn bucket_use(
     world: &impl World,
     materials: &impl Materials,
     held: &ItemStack,
-    random: impl FnMut() -> f32,
+    mut random: impl FnMut() -> f32,
 ) -> Option<ItemUse> {
+    if let Some(used) = crate::families::water::buckets::bucket_use(player, world, materials, held, &mut random) {
+        return Some(used);
+    }
     let fluid = Fluid::of_bucket(&held.id);
     let empty = held.id == BUCKET;
     let powder_snow = held.id == POWDER_SNOW_BUCKET;
@@ -349,7 +353,7 @@ fn fill(player: &Player, world: &impl World) -> Option<ItemUse> {
     })
 }
 
-fn pour(
+pub(crate) fn pour(
     player: &Player,
     world: &impl World,
     materials: &impl Materials,
@@ -385,7 +389,7 @@ fn pour(
 }
 
 pub fn evaporated(outcome: &ItemUse) -> Option<Pos> {
-    let Change::Server(pos, ItemOnBlock::EmptyBucket { water: true }) = outcome.change else {
+    let (Change::Server(pos, ItemOnBlock::EmptyBucket { water: true }) | Change::MobBucket(crate::families::water::buckets::MobBucketUse { pos, .. })) = outcome.change else {
         return None;
     };
     outcome
@@ -544,6 +548,7 @@ mod tests {
         match used.change {
             Change::Server(pos, action) => Some((pos, action)),
             Change::Set(..)
+            | Change::MobBucket(..)
             | Change::ThrowEye(..)
             | Change::Rocket(..)
             | Change::LaunchRocket(..)
