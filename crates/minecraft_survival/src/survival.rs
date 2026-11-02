@@ -910,6 +910,7 @@ impl Survival {
     }
 
     pub fn struck(&mut self, damage: f32, blocked: f32, armor: Armor, from: Option<[f64; 3]>, cause: DamageCause, effect: Option<(EffectKind, u32, u8)>) -> bool {
+        crate::lightning::burn(&mut self.fire_ticks, &self.protection, cause);
         if damage <= blocked {
             self.hurt_blocked(cause);
             return false;

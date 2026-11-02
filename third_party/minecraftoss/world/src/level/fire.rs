@@ -34,7 +34,7 @@ impl Level<'_> {
     }
 
     /// `FireBlock.canSurvive`.
-    fn fire_survives(&self, pos: BlockPos) -> bool {
+    pub(super) fn fire_survives(&self, pos: BlockPos) -> bool {
         self.sturdy_below(pos) || self.valid_fire_location(pos)
     }
 
@@ -49,7 +49,7 @@ impl Level<'_> {
 
     /// `ServerLevel.canSpreadFireAround`: within the game rule's radius of
     /// a player, or everywhere at -1.
-    fn can_spread_fire_around(&self, pos: BlockPos) -> bool {
+    pub(super) fn can_spread_fire_around(&self, pos: BlockPos) -> bool {
         let radius = self.fire_spread_radius;
         if radius == -1 {
             return true;

@@ -83,6 +83,8 @@ pub struct LightningData {
     pub life: i32,
     pub flashes: i32,
     pub visual_only: bool,
+    pub seed: i64,
+    pub uuid: [i32; 4],
 }
 
 #[derive(Clone, Debug)]
@@ -148,7 +150,7 @@ pub struct Entity {
 pub const NEVER_PICK_UP: i32 = 32767;
 
 impl Entity {
-    fn new(id: i32, kind: EntityKind, pos: [f64; 3], width: f32, height: f32) -> Self {
+    pub(super) fn new(id: i32, kind: EntityKind, pos: [f64; 3], width: f32, height: f32) -> Self {
         Self {
             id,
             kind,
@@ -652,20 +654,17 @@ impl Level<'_> {
     /// draws its seed and flash count from the entity's own random
     /// (unseeded in vanilla).
     pub fn summon_lightning(&mut self, pos: [f64; 3]) -> i32 {
-        use minecraftoss_core::random::RandomSource;
-        self.entity_random.next_i64();
-        let flashes = self.entity_random.next_i32_bound(3) + 1;
-        let data = LightningData { life: 2, flashes, visual_only: false };
-        let entity = Entity::new(0, EntityKind::LightningBolt(data), pos, 0.0, 0.0);
-        self.add_entity(entity)
+        self.add_lightning(pos, false)
     }
 
-    /// `LightningBolt.tick` on a peaceful server without players: no fire.
     fn tick_lightning(&mut self, e: &mut Entity) {
         use minecraftoss_core::random::RandomSource;
         self.base_tick(e);
         let EntityKind::LightningBolt(data) = &e.kind else { return };
         if data.life == 2 {
+            if self.difficulty >= 2 {
+                self.lightning_fire(e, 4);
+            }
             let strike = BlockPos::new(floor(e.pos[0]), floor(e.pos[1] - 1.0e-6), floor(e.pos[2]));
             let state = self.block(strike);
             if self.redstone_kind(state) == Some(super::redstone::Kind::LightningRod) {
@@ -682,17 +681,11 @@ impl Level<'_> {
             } else if data.life < -self.entity_random.next_i32_bound(10) {
                 data.flashes -= 1;
                 data.life = 1;
-                self.entity_random.next_i64();
+                data.seed = self.entity_random.next_i64();
+                self.lightning_fire(e, 0);
             }
         }
-        let EntityKind::LightningBolt(data) = &e.kind else { return };
-        if data.life >= 0 && !data.visual_only {
-            let (x, y, z) = (e.pos[0], e.pos[1], e.pos[2]);
-            let area = Aabb::new(x - 3.0, y - 3.0, z - 3.0, x + 3.0, y + 6.0 + 3.0, z + 3.0);
-            if self.entities_in(&area).any(|o| o.id != e.id) {
-                self.unsupported.push("lightning hitting entities".to_owned());
-            }
-        }
+        self.lightning_strike_entities(e);
     }
 
     /// `LightningBolt.clearCopperOnLightningStrike`: the struck copper is
@@ -726,6 +719,7 @@ impl Level<'_> {
                         if let Some(previous) = self.copper_previous(s) {
                             self.set_block_and_update(candidate, previous);
                         }
+                        self.level_events.push((super::lightning::ELECTRIC_SPARK, candidate, -1));
                         found = Some(candidate);
                         break;
                     }

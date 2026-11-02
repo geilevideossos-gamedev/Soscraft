@@ -337,6 +337,11 @@ impl PlayerQueues {
                 queue.out.hits.push(struck_hit(feet, struck));
             }
         }
+        for struck in &output.players_lightning {
+            if let Some(queue) = self.0.get_mut(&struck.player) {
+                queue.out.hits.push(crate::lightning::hit(struck));
+            }
+        }
         for hit in std::mem::take(&mut output.player_hits) {
             let Some(queue) = self.0.get_mut(&hit.player_id) else {
                 continue;

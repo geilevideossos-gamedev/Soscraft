@@ -86,7 +86,7 @@ Not a vanilla mob: the boss of track F (`docs/round10/track-f.md`, `docs/ELDEN-R
 |---|---|---|---|---|---|---|---|---|---|
 | 39 | Phantom | after 3 sleepless nights | `Player.time_since_rest`; custom spawners (P6); cats exist | `PhantomSpawner`, swoop, daylight burning, cats scare them; the terrain test `live_shulkers_stay_far_from_players_while_dormant_monsters_go` uses the phantom as its dormant monster and must switch kind or drop that half | M | `phantoms` | 80 | left | |
 | 40 | Zombie horse | plains, savanna, snowy plains | spawn row, rules and the jockey finalize (dormant) | `HorseKind::ZombieHorse`, rider, rideable when tamed | M | cow store (`HorseKind`) | 11 | left | |
-| 41 | Skeleton horse | lightning trap | | trap with natural lightning (P8, M3), swimming | M | cow store (`HorseKind`) | 11 | left | |
+| 41 | Skeleton horse | lightning trap | the visual-only bolt `Level::add_lightning(pos, true)` (`lightning-strikes`) | trap with natural lightning (P8, M3), swimming | M | cow store (`HorseKind`) | 11 | left | |
 | 23 | Camel | deserts, desert villages (dormant today) | size row | `HorseKind::Camel`, two riders, sit, dash, keyframes | L | cow store (`HorseKind`) | 11 | left | |
 | 24 | Camel husk | desert husk jockey (dormant today) | size row; the husk's finalize builds the jockey | monster camel with a husk rider | S | cow store (`HorseKind`) | 11 | left | |
 | 45 | Allay | outposts, mansions | | brain, flying (P3 from D0), item collecting, note blocks (needs W's game events), duplication | L | `allays` | 81 | left | |

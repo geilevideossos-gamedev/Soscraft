@@ -45,6 +45,8 @@ pub use withers::{WitherBreak, WitherEntity};
 mod raiders;
 pub use raiders::{celebrate_sound, FireworkLaunch, HeroGift, RaidVillagerEvents, RaiderMut, RaiderView, GIFT_PICKUP_DELAY};
 mod hazards;
+mod lightning;
+pub use lightning::{Bolt, ThunderOutcome};
 mod living;
 mod pushing;
 mod slimes;

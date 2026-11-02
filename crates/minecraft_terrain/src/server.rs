@@ -77,6 +77,7 @@ pub struct ServerSim {
     tridents: Vec<crate::trident::ThrownTrident>,
     next_trident: i32,
     players_struck: Vec<crate::thrown::PlayerStruck>,
+    players_lightning: Vec<crate::lightning::PlayerStrike>,
     players_pushed: Vec<(u64, glam::DVec3)>,
     thrown_hits: Vec<crate::thrown::ThrownHit>,
     worldgen: &'static WorldGen,
@@ -475,6 +476,7 @@ impl ServerSim {
             tridents: Vec::new(),
             next_trident: TRIDENT_IDS,
             players_struck: Vec::new(),
+            players_lightning: Vec::new(),
             players_pushed: Vec::new(),
             thrown_hits: Vec::new(),
             worldgen,
@@ -1897,6 +1899,9 @@ impl ServerSim {
     /// `/summon` for a mob: the level makes its tag (`SummonCommand`), and
     /// it joins the entity world as a loaded mob would.
     pub fn summon(&mut self, kind: &str, position: [f64; 3], nbt: Option<&minecraftoss_core::nbt::Tag>, y_rot: f32) -> Result<(), String> {
+        if kind == crate::lightning::BOLT {
+            return crate::lightning::summon(&mut self.level, position);
+        }
         if let Some(def) = elden_boss::def(kind) {
             if self.level.difficulty == 0 {
                 return Err(crate::elden_save::PEACEFUL.to_owned());
@@ -3626,6 +3631,7 @@ impl ServerSim {
         self.drop_ominous_items();
         self.shoot_dispensed_rockets();
         self.explode_tnt();
+        crate::lightning::strike(&mut self.level, &mut self.mobs, &self.states, &self.mob_tables, &self.blast_players, &mut self.players_lightning);
         self.hear_bells();
         self.level.tick_spawners();
         self.level.unsupported.clear();
@@ -4360,6 +4366,7 @@ pub struct Output {
     pub potion_breaks: Vec<minecraftoss_entities::world::PotionBreak>,
     pub player_potions: Vec<crate::potions::PlayerPotionHit>,
     pub players_struck: Vec<crate::thrown::PlayerStruck>,
+    pub players_lightning: Vec<crate::lightning::PlayerStrike>,
     pub players_pushed: Vec<(u64, glam::DVec3)>,
     /// Creeper blasts this tick (`ClientboundExplodePacket`).
     pub explosions: Vec<minecraftoss_entities::creeper::CreeperExplosion>,
@@ -5061,6 +5068,7 @@ fn run_tick(sim: &mut ServerSim, input: &mut TickInput, normal: bool, out: &mut 
     out.player_potions.extend(sim.take_player_potions());
     out.player_splashes.extend(witch_splashes);
     out.players_struck.extend(sim.take_players_struck());
+    out.players_lightning.append(&mut sim.players_lightning);
     out.players_pushed.extend(sim.take_players_pushed());
     out.players_pushed.extend(sim.mobs.take_player_pushes());
     out.potion_breaks.extend(sim.take_potion_breaks());
@@ -6506,6 +6514,23 @@ mod tests {
         server.set_players(&[at], 0);
         assert!(server.summon("minecraft:zombie", at, None, 0.0).is_err(), "no monsters in peaceful");
         assert!(server.summon("minecraft:cow", at, None, 0.0).is_ok(), "animals come in peaceful");
+    }
+
+    #[test]
+    fn a_summoned_bolt_hurts_mobs_and_players_in_its_box() {
+        let Some((mut server, _)) = door_world() else { return };
+        let spot = [8.5, 200.0, 8.5];
+        server.summon("minecraft:cow", spot, None, 0.0).unwrap();
+        server.summon("minecraft:cow", [16.5, 200.0, 8.5], None, 0.0).unwrap();
+        server.summon(crate::lightning::BOLT, spot, None, 0.0).unwrap();
+        let mut input = TickInput { mob_players: vec![candidate(0, [9.5, 200.0, 8.5]), candidate(1, [20.5, 200.0, 8.5])], ..idle_input() };
+        let mut out = Output::default();
+        run_tick(&mut server, &mut input, true, &mut out);
+        assert_eq!(out.players_lightning, vec![crate::lightning::PlayerStrike { player: 0, at: spot }]);
+        let health: Vec<f32> = server.mobs.cows().iter().map(|cow| cow.cow.health).collect();
+        assert_eq!(health, vec![5.0, 10.0], "the cow under the bolt takes five, the far one nothing");
+        let blocks = &server.level.registries().blocks;
+        assert_eq!(Some(blocks.block_of(server.level.block(minecraftoss_core::BlockPos::new(8, 200, 8)))), blocks.block_by_name("minecraft:fire"), "its block catches fire");
     }
 
     /// A creeper sees the player across a platform, walks up, swells and

@@ -17,6 +17,7 @@ pub mod entity;
 pub mod explosion;
 pub mod falling;
 pub mod fire;
+pub mod lightning;
 pub mod game_event;
 pub mod golem_build;
 pub mod wither_build;
@@ -210,6 +211,7 @@ pub struct Level<'a> {
     pub frame_outputs: HashMap<BlockPos, Vec<(Direction, i32)>>,
     pub chest_openers: HashMap<BlockPos, i32>,
     pub level_events: Vec<(i32, BlockPos, i32)>,
+    pub lightning_hits: Vec<lightning::LightningHit>,
     pub game_events: Vec<game_event::GameEvent>,
     pub acting_player: Option<u64>,
     pub spawn_wardens: bool,
@@ -313,6 +315,7 @@ impl<'a> Level<'a> {
             frame_outputs: HashMap::new(),
             chest_openers: HashMap::new(),
             level_events: Vec::new(),
+            lightning_hits: Vec::new(),
             game_events: Vec::new(),
             acting_player: None,
             spawn_wardens: true,
