@@ -714,7 +714,7 @@ Silverfish and endermites:
 - **R-4.** Use an endermite egg in a cobblestone pen and wait two minutes without touching it: it vanishes.
 - **R-5.** Stand still and throw ender pearls one by one at the ground 10 blocks away. On average one pearl in twenty leaves an endermite where you stood before the teleport; keep throwing until one appears. **Screenshot R5.** `/difficulty peaceful`: no endermite, and the silverfish and endermites vanish. `/difficulty normal`.
 - **R-6.** Build a wall of infested stone bricks and infested stone 3 high and 5 wide. Hatch a silverfish beside it and hit it once without killing it: within a second some of the wall's blocks crack and more silverfish crawl out, each with a small white puff. **Screenshot R6.** Mine an infested stone block with the pickaxe: a silverfish pops out.
-- **R-7.** Build a pen of stone bricks 4 x 4 x 2 with a silverfish inside, step back and `/gamemode creative`. Within about a minute the silverfish dives into a wall block and is gone (without a puff for now, see "Left for later" of 85917c3c). `/gamemode survival`, mine the blocks of that wall: one of them releases it again, with a puff.
+- **R-7.** Build a pen of stone bricks 4 x 4 x 2 with a silverfish inside, step back and `/gamemode creative`. Within about a minute the silverfish dives into a wall block and is gone, with a small white puff where it stood. `/gamemode survival`, mine the blocks of that wall: one of them releases it again, with a puff.
 - **R-8.** Pour lava beside two silverfish: they burn, flash and die. Light TNT among three silverfish: the blast throws and kills them. Dig a hole 1 wide and 2 deep, hatch a silverfish in it, pour water in and put a block on top: after about 15 seconds it flashes red every second and drowns.
 - **R-9.** Throw a splash potion of harming on a silverfish: it dies. Throw the poison splash on another: green swirls, it drops to half a heart and keeps biting.
 - **R-10.** Use an iron golem egg near three silverfish: the golem walks to them and kills them.
@@ -837,6 +837,30 @@ After 45de7c5d.
 IW4L_MINECRAFT_KIT=minecraft:zombie_spawn_egg*4,minecraft:cow_spawn_egg*4,minecraft:rabbit_spawn_egg*4,minecraft:stone*64,minecraft:iron_sword,minecraft:shield,minecraft:cooked_beef*32
 ```
 
+## Review (segment d0b)
+
+The adversarial review of segment d0b (r10-d0b-base to 73bacd48). Each fix is its own commit.
+
+### 1. Minecraft silverfish leave a puff when they merge into stone
+
+After 73bacd48.
+
+- **Defect:** a silverfish that merged into stone (85917c3c) pushed entity event 20, but the generic death retain took the merged mob out of the entity world at the end of the same tick, and the terrain resolves entity events after the tick (`mob_puffs` asks `entity_type` and `body_of`). So the event was always dropped and no poof was drawn, for the host or a friend. Vanilla `SilverfishMergeWithStoneGoal.start` calls `spawnAnim` (entity event 20, sent before the `discard`), so every client draws 20 `POOF` particles where the silverfish stood. The brief (D0-7.3) asks for that poof through E1's entity-event particles once E1 lands, and E1 had landed.
+- **Changed (vendored entities crate, `world.rs`, the registry root):** `EntityWorld.departed`, the registered mobs that left by `core.removed` in the last tick, each with its kind and body. The families' retain at the end of the tick fills it (and clears the previous tick's), and `departed(id)` reads it. A mob that dies is not in it, and nothing else reads it.
+- **Changed (`minecraft_terrain`, `mob_particles.rs`):** `mob_puffs` falls back to `departed` for the kind and the body when the mob has already left, so a removed mob's event in its last tick still draws its puff. The endermite's 2400-tick discard pushes no event and stays without one, as in vanilla.
+- **Tests added:**
+  - `world::families::pests::silverfish::tests::a_merged_silverfish_leaves_its_body_for_its_poof`: the merged silverfish's kind, size and body (where it stood) are in `departed` after the tick it left, no other id is, and the next tick clears it.
+  - `mob_particles::tests::a_silverfish_that_merged_into_stone_still_poofs`: a silverfish in a ring of stone bricks with `mob_griefing` merges, and `mob_puffs` of that tick's events gives exactly one 20-particle `Poof` on its last body at tracking range 8.
+- **Protocol:** no message or codec change (the `Poof` puff is the one 85917c3c added).
+- **Runs:** `test -p minecraftoss-entities --locked --lib` (568 passed), `test -p minecraft_terrain --locked --lib` (1706 passed, 3 ignored, with the 26.3 data), `check -p launcher --locked` (green; only the old render_frame and skate warnings). The changed `mob_particles.rs` and `silverfish.rs` still pass `rustfmt --check --edition 2021` with empty output, and no added line holds a comment.
+- **Test steps.** Release build, survival, Normal, by day, flat open ground in the Overworld, `mob_griefing` on (the default). Step 2 needs two windows (`scripts\mp-local.ps1`). Name each screenshot by its label, `D0-17-1.png`, and for both windows `D0-17-2-host.png` and `D0-17-2-friend.png`.
+  1. Build a pen of stone bricks, 4 x 4 inside and 2 high, on a grass floor. Use a silverfish egg inside, step 6 blocks back and `/gamemode creative`. Within about a minute the silverfish dives into one of the pen's blocks: a small white puff appears where it stood as it vanishes. **Screenshot D0-17-1** of the puff (hatch a few more and keep watching if the first one is missed). `/gamemode survival` and mine the pen's blocks with the pickaxe: one of them lets a silverfish out again, with its puff.
+  2. Two windows: the host builds the same pen with a silverfish in it, and the friend stands 6 blocks away in creative. When the silverfish dives into a wall block, both windows show the puff. **Screenshots D0-17-2-host and D0-17-2-friend.**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:silverfish_spawn_egg*8,minecraft:stone_bricks*64,minecraft:diamond_pickaxe,minecraft:cooked_beef*32
+```
+
 ## Left for later
 
 Everything track D0 leaves open after segment d0b, gathered from the entries above.
@@ -850,13 +874,12 @@ Everything track D0 leaves open after segment d0b, gathered from the entries abo
   - `check_spawn_obstruction` refuses liquids for every row but striders and drowned. M2 adds the `WaterAnimal` exception for its water rows.
 - **Terrain-side tests no D0 family exercises (D0-9.4):** `show_on` with family values, `families::interact`, `is_vehicle` in `carries`, the mount inventory, and `FamilyDraw.held`. Silverfish and endermites use none of them, so the first track whose family uses one adds that test in its own files.
 - **Silverfish and endermites:**
-  - The poof when a silverfish merges into stone. The registry root needs a record of a removed mob's body that `mob_puffs` can fall back to.
   - `InfestedMobEffect.onMobHurt` (the infested potion lets silverfish out of a hurt mob or player).
 - **Optional:** moving the bat to `BatAnimation` (a round 9 leftover).
 
 ## Combined kit (segment d0b)
 
-24 stacks. It holds what the steps of segment d0b need: D0-14 (85917c3c, silverfish in stone), D0-15 (45de7c5d, endermites from pearls, 96 pearls in six stacks) and D0-16 (this group). The whole silverfish and endermite run is the D0-10 kit above. The class loadout's M4A1 is used as well.
+24 stacks. It holds what the steps of segment d0b need: D0-14 (85917c3c, silverfish in stone), D0-15 (45de7c5d, endermites from pearls, 96 pearls in six stacks), D0-16 (73bacd48, ground paths) and D0-17 (the review's merge puff). The whole silverfish and endermite run is the D0-10 kit above. The class loadout's M4A1 is used as well.
 
 ```
 IW4L_MINECRAFT_KIT=minecraft:silverfish_spawn_egg*8,minecraft:infested_stone*32,minecraft:infested_stone_bricks*32,minecraft:infested_deepslate*16,minecraft:stone_bricks*64,minecraft:diamond_pickaxe,minecraft:diamond_pickaxe+silk_touch,minecraft:tnt*8,minecraft:flint_and_steel,minecraft:creeper_spawn_egg*2,minecraft:ender_pearl*16,minecraft:ender_pearl*16,minecraft:ender_pearl*16,minecraft:ender_pearl*16,minecraft:ender_pearl*16,minecraft:ender_pearl*16,minecraft:zombie_spawn_egg*4,minecraft:cow_spawn_egg*4,minecraft:rabbit_spawn_egg*4,minecraft:stone*64,minecraft:iron_sword,minecraft:shield,minecraft:cooked_beef*32,minecraft:torch*64

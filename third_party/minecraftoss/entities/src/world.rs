@@ -2654,6 +2654,7 @@ pub struct EntityWorld {
     /// `broadcastEntityEvent` since last taken: entity, event (12 hearts,
     /// 13 anger, 14 happiness).
     entity_events: Vec<(u64, u8)>,
+    departed: Vec<(u64, &'static str, Body)>,
     passengers: std::collections::BTreeMap<u64, Vec<Rider>>,
     player_dismounts: Vec<(u64, u64, Option<DVec3>)>,
     ride_jumps: HashMap<u64, crate::horse::RideJump>,
@@ -2769,6 +2770,7 @@ impl Default for EntityWorld {
             trade_experience: Vec::new(),
             player_main_hands: HashMap::new(),
             entity_events: Vec::new(),
+            departed: Vec::new(),
             passengers: std::collections::BTreeMap::new(),
             player_dismounts: Vec::new(),
             ride_jumps: HashMap::new(),
@@ -4149,6 +4151,10 @@ impl EntityWorld {
 
     pub fn broadcast_entity_event(&mut self, id: u64, event: u8) {
         self.entity_events.push((id, event));
+    }
+
+    pub fn departed(&self, id: u64) -> Option<(&'static str, &Body)> {
+        self.departed.iter().find(|(gone, ..)| *gone == id).map(|(_, kind, body)| (*kind, body))
     }
 
     pub fn villager_mut(&mut self, id: u64) -> Option<&mut VillagerEntity> {
@@ -5856,6 +5862,7 @@ impl EntityWorld {
             trade_experience: Vec::new(),
             player_main_hands: self.player_main_hands.clone(),
             entity_events: Vec::new(),
+            departed: Vec::new(),
             passengers: self.passengers.clone(),
             player_dismounts: Vec::new(),
             ride_jumps: self.ride_jumps.clone(),
@@ -8228,7 +8235,14 @@ impl EntityWorld {
         self.shulker_bullets.retain(|entity| entity.bullet.alive);
         self.llama_spits.retain(|entity| entity.spit.alive);
         self.evoker_fangs.retain(|entity| entity.fangs.alive);
-        self.families.retain_mut(&mut |_, core, _| core.damage.death_ticks < 20 && !core.removed);
+        let departed = &mut self.departed;
+        departed.clear();
+        self.families.retain_mut(&mut |_, core, _| {
+            if core.removed {
+                departed.push((core.id, core.kind, core.body.clone()));
+            }
+            core.damage.death_ticks < 20 && !core.removed
+        });
         let alive_ids: HashSet<_> = self
             .bats
             .iter()

@@ -762,4 +762,30 @@ mod tests {
             assert_eq!(events, vec![(id, SPAWN_ANIM)], "its poof");
         }
     }
+
+    #[test]
+    fn a_merged_silverfish_leaves_its_body_for_its_poof() {
+        let mut world = EntityWorld::default();
+        world.set_mob_griefing(true);
+        let mut yard = Yard::default();
+        yard.ring("minecraft:stone_bricks");
+        let id = fish_at(&mut world, 0.5, 0.5);
+        let mut last = None;
+        for _ in 0..2400 {
+            last = world.body_of(id).cloned();
+            world.tick_with_players(&mut yard, &[]);
+            if world.entity_type(id).is_none() {
+                break;
+            }
+        }
+        assert_eq!(world.entity_type(id), None, "it went into the wall");
+        let (kind, body) = world.departed(id).expect("its body for this tick");
+        assert_eq!(kind, KIND);
+        assert_eq!((body.width, body.height), (WIDTH, HEIGHT));
+        let before = last.expect("it stood in the ring").position;
+        assert!(body.position.distance(before) < 0.5, "{body:?}");
+        assert!(world.departed(id + 1).is_none());
+        world.tick_with_players(&mut yard, &[]);
+        assert!(world.departed(id).is_none(), "only for the tick it left");
+    }
 }
