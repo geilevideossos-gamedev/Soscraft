@@ -67,7 +67,7 @@ The open survival limits and multiplayer leftovers (`docs/MINECRAFT-SURVIVAL.md`
   - `D:\iw4l-target` itself is protected from deletion by a permission rule. Only its subfolders may be removed, such as a stale `debug`.
 - **Build workflow**
   - While implementing: `check -p` and `test -p` on only the crates that changed, and `check -p launcher` before a commit that touches game code.
-  - Once per track: clippy on the touched crates, and the full suite `scripts\full-suite.ps1` (workspace tests without doc-tests, plus the five minecraftoss crates with their stand-in files) after the track is merged.
+  - Once per track: clippy on the touched crates (the vendored minecraftoss crates through `scripts\clippy-vendored.ps1`), and the full suite `scripts\full-suite.ps1` (workspace tests without doc-tests, plus the five minecraftoss crates with their stand-in files) after the track is merged.
   - Parallel tracks: one git worktree in `C:\Dev\Soscraft\mc-wt\<name>`, one branch and one target dir (`D:\iw4l-wt\<name>`) each, merged into `minecraft-survival` one at a time with the full suite after each merge.
   - Tracks run with the saved workflow `.claude/workflows/track-runner.js` (the `track-runner` workflow). Args: `{track, worktree, branch, target, base, briefs, groups:[{key,prompt}], avoid?, notes?, skipReview?}`.
     - It runs one agent per commit group in order, each continuing from what is already committed, then an adversarial review that fixes real defects in new commits, then clippy and the tests of the touched crates.

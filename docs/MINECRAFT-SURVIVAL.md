@@ -505,6 +505,7 @@ The build rules (cargo through `scripts\cargo-slot.ps1`, one target dir per work
 1. **Clippy** on the touched crates: `& scripts\cargo-slot.ps1 clippy -p <crate> -p <crate> --locked --all-targets '--' -A clippy::approx_constant`.
    - It must report no warnings on lines the track touched; older warnings stay.
    - The workspace denies `unwrap_or_default`.
+   - The five minecraftoss crates are outside the workspace, so `cargo clippy` builds them with plain rustc and reports nothing for them. Lint them with `& scripts\clippy-vendored.ps1 +target=<dir> entities player` (short or full names; all five without a name). It runs `check --all-targets` through `clippy-driver` in a `clippy-vendored` folder of the target dir (making the player crate's stand-in files for the run), so normal builds never replay its warnings. Their older warnings stay; there must be none on lines the track touched.
 2. **The full suite** after the track is merged: `scripts\full-suite.ps1 +target=<the track's target dir>`. It runs the workspace tests without doc-tests, then the five minecraftoss crates with their stand-in files, and takes both build slots. 2086 tests passed at the phase 4 merge of round 7.
 
 ### Play test
