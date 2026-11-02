@@ -224,6 +224,20 @@ impl Level<'_> {
         result
     }
 
+    pub fn triggered_spawn_ok(&mut self, kind: &str, at: [f64; 3]) -> bool {
+        let Some(natural) = self.natural_spawning.take() else { return false };
+        let inputs = self.spawn_inputs(&natural.players);
+        let in_loaded = |c: ChunkPos| inputs.loaded.contains(&c);
+        let slime_chance = |b: BiomeId| inputs.slime_chances.get(usize::from(b.0)).copied().unwrap_or(0.0);
+        let finder = natural.structures.clone();
+        let structures = |pos: BlockPos| finder.as_ref().map_or_else(Vec::new, |find| find(pos));
+        let context = inputs.context(natural.respawn, &natural.census, &in_loaded, &slime_chance, &structures, natural.spawn_mobs && natural.spawn_monsters);
+        let spawns = natural.spawns.clone();
+        let ok = spawns.triggered_may_spawn(self, &context, kind, at);
+        self.natural_spawning = Some(natural);
+        ok
+    }
+
     pub fn summon_trial_mob(&mut self, entity: &Tag, custom_rules: Option<&Tag>, at: [f64; 3]) -> Option<Tag> {
         let kind = entity.get("id").and_then(Tag::as_str)?.to_owned();
         let natural = self.natural_spawning.take()?;

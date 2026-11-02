@@ -742,6 +742,16 @@ impl CreatureSpawns {
         walk && self.check_spawn_obstruction(level, &info, at[0], at[1], at[2]) && !context.obstacles.iter().any(|o| overlaps(&bb, o))
     }
 
+    pub fn triggered_may_spawn(&self, level: &mut dyn SpawnLevel, context: &SpawnContext, kind: &str, at: [f64; 3]) -> bool {
+        let Some(info) = type_info(kind) else { return false };
+        let pos = BlockPos::new(at[0].floor() as i32, at[1].floor() as i32, at[2].floor() as i32);
+        if !self.natural_spawn_rules(level, context, kind, &info, pos) {
+            return false;
+        }
+        let bb = spawn_aabb(&info, at[0], at[1], at[2]);
+        self.check_spawn_obstruction(level, &info, at[0], at[1], at[2]) && !context.obstacles.iter().any(|o| overlaps(&bb, o)) && self.no_collision(level, bb)
+    }
+
     /// `SpawnPlacements.checkSpawnRules` with reason `NATURAL`.
     fn natural_spawn_rules(&self, level: &mut dyn SpawnLevel, context: &SpawnContext, kind: &str, info: &TypeInfo, pos: BlockPos) -> bool {
         match info.rules {
