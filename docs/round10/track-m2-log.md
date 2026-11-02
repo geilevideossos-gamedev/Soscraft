@@ -22,6 +22,8 @@ Files under `third_party/minecraftoss` this track patched or added.
 - Changed again (water-buckets 2): `world/src/level/mob_bucket.rs` (`bucket_of`, `bucket_entity_data`).
 - Patched (water-buckets 3): `world/src/level/dispenser.rs` (the arm for the six water mob buckets after `"water_bucket" | "lava_bucket"`). Changed again: `world/src/level/mob_bucket.rs` (`dispense_mob_bucket`) and its test file.
 - Patched (squids-live 1): `entities/src/world/families.rs` (`Family::OWN_DYING_TRAVEL` and its test in `family_base_tick`). Changed again: the probe and the water tests.
+- Patched (squids-live 2): `entities/src/movement.rs` (`Body::move_self` split out of `travel_air_flying`). Changed again: `entities/src/world/families/water.rs` (the squids' registration).
+- Added (squids-live 2): `entities/src/world/families/water/squids.rs`, `entities/src/world/families/water/squids/tests.rs` (test only).
 
 ## Hooks
 
@@ -442,4 +444,69 @@ After 48f5c4bb.
 
 ```
 IW4L_MINECRAFT_KIT=minecraft:rabbit_spawn_egg*2,minecraft:polar_bear_spawn_egg*2,minecraft:water_bucket,minecraft:iron_shovel,minecraft:iron_sword
+```
+
+#### 2. Minecraft squids swim in pulses, squirt ink and flee in the entity world
+
+After 2c0d74bf.
+
+- **javap (26.3 `client.jar`):**
+  - `Squid` extends `AgeableWaterCreature`: health 10 (`createAttributes`), gravity 0.08, sound volume 0.4, `canBeLeashed` true, movement emission `EVENTS`. Baby dimensions `scalable(0.5, 0.5).withEyeHeight(0.37)`. The constructor draws `tentacleSpeed = 1 / (nextFloat + 1) * 0.2`.
+  - `AgeableWaterCreature`: ambient interval 120, experience `1 + nextInt(3)`, the gills' `handleAirSupply` (water-hooks 1), `removeWhenFarAway` left at `Mob`'s true.
+  - `Squid.aiStep`, after `super` (`LivingEntity.aiStep`'s travel, then `AgeableMob`'s growth):
+    - the old values; `tentacleMovement += tentacleSpeed`; past `6.283185307179586` it loses `6.2831855f`, draws a new speed one time in ten (`nextInt(10)`) and sends entity event 19;
+    - in water (`wasTouchingWater`): below `π` the angle is `Mth.sin(f²π)·π·0.25` with `f = tm/π`, and above `f = 0.75` the motion becomes `movementVector` with `rotateSpeed` 1, else `rotateSpeed ×0.8`; from `π` on the angle is 0, the motion `×0.9` and `rotateSpeed ×0.99`; then `yBodyRot += (−atan2(x, z)·57.295776 − yBodyRot)·0.1`, `setYRot(yBodyRot)`, `zBodyRot += π·rotateSpeed·1.5` and `xBodyRot += (−atan2(horizontal, y)·57.295776 − xBodyRot)·0.1`;
+    - out of water: the angle `|Mth.sin(tm)|·π·0.25`, the motion `(0, y′·0.98, 0)` with `y′` `0.05·(amplifier + 1)` under Levitation or `y − 0.08`, and `xBodyRot += (−90 − xBodyRot)·0.02`.
+  - `Squid.travel` is `move(SELF, getDeltaMovement())`.
+  - `Squid.hurtServer`: when `super` succeeds and `getLastHurtByMob()` is set, `spawnInk` and true; otherwise **false**. `spawnInk`: `makeSound(squirt)` (0.4, the voice pitch), then 30 particles, each with `nextFloat` twice for the sideways spread and once for the reach (`0.3`, a baby `0.1`, plus `nextFloat·2`), rotated by `xBodyRotO` and `−yBodyRotO`, from `rotateVector(0, −1, 0) + pos` half a block up, sent with count 0 and speed 0.1.
+  - `GlowSquid.hurtServer` sets `DarkTicksRemaining` to 100 only when `Squid.hurtServer` returned true, so only on a hit that squirts. `GlowSquid.aiStep` counts it down, then `addParticle(GLOW, getRandomX(0.6), getRandomY(), getRandomZ(0.6), 0, 0, 0)`: three `nextDouble` draws from the squid's random, on the server too.
+  - `SquidRandomMovementGoal` (priority 0, no flags, ticks on full selector ticks): over 100 idle ticks the vector is `ZERO`; otherwise `nextInt(reducedTickDelay(50) = 25) == 0`, being out of water or `lengthSqr ≤ 1.0e-5f` draws `a = nextFloat·6.2831855f` and `(Mth.cos(a)·0.2, −0.1 + nextFloat·0.2, Mth.sin(a)·0.2)`.
+  - `SquidFleeGoal` (priority 1, `requiresUpdateEveryTick`): usable in water with a last attacker under 10 blocks (`distanceToSqr < 100`); `d = squid − attacker`, used only when the block at `squid + d` holds water or is air; `d.normalize()` is discarded; `d ×= 3 − max(0, (|d| − 5)/5)` when that is above 0; no vertical part toward air; `movementVector = d/20`. Its bubbles are a server `addParticle` with no draws.
+  - `LivingEntity.aiStep` resets the fall distance under Slow Falling or Levitation just before `travel`.
+  - `Mob.checkDespawn` returns early for a persistent mob and resets `noActionTime` only for a player within 32 blocks.
+  - `ClientboundLevelParticlesPacket` (26.3) carries float spreads and float speeds; with count 0 the client's velocity is their float product, widened.
+- **Changed (vendored entities crate):**
+  - `movement.rs`: `Body::move_self(world) -> Option<f64>`, vanilla's `Entity.move`, split out of `travel_air_flying`: the stuck multiplier, the collision, the ground and supporting block, the water check, the fall (its landing distance returned), the restitution and the movement emission. `travel_air_flying` calls it; its climbing push and drag moved above the call unchanged, so every walker, flyer and swimmer moves as before.
+  - New `world/families/water/squids.rs`, the family `Squid` (key 64; `minecraft:squid` and `minecraft:glow_squid` in one store, `glow` set by kind), with the state the brief lists: `age`, the body rotations and their old values, the tentacle movement and angle with their old values, the tentacle and rotate speeds, `movement_vector`, `fleeing`, `ink_spurts` and `dark_ticks`.
+    - Hooks: 0.8 by 0.8, eyes 0.4, health 10, ambient interval 120; categories `water_creature` and `underground_water_creature` (D0's default despawn: 128, removable, allowed on peaceful); experience 1-3 for an adult; `breathes_water`, `leashable`; `Breath::Gills`; `emits_sounds` false; voice `(squid | glow_squid, 0.4, neutral_volume)`; `OWN_DYING_TRAVEL`.
+    - `hurt`: `hurt_plain`, then on an applied hit with `hurt.attacker` or `core.hurt_by` set the squirt: its voice, the ink's 90 float draws (`ink`), `ink_spurts + 1`, and for a glow squid `dark_ticks = 100`.
+    - The tick, in vanilla's order: the first tick draws the tentacle speed; `family_base_tick`; the velocity trim; for a living squid with AI the idle clock and both goals; for any squid with AI the fall-distance reset under Levitation or Slow Falling, `move_self`, its fall damage and its splash (`play_movement` with the silent sounds); `family_after_move`; growth (a baby resizes at the boundary); the stroke; the glow squid's countdown and three draws.
+    - Public helpers for `squids-drawn`: `set_baby`, `rotate_vector`, `ink` (the 30 specks' origins and velocities from a random) and `tentacle_speed`.
+  - `world/families/water.rs`: `pub mod squids;` and `squids: squids::Squid,` in `family_group!(water 64..=79 { .. })`.
+- **Tests added** (`world::families::water::squids::tests`):
+  - `a_squid_is_0_8_with_ten_health_and_its_kind`: both kinds and a baby (size, eyes, health, key, census and `mob_candidates`, categories, traits and voices, gills, silent movement, the despawn rule); adults leave their own table and 1-3 experience, a baby nothing.
+  - `a_baby_squid_is_half_a_block_and_grows_up_to_full_size` (and a locked baby stays small).
+  - `a_squid_pulses_only_in_the_last_quarter_of_its_tentacle_stroke`: with a speed of 0.1, 23 ticks of waiting, 8 pulses at `movementVector` with `rotateSpeed` 1 and 31 glides at `×0.9`; the angle `sin(f²π)·π/4`, then 0.
+  - `a_squid_picks_a_new_heading_on_full_ticks_and_stops_after_a_hundred_idle_ticks`: 0.2 sideways and −0.1 to 0.1 up; only on full ticks; on every full tick out of water; `ZERO` after 100 idle ticks until a hit wakes it.
+  - `a_squid_turns_tilts_and_rolls_with_its_motion`: yaw −90 moving east and +90 moving west, the head with it; tilt −90 sideways and 0 rising; the roll; the old values; on land it tips toward −90 by 2% a tick and keeps its yaw.
+  - `a_hit_squid_squirts_and_flees_up_to_a_block_a_tick`: the hurt voice, then the squirt at 0.4; the vector at 1, 5, 9.5 and 9.99 blocks; none at 10 or on land; no rise toward air; no way into stone.
+  - `a_squid_hurt_again_within_five_seconds_squirts_even_without_an_attacker`: a hit with nobody to blame does not ink; within 100 ticks of the player's hit one does, after them not; a mob's hit inks.
+  - `a_squid_on_land_falls_curls_and_dries_out`: gravity and the 0.98 drag; Levitation lifts it; a fall of 6.5 blocks hurts 3 with the small fall sound and no ink; dry, it is hurt at ticks 320, 340, 360 and 380 and dies at 400; it lies flat.
+  - `a_glow_squid_goes_dark_for_a_hundred_ticks_when_it_squirts`: not on a hit with nobody to blame; 100 counted down to 0; a plain squid never; the glow squid's three draws a tick.
+  - `a_dying_squid_drifts_on_its_last_pulse_and_does_not_sink`.
+  - `squids_are_silent_when_they_swim_and_call_every_120_ticks_or_so`: one splash falling in; no swim or step sound but `minecraft:swim` game events; ambient calls at 0.4, more than 120 ticks apart.
+  - `a_leashed_squid_is_pulled_after_its_player`: pulled to within 7 blocks; the lead snaps past 12.
+- **Decisions:**
+  - **The yaw is the body yaw.** `Squid.aiStep` sets `yRot` from `yBodyRot` every tick in water, so the state keeps only `y_body_rot_o` (the yaw at the stroke's start) and `core.yaw` is `yBodyRot`. The head yaw follows the body: a squid has no head to turn.
+  - **The tentacle speed is drawn on the first tick**, as the first draw of the squid's own random, instead of in `spawn`: the loader seeds `core.random` from the UUID after `spawn`, which would give every squid the same first speed.
+  - **The glow squid goes dark only when it squirts** (javap above), where the brief had any applied hit; the test name says so.
+  - **The hit's result stays applied** where vanilla's `Squid.hurtServer` returns false (a hit with no last attacker). That return only matters to an arrow without an owner, which would bounce off; arrows, knockback and the hurt flash act as for every mob.
+  - **The server keeps the random draws:** the squirt's 90 float draws and the glow squid's three doubles a tick are drawn and dropped, so the squid's random runs as vanilla's. Each view draws its own ink from `ink_spurts` (`squids-drawn`, the brief's decision 4).
+  - **Not ported:** entity event 19 (friends get the tentacle values through `FamilyShow` in `squids-drawn`, decision 3) and the flee bubbles (a server `addParticle`, shown to nobody).
+  - **The idle reset near players** is D0's `check_despawn`, which runs before the mobs tick, as for every registered mob. It also resets a persistent squid near a player, where 26.3 would let it go still.
+  - **Leads:** `leash_walk` stays D0's no-op (a squid's navigation never moves it); the elastic pull moves it through its velocity.
+  - **Game events:** a squid's moves post `minecraft:swim` through `move_self`'s emission (`EVENTS`), drained by `take_game_events`, so no line was needed (M20, W's game events).
+- **Left for later:** Impaling's extra damage to squids (`#sensitive_to_impaling`) is not in the fork for any mob yet.
+- **Protocol:** none.
+- **Terrain:** no terrain registration yet (`squids-drawn`), so squids in the game stay dormant. D0's terrain test `server_mobs::tests::every_registered_kind_is_simulated_and_summonable`, which compares the two registries, fails from this commit until `squids-drawn` 2 registers `Squid` in terrain; segment m2a merges only with both groups in, as M1's rabbits did.
+- **Runs:** `test -p minecraftoss-entities --locked --lib`: 598 passed and one failed, `squids_are_silent_..`, whose ambient count filtered the calls by position while the squid had swum past the filter's line; the test now runs the diving squid and the calling squid in two worlds, and passes. `check -p launcher --locked`: green, with only the old render_frame and skate warnings. The new files pass `rustfmt --check --edition 2021` with empty output.
+- **Test steps** (regression; squids stay dormant until `squids-drawn`, and every other mob now moves through `move_self`). Release build, survival, Normal, by day, flat ground. Name each screenshot by its label.
+  1. Build a stone tower 5 high. Use a zombie egg on its top and walk away: the zombie follows you down off the edge, falls and is hurt by the fall, as before. **m2-squids-2**
+  2. Use a chicken egg on the tower's top and push the chicken off: it flaps and floats down slowly.
+  3. Use a spider egg beside the tower: it climbs the tower's side.
+  4. Dig a pool 3 x 3 and 2 deep, pour the water bucket into it and use a cow egg in it: the cow swims and climbs out.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:zombie_spawn_egg*2,minecraft:chicken_spawn_egg*2,minecraft:spider_spawn_egg*2,minecraft:cow_spawn_egg*2,minecraft:stone*64,minecraft:water_bucket,minecraft:iron_shovel,minecraft:iron_sword
 ```

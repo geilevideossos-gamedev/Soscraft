@@ -64,8 +64,8 @@ Not a vanilla mob: the boss of track F (`docs/round10/track-f.md`, `docs/ELDEN-R
 
 | # | Mob | Where the player meets it | Exists beyond the default | Left | Size | Family | Hit key | Status | Commits |
 |---|---|---|---|---|---|---|---|---|---|
-| 25 | Squid | oceans, rivers | category only | swimming (P2), swim impulse, ink | M | `squids` | 64 | left | |
-| 26 | Glow squid | underground water (dormant today) | spawn row and rules | glow ink, glow | S | `squids` | 64 | left | |
+| 25 | Squid | oceans, rivers | category only; `squids` family in the entity world: tentacle pulses, turning, tilting and rolling, the random heading, fleeing, the squirt with its ink counter, gills, growth, leads | spawn row, saving, hatching, drawing, the ink cloud | M | `squids` | 64 | left | 2c0d74bf, "Minecraft squids swim in pulses, squirt ink and flee in the entity world" (M2 `squids-live`) |
+| 26 | Glow squid | underground water (dormant today) | spawn row and rules; shares the `squids` family, with its dark ticks after a squirt | its spawns (water in its box refuses them), saving, hatching, drawing, glow ink, glow and sparkles | S | `squids` | 64 | left | 2c0d74bf, "Minecraft squids swim in pulses, squirt ink and flee in the entity world" (M2 `squids-live`) |
 | 27 | Cod | oceans | category only; its bucket pours water and lets out a dormant cod | swimming (P2), schools, flopping, bucket | L | `fish` | 65 | left | |
 | 28 | Salmon | oceans, rivers | category only; its bucket pours water and lets out a dormant salmon | sizes, bucket | L | `fish` | 65 | left | |
 | 29 | Tropical fish | warm oceans, lush caves | category only; its bucket pours water and lets out a dormant fish | patterns, bucket | L | `fish` | 65 | left | |

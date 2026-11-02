@@ -580,6 +580,25 @@ impl Body {
             self.velocity.z = self.velocity.z.clamp(-max, max);
             self.velocity.y = self.velocity.y.max(-max);
         }
+        let landed = self.move_self(world);
+        if (self.horizontal_collision || jumping) && self.climbing {
+            self.velocity.y = 0.2;
+        }
+        let horizontal_drag = (friction * 0.91_f32) as f64;
+        let vertical = match self.levitation {
+            Some(amplifier) => self.velocity.y + (0.05 * (f64::from(amplifier) + 1.0) - self.velocity.y) * 0.2,
+            None if self.slow_falling && self.velocity.y <= 0.0 => self.velocity.y - self.gravity.min(0.01),
+            None => self.velocity.y - self.gravity,
+        };
+        self.velocity = DVec3::new(
+            self.velocity.x * horizontal_drag,
+            vertical * 0.98_f32 as f64,
+            self.velocity.z * horizontal_drag,
+        );
+        landed
+    }
+
+    pub fn move_self(&mut self, world: &impl World) -> Option<f64> {
         let requested = self.requested_move();
         let displacement = move_body_on_fluid(
             world,
@@ -620,20 +639,6 @@ impl Body {
         let _ = (x_collision, z_collision);
         self.restitute(world, requested, displacement);
         self.emission = self.movement_emission(world, displacement, self.touching_water);
-        if (self.horizontal_collision || jumping) && self.climbing {
-            self.velocity.y = 0.2;
-        }
-        let horizontal_drag = (friction * 0.91_f32) as f64;
-        let vertical = match self.levitation {
-            Some(amplifier) => self.velocity.y + (0.05 * (f64::from(amplifier) + 1.0) - self.velocity.y) * 0.2,
-            None if self.slow_falling && self.velocity.y <= 0.0 => self.velocity.y - self.gravity.min(0.01),
-            None => self.velocity.y - self.gravity,
-        };
-        self.velocity = DVec3::new(
-            self.velocity.x * horizontal_drag,
-            vertical * 0.98_f32 as f64,
-            self.velocity.z * horizontal_drag,
-        );
         landed
     }
 }
