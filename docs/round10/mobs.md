@@ -90,6 +90,6 @@ Not a vanilla mob: the boss of track F (`docs/round10/track-f.md`, `docs/ELDEN-R
 | 23 | Camel | deserts, desert villages (dormant today) | size row | `HorseKind::Camel`, two riders, sit, dash, keyframes | L | cow store (`HorseKind`) | 11 | left | |
 | 24 | Camel husk | desert husk jockey (dormant today) | size row; the husk's finalize builds the jockey | monster camel with a husk rider | S | cow store (`HorseKind`) | 11 | left | |
 | 45 | Allay | outposts, mansions | | brain, flying (P3 from D0), item collecting, note blocks (needs W's game events), duplication | L | `allays` | 81 | left | |
-| 47 | Copper golem | built (26.3) | iron and snow golem builds (`golem_build.rs`) | build, sorting copper chests, oxidation, statue | L | `copper_golems` | 82 | left | |
+| 47 | Copper golem | built (26.3) | iron and snow golem builds (`golem_build.rs`); `Family::thunder_hit` for its un-weathering (`lightning-strikes`) | build, sorting copper chests, oxidation, statue | L | `copper_golems` | 82 | left | |
 | 48 | Creaking | pale garden | `player_views` from endermen | heart link, frozen while looked at, keyframes | L | `creakings` | 83 | left | |
 | 50 | Happy ghast | dried ghast (26.3) | ghast model | ghastling, harness, flying, four riders (D0 mount hooks) | L | `happy_ghasts` | 84 | left | |

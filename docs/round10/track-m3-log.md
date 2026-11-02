@@ -10,10 +10,13 @@ Files under `third_party/minecraftoss` this track patched or added.
 
 - Added (lightning-strikes 1): `world/src/level/lightning.rs` (with its tests), `entities/src/world/lightning.rs` (with its tests).
 - Patched (lightning-strikes 1): `world/src/level/mod.rs` (`pub mod lightning;`, the `lightning_hits` field), `world/src/level/entity.rs` (`LightningData.seed` and `uuid`, `Entity::new` is `pub(super)`, the bolt tick's fire and hits, the copper walk's 3002), `world/src/level/fire.rs` (`fire_survives` and `can_spread_fire_around` are `pub(super)`), `world/src/level/redstone.rs` (the rod's 3002), `entities/src/inside_blocks.rs` (`Hazard::LightningBolt`), `entities/src/world.rs` (`mod lightning;` and its `pub use`), `entities/src/world/pushing.rs` (`exposed_mut` is `pub(super)`).
+- Patched (lightning-strikes 2): `entities/src/world/families.rs` (the `thunder_hit` hook), `entities/src/world/families/pests/probe.rs` (test only: `thunder_answers`, `thunder_bolts` and its override). Changed again: `entities/src/world/lightning.rs` (the hook call and its test).
 
 ## Hooks
 
 Root hooks this track added (M30, "M3's root hooks").
+
+- **"Registered Minecraft mobs can answer lightning their own way"** (lightning-strikes 2, entities root `world/families.rs`): `Family::thunder_hit(mob, bolt: &Bolt) -> bool` after `fire_immune`, default `false` (`true`: the family took the whole hit, so the base hit is skipped); `FamilyStore::thunder_hit`, the `family_group!` dispatch and `Families::thunder_hit(key, id, bolt) -> Option<bool>` beside `deflect`. `EntityWorld::thunder_hit` asks it for each registered mob alive in the bolt's box. M1's turtles and M3's copper golems override it.
 
 ## Protocol
 
@@ -85,6 +88,19 @@ After 7e860dfc.
 ```
 IW4L_MINECRAFT_KIT=minecraft:cow_spawn_egg*4,minecraft:zombie_spawn_egg*2,minecraft:blaze_spawn_egg*2,minecraft:lightning_rod*2,minecraft:weathered_copper*16,minecraft:redstone_lamp*2,minecraft:stone_bricks*64,minecraft:obsidian*14,minecraft:oak_planks*64,minecraft:experience_bottle*16,minecraft:water_bucket,minecraft:shield,minecraft:iron_helmet,minecraft:iron_chestplate,minecraft:iron_leggings,minecraft:iron_boots,minecraft:cooked_beef*32,minecraft:iron_shovel
 ```
+
+#### 2. Registered Minecraft mobs can answer lightning their own way
+
+After cdd3cfed ("Minecraft lightning bolts set fires and hurt what they strike").
+
+- **Checked first:** no `thunder_hit` hook was on `minecraft-survival` (M1's turtles wait for this one), so the commit was needed.
+- **javap:** a jar scan for `thunderHit` overrides (M3-1) finds Pig, Villager, Creeper, MushroomCow, Turtle, CopperGolem, ArmorStand and `BlockAttachedEntity`; Turtle (M1) and CopperGolem (M3-4) are registered families, so they answer through this hook.
+- **Changed (vendored entities crate, root `world/families.rs`):** `Family::thunder_hit(mob, bolt: &Bolt) -> bool` after `fire_immune`, default `false`; `true` means the family took the whole hit itself, so the base hit (fire bump and 5 damage) is skipped. `FamilyStore::thunder_hit(id, bolt)`, the `family_group!` dispatch `Group::thunder_hit(key, id, bolt)` and `Families::thunder_hit(key, id, bolt) -> Option<bool>`, each beside `deflect`. `EntityWorld::thunder_hit` (`world/lightning.rs`) asks the hook for a registered mob in the box before the base hit. D0's test probe (`families/pests/probe.rs`) records the bolts and answers with `thunder_answers`.
+- **Tests added:** `world::lightning::tests::a_registered_mob_answers_lightning_through_its_hook` (a probe that answers false takes the base hit, one that answers true takes nothing; both saw the bolt's UUID).
+- **Decisions:** the hook runs only for mobs inside the box and alive, as vanilla calls `thunderHit` on those only. A family that wants the base hit and more (the copper golem un-weathering) returns `false` after its own part.
+- **Runs:** `test -p minecraftoss-entities --locked --lib` (571 passed), `check -p launcher --locked` (green; only the old render_frame and skate warnings).
+- **Test steps:** nothing new to see; registered mobs (silverfish, endermites, rabbits, polar bears, breezes) take the bolt like any mob. Release build, survival, Normal, by day: `/summon minecraft:polar_bear ~ ~ ~8`, then `/summon minecraft:lightning_bolt ~ ~ ~8`: the polar bear flashes red and is hurt, but lives (5 a hit, 30 health), and the grass under it catches fire. **m3-strike-hook**
+- **Kit:** none new.
 
 ## Combined kit
 

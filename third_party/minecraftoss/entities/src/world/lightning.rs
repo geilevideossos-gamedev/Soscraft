@@ -46,6 +46,14 @@ impl EntityWorld {
             if !mob.alive() || !bolt.touches(mob.body()) {
                 continue;
             }
+            if let EntityKey::Family(family, id) = key {
+                if self.families.thunder_hit(family, id, bolt) == Some(true) {
+                    continue;
+                }
+            }
+            let Some(mob) = self.struck_mut(key) else {
+                continue;
+            };
             thunder_fire(mob.body());
             mob.hurt_hazard(Hazard::LightningBolt, DAMAGE, world, game_time);
         }
@@ -165,5 +173,36 @@ mod tests {
         let cow = world.cows.iter().find(|e| e.id == id).unwrap();
         assert_eq!(cow.cow.health, 5.0);
         assert_eq!(cow.last_damage_source, Some(DamageSourceKind::Hazard));
+    }
+
+    #[test]
+    fn a_registered_mob_answers_lightning_through_its_hook() {
+        use crate::world::families::Families;
+        use crate::world::families::pests::probe::{self, Probe};
+        let mut world = EntityWorld::default();
+        let plain = Families::spawn(&mut world, probe::KIND, SPOT).unwrap();
+        let answering = Families::spawn(&mut world, probe::KIND, SPOT + DVec3::X).unwrap();
+        world
+            .family_mob_mut::<Probe>(answering)
+            .unwrap()
+            .state
+            .thunder_answers = true;
+        world.thunder_hit(&bolt(), &Air);
+        let plain = world.family_mob_mut::<Probe>(plain).unwrap();
+        assert_eq!(plain.state.thunder_bolts, vec![bolt().uuid]);
+        assert_eq!(
+            plain.core.health,
+            probe::MAX_HEALTH - 5.0,
+            "the base hit lands"
+        );
+        assert_eq!(plain.core.body.fire_ticks, 1);
+        let answering = world.family_mob_mut::<Probe>(answering).unwrap();
+        assert_eq!(answering.state.thunder_bolts, vec![bolt().uuid]);
+        assert_eq!(
+            answering.core.health,
+            probe::MAX_HEALTH,
+            "the family took the whole hit"
+        );
+        assert_eq!(answering.core.body.fire_ticks, 0);
     }
 }
