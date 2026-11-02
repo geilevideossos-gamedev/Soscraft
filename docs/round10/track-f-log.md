@@ -42,7 +42,9 @@ IW4L_MINECRAFT_KIT=iw4l:m4,iw4l:rifle_ammo*64,iw4l:rifle_ammo*64,iw4l:rifle_ammo
 
 ## Protocol
 
-Nothing on the wire changed yet. Commit 18 fills Margit's `MobShow.family` (D0's `FamilyShow`, already on the wire) with his clip, and commit 19 adds his critical count as its fifth value; the message format is the same, so it needs no bump of its own. Commit 21 tells a friend "GREAT ENEMY FELLED" as an existing `ToClient::Chat` system line with the overlay flag and plays the chime as an existing `ToClient::Sound`, so it adds nothing to the wire either. Commit 22's `Command::EldenHurt` is a command to the host's own level thread, not a network message: friends' shots already reach the host as MW2 events with the friend's id. Commit 23's boss bar rides the existing `ToClient::BossBar` with a new id range (`1 << 41` plus his id), which friends already keep, so the wire format is unchanged.
+**The wire changed in commit 25** (the code is in 81da408f): `MobShow` gained `elden: Option<EldenShow>` (Margit's daggers in flight, up to three, each a start and a velocity as three `f64` and an age as a `u16`), and `MobShow` travels in every `ServerMob` of a `StateFrame`. A host and a friend on builds from either side of it cannot read each other's state frames, so they need the same build. No track-F commit bumps `minecraft_net::PROTOCOL` (8 now): the release step bumps it once for everything on the wire since the last release.
+
+Up to commit 24 nothing on the wire changed. Commit 18 fills Margit's `MobShow.family` (D0's `FamilyShow`, already on the wire) with his clip, and commit 19 adds his critical count as its fifth value; the message format is the same, so it needs no bump of its own. Commit 21 tells a friend "GREAT ENEMY FELLED" as an existing `ToClient::Chat` system line with the overlay flag and plays the chime as an existing `ToClient::Sound`, so it adds nothing to the wire either. Commit 22's `Command::EldenHurt` is a command to the host's own level thread, not a network message: friends' shots already reach the host as MW2 events with the friend's id. Commit 23's boss bar rides the existing `ToClient::BossBar` with a new id range (`1 << 41` plus his id), which friends already keep, so the wire format is unchanged.
 
 ## Vendored files
 
@@ -51,6 +53,12 @@ Files under `third_party/minecraftoss` this track patched or added. Files that t
 - Patched (6): `entities/Cargo.toml`, `entities/src/world.rs`, `entities/src/world/families.rs`, `entities/src/world/families/bosses.rs`, `entities/src/world/families/pests/probe.rs` (test only), `entities/src/world/families/tests.rs` (test only).
 - Added (3): `entities/src/world/families/bosses/elden_bosses.rs`, `entities/src/world/families/bosses/elden_bosses/arena.rs`, `entities/src/world/families/bosses/elden_bosses/blows.rs`.
 - `entities/Cargo.toml` depends on `elden_boss` (a path dependency on `crates/elden_boss`): the first vendored crate that depends on a fork crate. The root `Cargo.lock` covers it, as the minecraftoss crates have no workspace of their own.
+
+## State doc changes
+
+Wording for the docs this track must not edit; the merge copies it in.
+
+- `docs/MULTIPLAYER.md`, section 9.2 "Mob moves", a new bullet after "Flags that renderers read but neither the NBT nor `MobLook` carry are added to `ServerMob`": "An Elden Ring boss's pose and phase ride the registry's `MobShow.family` like every registered mob's. His daggers in flight ride `MobShow.elden: Option<EldenShow>`: the three newest, each its start, velocity and age, so a friend draws them where the host does. Every other mob sends `None`, one byte."
 
 ## Group er-core
 
@@ -858,3 +866,39 @@ After 3f7797e9.
 - **Tests:** `families::tests::a_registered_mob_sends_friends_only_its_family_show_unless_its_family_adds_more` (a silverfish sends exactly its `FamilyShow` and nothing else, and a mirror applying it only places the mob). `test -p minecraft_terrain --locked --lib families`: 19 passed; `mob_tracking`: 30 passed. `check -p launcher --locked`: green.
 - **Decision:** the hook hands the family the whole `MobShow`, not a payload type of its own, so a later family with a field of its own (a wire change noted under "Protocol") needs no new hook. Nothing changes on the wire in this commit.
 - **Owner's steps:** nothing changes in game until the next commit uses the hook. No kit line.
+
+### 25. A friend sees Margit's moves and fights him
+
+After 81da408f.
+
+The run stopped for the week on 2026-10-29 after 81da408f ("Unfinished: friends see Margit's moves, phase and daggers"), which held this commit's code, not yet built or tested. That code was read again on 2026-11-02, found right, built and tested unchanged; this commit adds its log. History is not rewritten, so the code is in 81da408f and the log here.
+
+- **Changed (`minecraft_terrain`, in 81da408f):**
+  - New `elden_show.rs`: `DaggerShow { start, velocity, age }` and `EldenShow { daggers: [Option<DaggerShow>; 3] }`. `EldenShow::of(flights)` keeps the three newest daggers in flight (the brain adds new throws last), and `flights()` turns them back into `elden_boss::Flight`s, the same three values the host flies and draws them from (commit 20). `lib.rs`: the module beside `elden_save`.
+  - `mob_tracking.rs`: `MobShow.elden: Option<EldenShow>` beside `wither`, `None` for every other mob.
+  - `families/bosses/elden_bosses.rs`: Margit's `show_more` and `show_more_on` (commit 24's hook): the host fills `MobShow.elden` from his daggers each tick, and the friend's copy takes its daggers from it, so it draws them where the host does. The friend's world is never ticked, so its copy never flies a dagger itself. His clip, phase, held and awake still ride D0's `MobShow.family` (commit 18), and his tracking range is 10 chunks (`TRACKING_RANGE` since commit 8), capped by the friend's view distance like every mob's.
+- **Tests:**
+  - Terrain: `elden_show::tests::only_the_three_newest_daggers_are_sent_and_come_back_as_flights` (none, two, and four of which the oldest stays behind). `families::bosses::elden_bosses::tests::a_friend_sees_margit_swing_and_his_daggers_fly` (a friend's copy spawned from his tag with `spawn_tracked`, fed by `server_mobs` and `show_on` each tick: the tracking range is 10; the friend shows the host's clip and daggers on every tick of the cane combo's first swing and of the backstep throws, with at least two daggers in the air at once, and a spent dagger is gone for the friend too) and `a_friend_draws_the_same_clip_time_as_the_host` (the dagger throw over 70 ticks: the friend's vertices equal the host's at partial ticks 0, 0.5 and 0.9, through the held throw and the dagger in flight).
+  - Survival: `mob_sender::tests::margits_daggers_cross_the_state_lane` (a dagger round-trips through the state lane's codec, another mob carries `None`, an `EldenShow` with no dagger costs 3 bytes more than `None`, and a dagger more than that).
+- **Runs:** `test -p minecraft_terrain --locked --lib`: 1585 passed and 3 ignored (the four new tests of commits 24 and 25 among them). `test -p minecraft_survival --locked`: 812 passed, `vanilla_world` 1 passed. `check -p launcher --locked`: green, with only the old render_frame and skate warnings. The new `elden_show.rs` and the track's own `families/bosses/elden_bosses.rs` pass `rustfmt --check --edition 2021` with empty output on their committed content, and no added line holds a comment. `mob_sender.rs` is an existing file; its new test follows the long lines of the test beside it.
+- **Wire:** `MobShow` gained a field, so `ServerMob` in every `StateFrame` changed (see "Protocol"). `PROTOCOL` stays 8.
+- **Decisions:**
+  - **`EldenShow` holds only the daggers,** not the clip the brief also lists: commit 18 put the clip in D0's `FamilyShow`, already on the wire, and `FamilyShow`'s eight `i32` values cannot hold three flights of `f64` points. So the field the brief names carries what `FamilyShow` cannot.
+  - **At most the three newest daggers,** as the brief says. The backstep throws three, and a dagger from an earlier throw is the oldest, at the end of its 40 moves; the host still flies it and it can still hit, but the friend no longer sees it.
+  - **Start, velocity and age, in full `f64`,** like `ServerMob.position`, so the friend's dagger is at the host's spot to the last digit and the same draw code places it. A dagger in flight costs about 50 bytes; an awake Margit with none in flight 4 bytes, and every other mob 1 byte.
+  - **The friend's daggers are replaced by each state frame.** A lost frame holds them for a tick, and the next frame puts them right; a dagger that struck or met a wall is gone on the friend's next frame.
+- **Closes:** commit 20's "Left for later" (a friend is hit by daggers but does not see them fly). From release 3's tests, F-10 said only that the track had not tried a friend's copy in two windows; the tests above now play the friend's copy against the host's, and the steps below try it.
+- **Owner's steps (two windows).** Release build. `& scripts\mp-local.ps1 -Exe iw4l-survival.exe -World r10f6 -Fresh -HostSound`; both windows read the kit line. Host H (`Sos`) and friend F, both in survival on flat open ground in the Overworld by day. Host: `/difficulty normal`, `/gamerule keep_inventory true` and `/op Friend`. Name each screenshot by its label, `f6-25-1-host.png` and `f6-25-1-friend.png` when a step asks for both windows.
+  1. H and F stand 10 blocks apart. H: `/summon iw4l:margit ~ ~ ~10`. In both windows he kneels, then rises in golden mist with green-gold sparkles; both get the red bar "Margit, the Fell Omen" and the dragon fight music. **Screenshot f6-25-1**, both windows.
+  2. F stands 2-3 blocks in front of him and does not attack. F sees the cane combo (the raised cane and the flaring gold eyes before the third swing), the cane slam's ring of puffs and the golden sword sweep, as H sees them from the side at the same moment.
+  3. F backs off to 15-20 blocks and stands still: F sees a golden dagger form in his left hand, the throw, and a small glowing gold blade fly at F and hit for 2 hearts. Next time F strafes as he throws: F sees it fly past. Before this build F was hit by a dagger F could not see. **Screenshot f6-25-2**, the friend's window with a dagger in the air.
+  4. F stands right next to him: he hops back and throws two or three daggers; F sees each one fly, and H, standing to the side, sees the same daggers on the same paths. **Screenshot f6-25-3**, both windows.
+  5. F shoots him with the M4A1 and slashes him with the sword: the bar drops in both windows. F keeps hurting him for 10 seconds while H only watches: he turns on F and walks to F.
+  6. F takes the armour off (if any) and lets him kill F: the death line reads "Friend was slain by Margit, the Fell Omen" (or "Friend was killed by Margit, the Fell Omen using magic" for a dagger or the sword) in both chats. F respawns, walks back, and the fight goes on.
+  7. Both run 45 blocks from where he was summoned and wait 6 seconds: the fight resets, both bars and the music go, and both see him walk home and kneel.
+  8. H, with both within 24 blocks of the spot: `/summon iw4l:margit ~ ~ ~10 {Health:20f}`. F kills him with M4A1 body hits: it takes about 11 hits (two fighters scale his 20 of 800 to 32 of 1280; alone it takes 7). Both see "GREAT ENEMY FELLED" and the drops fall (6 gold ingots for two fighters). **Screenshot f6-25-4**, both windows.
+  9. F stays about 60 blocks away while H wakes a new Margit and fights him: F still sees him move and his daggers fly, but has no bar and no music.
+
+```
+IW4L_MINECRAFT_KIT=iw4l:m4,iw4l:rifle_ammo*64,iw4l:rifle_ammo*64,iw4l:rifle_ammo*64,minecraft:netherite_sword+sharpness=5,minecraft:shield,minecraft:golden_apple*16,minecraft:cooked_beef*32
+```
