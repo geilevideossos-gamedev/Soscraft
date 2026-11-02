@@ -44,6 +44,7 @@ For the orchestrator to copy at the merge of segment m3a:
 - Under Mobs in `docs/MINECRAFT-SURVIVAL.md` (phantoms-live 1): "Phantoms (round 10, track M3) hatch from their egg and `/summon minecraft:phantom`, are saved with their size and anchor, and fly as vanilla's: they circle 5 to 15 blocks around a point five blocks above where they hatched, turning 4 degrees a tick and speeding up to 1.8 on the straight. Every 3 seconds (the first time after 1) they look for the highest player in sight within 16 blocks around and 64 up or down, climb 20 to 39 blocks above that player (never below sea level), and 10 ticks later dive with a screech and bite for 1 heart (a `size` set by command or save bites for 6 plus the size and grows 15 percent a size). A bite, a wall or any hit breaks the dive off: the phantom forgets the player and climbs 10 to 29 blocks above the ground before it looks again. Creative and spectator players and players under a roof are left alone. Friends see the size and the dive's pitch." (phantoms-drawn adds the model.)
 - Under Mobs in `docs/MINECRAFT-SURVIVAL.md`, after the phantom line (phantoms-live 2): "Phantoms catch fire under the open day sky (not in rain or water), with or without AI. While a phantom dives it looks for cats every second: every cat within 16 blocks of it hisses, and the dive breaks off as if it had bitten. Ocelots do not count."
 - Under Mobs in `docs/MINECRAFT-SURVIVAL.md`, after the burning line (phantoms-drawn 1): "Phantoms are drawn as vanilla draws them: the eight-part model with two glowing green eyes that stay lit in the dark, wings that beat 16 degrees up and down with the tail curling at each beat, a model 15 percent larger for each size, and the body pitched with its climbs and dives. They also show in monster spawner cages, wingtips poking out. Friends see the same."
+- Under Mobs in `docs/MINECRAFT-SURVIVAL.md`, after the model line (phantoms-drawn 2): "Phantoms beat their wings with a soft flap sound every 2.4 seconds and trail small dark grey specks from both wingtips, for the host and every friend."
 
 ## Left for later
 
@@ -60,6 +61,7 @@ For the orchestrator to copy at the merge of segment m3a:
 - Lightning rod sparks (lightning-glow 2): the idle storm sparks of `LightningRodBlock.animateTick` (while thundering, when `level.random.nextInt(200) <= gameTime % 200` and the rod is the top block of its column, 1 or 2 sparks along its axis) are not shown. `display_ticks::animate_tick` gets only the scene, the player's block and the view's random; the rod arm beside `end_gateway` needs the client's thunder level, the game time and the level's own random passed in, which no caller has today. Natural thunderstorms come with `lightning-weather` (m3b), which is the place to add it.
 
 - Phantoms (phantoms-live 1): a dying phantom sinks with gravity through its death tip (D0's `family_base_tick` moves every dead family mob with the ground travel; vanilla's phantom keeps `travelFlying`). M2's `OWN_DYING_TRAVEL` hook, once merged, lets the phantom keep its own travel. The player scan ignores `getVisibilityPercent` (sneaking, invisibility and a worn mob head shorten vanilla's 64-block range), as the fork's `NearestTargetGoal` does: `PlayerCandidate` carries none of them. `Silent:1b` does not silence the bite (`MobCore` has no silent flag). The server's `minecraft:flap` game event every 25 ticks waits for W's per-entity game events (M3-2 plan step 7). Scoreboard teams (`isAlliedTo`) do not exist in the fork.
+- Phantom flaps (phantoms-drawn 2): the flap sound stays where the phantom flapped instead of following it (`EntityBoundSoundInstance`), and wing specks are not thinned by camera distance or a particle setting.
 
 ## Segment m3a
 
@@ -420,6 +422,39 @@ After 6c28a475 ("Minecraft phantoms burn by day and shy away from cats").
 
 ```
 IW4L_MINECRAFT_KIT=minecraft:phantom_spawn_egg*8,minecraft:diamond_sword,minecraft:spawner,minecraft:cobblestone*64,minecraft:golden_apple*8,minecraft:cooked_beef*32
+```
+
+#### 2. Minecraft phantoms flap and trail specks from their wings like vanilla
+
+After 240d4d55 ("Minecraft phantoms are drawn like vanilla").
+
+- **javap (26.3 `client.jar`):**
+  - `Phantom.tick` on the client, after `Mob.tick`: `c(t) = Mth.cos((getUniqueFlapTickOffset() + t) * 7.448451 * 0.017453292 + 3.1415927)`. When `c(tickCount) > 0` and `c(tickCount + 1) <= 0`, `playLocalSound(this, PHANTOM_FLAP, getSoundSource(), 0.95 + nextFloat * 0.05, 0.95 + nextFloat * 0.05)` (volume, then pitch). Then every tick `w = getBbWidth() * 1.48`, `dx = Mth.cos(yRot * 0.017453292) * w`, `dz = Mth.sin(yRot * 0.017453292) * w`, `dy = (0.3 + c(tickCount) * 0.45) * getBbHeight() * 2.5`, and two `MYCELIUM` particles with zero speed at `(x + dx, y + dy, z + dz)` and `(x - dx, y + dy, z - dz)`. `ClientLevel.tickNonPassenger` counts `tickCount` up before `tick`.
+  - `c` falls through zero once a full beat, 360 / 7.448451 = 48.33 ticks, so the flap sounds every 48 or 49 ticks (2.4 s). `TICKS_PER_FLAP` (25, `Mth.ceil(180 / 7.448451)`) is the server's `isFlapping` for the `minecraft:flap` game event, half a beat.
+  - `particles/mycelium.json` (26.3 jar): the one texture `minecraft:generic_0`. `SuspendedTownParticle.<init>` after the `SingleQuadParticle` base: grey `nextFloat * 0.1 + 0.2` on all three channels, `setSize(0.02, 0.02)`, `quadSize *= nextFloat * 0.6 + 0.5`, the speed times `(double) 0.02f`, `lifetime = (int) (20 / (nextFloat * 0.8 + 0.2))`; `tick`: `lifetime--` and removal at 0 or less, `move` without collisions, the speed times 0.99; layer OPAQUE. Its `Provider` (mycelium) keeps the grey, `HappyVillagerProvider` sets white.
+- **Changed (terrain):**
+  - `ambient_particles.rs`: `Kind::Mycelium` after `Kind::HappyVillager`, with `Particle::mycelium` after `happy_villager`, the `generic_0` sprite, the constant size, the `add` arm and the `linger` tick, each next to the happy villager's.
+  - `families/night/phantoms/render.rs`: `FLAP_SOUND`, `SPECK_REACH`, `wing_beat(offset, tick)`, `flaps(offset, tick)` and `specks(at, y_rot, width, height, beat)`.
+  - `families/night/phantoms.rs`: `client_effects`. For each phantom the viewer has, from that viewer's `ClientMob.tick_count`, position and `y_rot` and the mirror mob's box: the flap sound into `ClientFx.sounds` and the two specks into `ClientFx.ambient`. The host's and each friend's entity view run it, so every player hears and sees it.
+- **Tests added** (terrain):
+  - `ambient_particles::tests::mycelium_lingers_grey_for_twenty_to_a_hundred_ticks`: 40 seeds; grey 0.2 to 0.3, 20 to 100 ticks, speed under 0.006, size 0.05 to 0.22 and constant, opaque, `generic_0`; it drifts through stone with 0.99 drag and is gone the tick after its lifetime.
+  - `families::night::phantoms::tests::a_phantom_flaps_once_every_wing_beat_for_every_viewer`: over 400 ticks at least 7 flaps 48 or 49 ticks apart, each where `flaps` says, at the phantom, volume and pitch 0.95 to 1.0; a viewer that came 10 ticks later hears every flap 10 ticks later; a viewer that never saw the phantom hears and sees nothing.
+  - `families::night::phantoms::tests::a_phantom_trails_two_grey_specks_from_its_wingtips_each_tick`: at yaw 0, yaw 90 and size 4, two mycelium specks a tick, 1.48 widths either side across its facing, `(0.3 + 0.45 c) * 2.5` heights up, rising and falling with the beat; none for a phantom the viewer has not seen or one that is removed.
+- **Decisions:**
+  - The flap sound plays once a wing beat (every 48 or 49 ticks), vanilla's client crossing. The brief's "once every twenty-five ticks" (and its owner step's 1.25 s) is the rate of the server's `isFlapping` game event, which waits for W (see Left for later), so the test is named `a_phantom_flaps_once_every_wing_beat_for_every_viewer`.
+  - Volume and pitch come from the entity view's random (vanilla: the client phantom's own random). The sound plays where the phantom was when it flapped; vanilla's `EntityBoundSoundInstance` follows the phantom while the short flap plays.
+  - `Particle::mycelium` draws the grey from the view's random right after the base particle, as vanilla's constructor does. The shared `happy_villager` (E1's file), which skips that draw, is left as it is.
+  - Specks are added at any distance from the camera, as the endermite's portal sparks are. Vanilla's `addParticle` drops particles more than 32 blocks from the camera and thins them on lower particle settings, which the fork has no setting for.
+  - Row 39 of `docs/round10/mobs.md` stays `drawn`; `done` comes with the spawner (phantoms-spawner).
+- **Runs:** `test -p minecraft_terrain --locked --lib` (1760 passed, 3 ignored), `check -p launcher --locked` (green; only the old render_frame and skate warnings).
+- **Test steps:** release build, survival, Normal, flat open ground above y 63, no roof, `/time set midnight`, the kit below, the host is op. Name each screenshot by its label.
+  1. Use a phantom egg 5 blocks away: about every two and a half seconds a soft wing-flap sound comes from it as its wings sweep down, and small dark grey specks trail from both wingtips, hanging in the air for a second or more before they fade. **m3p-flap-1**
+  2. `/summon minecraft:phantom ~ ~3 ~5 {NoAI:1b}`: it hangs in place, specks spill from both wingtips, rising and falling with the beat, and its flap sounds every two and a half seconds. `/summon minecraft:phantom ~5 ~3 ~5 {NoAI:1b,size:4}`: its specks start further out to the sides. **m3p-flap-2**
+  3. Friend, two windows (`scripts\mp-local.ps1`): the host hatches a phantom at night; the friend hears its flaps and sees the specks trail from its wingtips. **m3p-flap-friend**
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:phantom_spawn_egg*8,minecraft:cooked_beef*16
 ```
 
 ## Combined kit

@@ -61,6 +61,7 @@ pub enum Kind {
     Explosion,
     ExplosionEmitter,
     HappyVillager,
+    Mycelium,
     Rain,
     Flame,
     SmallFlame,
@@ -363,6 +364,17 @@ impl Particle {
 
     fn happy_villager(at: DVec3, motion: DVec3, random: &mut LegacyRandom) -> Self {
         let mut particle = Self::base(Kind::HappyVillager, at, motion, random);
+        particle.size = f64::from(0.02_f32);
+        particle.quad_size *= random.next_float() * 0.6 + 0.5;
+        particle.velocity *= f64::from(0.02_f32);
+        particle.lifetime = (20.0 / (f64::from(random.next_float()) * 0.8 + 0.2)) as i32;
+        particle
+    }
+
+    fn mycelium(at: DVec3, motion: DVec3, random: &mut LegacyRandom) -> Self {
+        let mut particle = Self::base(Kind::Mycelium, at, motion, random);
+        let grey = random.next_float() * 0.1 + 0.2;
+        particle.color = [grey; 3];
         particle.size = f64::from(0.02_f32);
         particle.quad_size *= random.next_float() * 0.6 + 0.5;
         particle.velocity *= f64::from(0.02_f32);
@@ -675,6 +687,7 @@ impl Particle {
             }
             Kind::ExplosionEmitter => return None,
             Kind::HappyVillager => "glint".to_owned(),
+            Kind::Mycelium => "generic_0".to_owned(),
             Kind::Rain => format!("splash_{}", self.sprite),
             Kind::Flame | Kind::SmallFlame => "flame".to_owned(),
             Kind::SoulFireFlame => "soul_fire_flame".to_owned(),
@@ -745,6 +758,7 @@ impl Particle {
             | Kind::Explosion
             | Kind::ExplosionEmitter
             | Kind::HappyVillager
+            | Kind::Mycelium
             | Kind::Rain
             | Kind::Snowflake
             | Kind::EndRod
@@ -1342,6 +1356,7 @@ impl AmbientParticles {
             Kind::Explosion => Particle::huge_explosion(at, motion.x, random),
             Kind::ExplosionEmitter => Particle::emitter(at, random),
             Kind::HappyVillager => Particle::happy_villager(at, motion, random),
+            Kind::Mycelium => Particle::mycelium(at, motion, random),
             Kind::Rain => Particle::rain(at, random),
             Kind::Flame | Kind::SmallFlame | Kind::SoulFireFlame => {
                 Particle::flame(kind, at, motion, random)
@@ -1400,6 +1415,7 @@ impl AmbientParticles {
             }
             Kind::Explosion => particle.hold(),
             Kind::HappyVillager => particle.linger(),
+            Kind::Mycelium => particle.linger(),
             Kind::Rain => particle.drip(scene, &mut cache, random),
             Kind::Flame | Kind::SmallFlame | Kind::SoulFireFlame => particle.rise(),
             Kind::Snowflake => {
@@ -2010,6 +2026,39 @@ mod tests {
         assert!((particles.particles[0].position - at).length() < 0.5);
         particles.tick(&scene);
         assert!(particles.is_empty());
+    }
+
+    #[test]
+    fn mycelium_lingers_grey_for_twenty_to_a_hundred_ticks() {
+        let at = DVec3::new(0.5, 64.5, 0.5);
+        let scene = Blocks(HashMap::from([((0, 64, 0), Block::new("minecraft:stone"))]));
+        for seed in 0..40 {
+            let mut particles = AmbientParticles::new(seed);
+            particles.add(Kind::Mycelium, at, DVec3::ZERO);
+            let speck = particles.particles[0].clone();
+            let [red, green, blue] = speck.color;
+            assert!(red == green && green == blue && (0.2..=0.3).contains(&red), "{red}");
+            assert!((20..=100).contains(&speck.lifetime), "{}", speck.lifetime);
+            assert!(speck.velocity.length() < 0.006, "{}", speck.velocity);
+            assert!((0.05..=0.22).contains(&speck.quad_size), "{}", speck.quad_size);
+            assert_eq!(speck.size_at(0.5), speck.quad_size);
+            assert!(!speck.translucent());
+            assert_eq!(
+                speck.sprite().map(|id| id.key()).as_deref(),
+                Some("minecraft:particle/generic_0")
+            );
+            particles.tick(&scene);
+            let moved = &particles.particles[0];
+            assert_eq!(moved.position, at + speck.velocity, "through the stone");
+            assert_eq!(moved.velocity, speck.velocity * 0.99);
+            for _ in 1..speck.lifetime {
+                particles.tick(&scene);
+            }
+            assert_eq!(particles.len(), 1);
+            assert!((particles.particles[0].position - at).length() < 0.5);
+            particles.tick(&scene);
+            assert!(particles.is_empty());
+        }
     }
 
     #[test]

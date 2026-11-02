@@ -3,7 +3,7 @@ use crate::lighting::SkyLight;
 use crate::mesh::{Atlas, ChunkMesh};
 use crate::pack::ResourceId;
 use crate::posed_cube::{Cube, Skin, append, part_pose};
-use glam::{Mat4, Vec3};
+use glam::{DVec3, Mat4, Vec3};
 use minecraftoss_entities::world::families::FamilyMob;
 use minecraftoss_entities::world::families::night::phantoms::{self, Phantom};
 
@@ -19,6 +19,8 @@ pub const LIFT: [f32; 3] = [0.0, 1.3125, 0.1875];
 pub const FULL_BRIGHT: f32 = 15.0;
 pub const NO_OVERLAY: f32 = 1.0;
 pub const CAGE_MARGIN: f32 = 0.3;
+pub const FLAP_SOUND: &str = "minecraft:entity.phantom.flap";
+pub const SPECK_REACH: f32 = 1.48;
 const DEGREES: f32 = 0.017_453_292;
 
 pub const BODY: usize = 0;
@@ -136,6 +138,27 @@ pub fn flap(flap_time: f32) -> Flap {
     }
 }
 
+pub fn wing_beat(offset: i32, tick: i32) -> f32 {
+    let turn = offset.wrapping_add(tick) as f32 * FLAP_DEGREES_PER_TICK * DEGREES;
+    cos(turn + std::f32::consts::PI)
+}
+
+pub fn flaps(offset: i32, tick: i32) -> bool {
+    wing_beat(offset, tick) > 0.0 && wing_beat(offset, tick.wrapping_add(1)) <= 0.0
+}
+
+pub fn specks(at: DVec3, y_rot: f32, width: f32, height: f32, beat: f32) -> [DVec3; 2] {
+    let reach = width * SPECK_REACH;
+    let x = cos(y_rot * DEGREES) * reach;
+    let z = sin(y_rot * DEGREES) * reach;
+    let y = (0.3 + beat * 0.45) * height * 2.5;
+    let (x, y, z) = (f64::from(x), f64::from(y), f64::from(z));
+    [
+        DVec3::new(at.x + x, at.y + y, at.z + z),
+        DVec3::new(at.x - x, at.y + y, at.z - z),
+    ]
+}
+
 pub fn part_poses(flap: Flap) -> [Mat4; 8] {
     let mut rotations = PARTS.map(|part| part.rotation);
     rotations[LEFT_WING_BASE][2] = flap.wing;
@@ -219,6 +242,10 @@ pub fn append_phantoms<'a>(
 
 fn cos(value: f32) -> f32 {
     minecraftoss_player::mth::cos(f64::from(value))
+}
+
+fn sin(value: f32) -> f32 {
+    minecraftoss_player::mth::sin(f64::from(value))
 }
 
 #[cfg(test)]

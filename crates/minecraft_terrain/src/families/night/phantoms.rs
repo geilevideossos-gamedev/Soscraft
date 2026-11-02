@@ -1,7 +1,9 @@
+use crate::ambient_particles::Kind;
 use crate::client_mobs::ClientMobs;
-use crate::families::{FamilyDraw, TerrainFamily};
+use crate::families::{ClientFx, FamilyDraw, TerrainFamily};
 use crate::lighting::SkyLight;
 use crate::mesh::Atlas;
+use glam::DVec3;
 use minecraftoss_core::nbt::Tag;
 use minecraftoss_entities::world::families::FamilyMob;
 use minecraftoss_entities::world::families::night::phantoms;
@@ -49,6 +51,26 @@ impl TerrainFamily for Phantom {
     ) {
         let shown = mobs.iter().filter(|mob| !mob.core.removed);
         render::append_phantoms(out.models, shown, poses, atlas, light, partial);
+    }
+
+    fn client_effects(mobs: &[FamilyMob<Self>], poses: &ClientMobs, fx: &mut ClientFx<'_>) {
+        for mob in mobs.iter().filter(|mob| !mob.core.removed) {
+            let Some(shown) = poses.get(mob.core.id) else {
+                continue;
+            };
+            let offset = render::flap_offset(mob.core.id);
+            let beat = render::wing_beat(offset, shown.tick_count);
+            if render::flaps(offset, shown.tick_count) {
+                let volume = 0.95 + fx.random.next_float() * 0.05;
+                let pitch = 0.95 + fx.random.next_float() * 0.05;
+                let sound = render::FLAP_SOUND.to_owned();
+                fx.sounds.push((sound, shown.position, volume, pitch));
+            }
+            let (width, height) = (mob.core.body.width, mob.core.body.height);
+            for at in render::specks(shown.position, shown.y_rot, width, height, beat) {
+                fx.ambient.add(Kind::Mycelium, at, DVec3::ZERO);
+            }
+        }
     }
 }
 
@@ -150,5 +172,163 @@ mod tests {
         let mob = tracked.iter().find(|mob| mob.id == id).unwrap();
         assert_eq!(mob.x_rot, -35.0, "its dive reaches every client");
         assert!((mob.size.0 - 0.9 * 1.9).abs() < 1e-5);
+    }
+
+    struct Viewer {
+        poses: ClientMobs,
+        ambient: crate::ambient_particles::AmbientParticles,
+        spell: crate::spell_particles::SpellParticles,
+        portal: crate::portal_particles::PortalParticles,
+        poof: crate::poof_particles::PoofParticles,
+        sounds: Vec<(String, DVec3, f32, f32)>,
+        random: minecraftoss_player::rng::LegacyRandom,
+        seen: HashMap<u64, i32>,
+    }
+
+    impl Viewer {
+        fn new(world: &EntityWorld, seed: u64) -> Self {
+            let mut poses = ClientMobs::default();
+            poses.spawn_missing(&server_mobs(world));
+            Self {
+                poses,
+                ambient: crate::ambient_particles::AmbientParticles::new(seed),
+                spell: crate::spell_particles::SpellParticles::new(seed),
+                portal: Default::default(),
+                poof: Default::default(),
+                sounds: Vec::new(),
+                random: minecraftoss_player::rng::LegacyRandom::new(seed),
+                seen: HashMap::new(),
+            }
+        }
+
+        fn tick(&mut self, world: &EntityWorld) {
+            self.poses.tick();
+            let mut fx = ClientFx {
+                ambient: &mut self.ambient,
+                spell: &mut self.spell,
+                portal: &mut self.portal,
+                poof: &mut self.poof,
+                sounds: &mut self.sounds,
+                random: &mut self.random,
+                seen: &mut self.seen,
+            };
+            crate::families::client_effects(world, &self.poses, &mut fx);
+        }
+
+        fn flaps(&mut self, tick: i32, heard: &mut Vec<i32>) {
+            for (sound, at, volume, pitch) in self.sounds.drain(..) {
+                assert_eq!(sound, "minecraft:entity.phantom.flap");
+                assert_eq!(at, FEET);
+                assert!((0.95..=1.0).contains(&volume), "{volume}");
+                assert!((0.95..=1.0).contains(&pitch), "{pitch}");
+                heard.push(tick);
+            }
+        }
+    }
+
+    const FEET: DVec3 = DVec3::new(0.5, 80.0, 0.5);
+
+    fn hovering(yaw: f32, size: i32) -> (EntityWorld, u64) {
+        let mut world = EntityWorld::default();
+        let text = format!(
+            "{{id:\"minecraft:phantom\",Pos:[0.5d,80.0d,0.5d],Rotation:[{yaw:.1}f,0.0f],NoAI:1b,size:{size}}}"
+        );
+        let id = spawn_saved(&mut world, &parse(&text)).unwrap();
+        (world, id)
+    }
+
+    #[test]
+    fn a_phantom_flaps_once_every_wing_beat_for_every_viewer() {
+        let (world, id) = hovering(0.0, 0);
+        let offset = render::flap_offset(id);
+        let mut host = Viewer::new(&world, 1);
+        let mut friend = None;
+        let mut stranger = Viewer::new(&EntityWorld::default(), 3);
+        let (mut host_heard, mut friend_heard, mut none) = (Vec::new(), Vec::new(), Vec::new());
+        for tick in 1..=400 {
+            if tick == 11 {
+                friend = Some(Viewer::new(&world, 2));
+            }
+            host.tick(&world);
+            host.flaps(tick, &mut host_heard);
+            if let Some(friend) = friend.as_mut() {
+                friend.tick(&world);
+                friend.flaps(tick, &mut friend_heard);
+            }
+            stranger.tick(&world);
+            stranger.flaps(tick, &mut none);
+        }
+        assert!(host_heard.len() >= 7, "{host_heard:?}");
+        assert!(
+            host_heard
+                .windows(2)
+                .all(|pair| (48..=49).contains(&(pair[1] - pair[0]))),
+            "one flap a wing beat: {host_heard:?}"
+        );
+        assert!(host_heard.iter().all(|&tick| render::flaps(offset, tick)));
+        let shifted: Vec<i32> = host_heard
+            .iter()
+            .filter(|&&tick| tick <= 390)
+            .map(|tick| tick + 10)
+            .collect();
+        assert_eq!(friend_heard, shifted, "each viewer counts its own ticks");
+        assert!(
+            none.is_empty(),
+            "a viewer that has not seen it hears nothing"
+        );
+        assert!(stranger.ambient.is_empty());
+    }
+
+    #[test]
+    fn a_phantom_trails_two_grey_specks_from_its_wingtips_each_tick() {
+        for (yaw, size) in [(0.0, 0), (90.0, 0), (0.0, 4)] {
+            let (world, id) = hovering(yaw, size);
+            let offset = render::flap_offset(id);
+            let mut viewer = Viewer::new(&world, 4);
+            let scale = phantoms::scale(size);
+            let reach = f64::from(phantoms::WIDTH * scale * 1.48);
+            let mut lifts = Vec::new();
+            for tick in 1..=30 {
+                let before = viewer.ambient.len();
+                viewer.tick(&world);
+                let added: Vec<(Kind, DVec3)> = viewer.ambient.kinds_at().skip(before).collect();
+                assert_eq!(added.len(), 2, "two specks a tick");
+                assert!(added.iter().all(|(kind, _)| *kind == Kind::Mycelium));
+                let (left, right) = (added[0].1, added[1].1);
+                let beat = render::wing_beat(offset, tick);
+                let lift = f64::from((0.3 + beat * 0.45) * phantoms::HEIGHT * scale * 2.5);
+                assert!((left.y - FEET.y - lift).abs() < 1e-5, "{left} {lift}");
+                assert_eq!(left.y, right.y);
+                let middle = (left + right) / 2.0;
+                assert!((middle.x - FEET.x).abs() < 1e-5 && (middle.z - FEET.z).abs() < 1e-5);
+                let across = left - right;
+                let expected = if yaw == 0.0 {
+                    DVec3::new(2.0 * reach, 0.0, 0.0)
+                } else {
+                    DVec3::new(0.0, 0.0, 2.0 * reach)
+                };
+                assert!(across.abs_diff_eq(expected, 1e-4), "{across} {expected}");
+                lifts.push(lift);
+            }
+            let low = lifts.iter().copied().fold(f64::MAX, f64::min);
+            let high = lifts.iter().copied().fold(f64::MIN, f64::max);
+            assert!(high - low > 0.4 * f64::from(scale), "{low} {high}");
+        }
+        let (mut world, id) = hovering(0.0, 0);
+        let mut unseen = Viewer::new(&EntityWorld::default(), 5);
+        unseen.tick(&world);
+        assert!(
+            unseen.ambient.is_empty(),
+            "a phantom the client has not seen"
+        );
+        let mut viewer = Viewer::new(&world, 6);
+        world.family_mob_mut::<Phantom>(id).unwrap().core.removed = true;
+        for _ in 0..60 {
+            viewer.tick(&world);
+        }
+        assert!(
+            viewer.ambient.is_empty() && viewer.sounds.is_empty(),
+            "a removed phantom"
+        );
     }
 }
