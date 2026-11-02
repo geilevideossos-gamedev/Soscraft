@@ -981,3 +981,14 @@ After c1ee9e3c.
 - **Runs:** `test -p minecraftoss-entities --locked --lib pandas` (29 passed).
 - **Test steps:** none, a test file only.
 - **Kit:** none.
+
+#### 2. Minecraft panda genes are read without unwrap_or_default
+
+After 269b277f.
+
+- **Defect:** the segment's clippy run (`clippy -p minecraft_survival -p minecraft_terrain -p minecraftoss-entities -p minecraftoss-player -p minecraftoss-world --locked --all-targets -- -A clippy::approx_constant`) warned once on a line this segment added: `gene` in the terrain's `families/land/pandas.rs` read a missing `MainGene` or `HiddenGene` with `unwrap_or_default()`, a method the workspace's `clippy.toml` disallows because it hides which fallback a site takes.
+- **Changed (game code):** `crates/minecraft_terrain/src/families/land/pandas.rs`: `gene` falls back with `unwrap_or("")`. The behaviour is the same: an empty name matches no gene, so `Gene::from_name` still gives `normal`, as vanilla's `Gene.CODEC` does for a missing or unknown name. The file still passes `rustfmt --check --edition 2021`.
+- **Tests:** none added; `families::land::pandas::tests::a_panda_saves_and_loads_with_its_genes_held_item_love_and_attributes` already loads a panda without genes (both `normal`) and one with the unknown `sleepy` (main `normal`, hidden `brown`).
+- **Runs:** `test -p minecraft_terrain --locked` (1716 passed, 3 ignored), `check -p launcher --locked` (green; only the old `must_use` warning).
+- **Test steps:** none new; the save and load steps of pandas-live 2 (spawn pandas, save and quit, load: every panda keeps its genes) still hold.
+- **Kit:** none.

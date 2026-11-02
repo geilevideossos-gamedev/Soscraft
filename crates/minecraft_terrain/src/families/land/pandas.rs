@@ -69,7 +69,7 @@ fn attribute(id: &str, base: f64) -> Tag {
 }
 
 fn gene(tag: &Tag, key: &str) -> Gene {
-    Gene::from_name(tag.get(key).and_then(Tag::as_str).unwrap_or_default())
+    Gene::from_name(tag.get(key).and_then(Tag::as_str).unwrap_or(""))
 }
 
 pub fn held_value(held: Option<&ItemStack>) -> i32 {
