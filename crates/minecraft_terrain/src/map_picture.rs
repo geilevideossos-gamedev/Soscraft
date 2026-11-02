@@ -160,10 +160,10 @@ pub fn decoration_assets(class: &ClassFile) -> Result<Vec<(String, String)>> {
                             .descriptor
                             .starts_with("(Ljava/lang/String;Ljava/lang/String;")
                 });
-                if registers && strings.len() >= 2 {
-                    let asset = strings.pop().unwrap_or_default();
-                    let id = strings.pop().unwrap_or_default();
-                    assets.push((format!("minecraft:{id}"), asset));
+                if registers {
+                    if let [.., id, asset] = strings.as_slice() {
+                        assets.push((format!("minecraft:{id}"), asset.clone()));
+                    }
                 }
                 strings.clear();
             }

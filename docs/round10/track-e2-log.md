@@ -1431,3 +1431,16 @@ After bb0995c7.
 ```
 IW4L_MINECRAFT_KIT=minecraft:map*4,minecraft:compass,minecraft:cooked_beef*16
 ```
+
+## Segment e2b final checks
+
+### 1. Track E2's map code passes clippy
+
+After f8745db5.
+
+- **Clippy:** `clippy -p frame -p hud -p minecraft_net -p minecraft_survival -p minecraft_terrain -p render_anim -p minecraftoss-entities -p minecraftoss-player --locked --all-targets -- -A clippy::approx_constant`, every crate the segment touched since `r10-e2b-base`, with the stand-in `third_party/scenarios/survival` files that `scripts/full-suite.ps1` makes for the player crate's tests (removed again afterwards). Three warnings fell on lines the segment added, all `disallowed_methods` (`Option::unwrap_or_default`, which `clippy.toml` forbids), and all three are fixed; the older warnings stay. rustc gave the vendored crates no warnings on the segment's lines. The five new files still pass `rustfmt --check` on their committed content.
+- **Changed (same behaviour):**
+  - `minecraft_terrain/src/map_picture.rs` `decoration_assets`: a `register` call takes its id and texture as the last two strings with a slice pattern instead of two `pop().unwrap_or_default()`.
+  - `minecraft_terrain/src/maps.rs` `MapStore::take_updates`: takes the player's waiting updates with `get_mut(..).map_or_else(Vec::new, std::mem::take)`, as `minecraft_survival/src/entities.rs` takes its queues (`unwrap_or_else(Vec::new)` trips `clippy::unwrap_or_default` and `map_or_else(Vec::new, |updates| updates)` trips `clippy::unnecessary_option_map_or_else`). The emptied list stays in the map until the end of the next `tick_carried_on`, which keeps only the carriers' lists, so nothing that reaches a player changes.
+- **Tests:** none added (no behaviour change). The test run is the next entry.
+- **Test steps and kit:** none (no change in game).

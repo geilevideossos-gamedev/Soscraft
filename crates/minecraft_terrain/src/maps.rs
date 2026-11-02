@@ -1189,7 +1189,7 @@ impl MapStore {
     }
 
     pub fn take_updates(&mut self, uuid: &PlayerUuid) -> Vec<MapUpdate> {
-        self.pending.remove(uuid).unwrap_or_default()
+        self.pending.get_mut(uuid).map_or_else(Vec::new, std::mem::take)
     }
 
     pub fn update_color(&mut self, id: i32, x: usize, y: usize, color: u8) -> bool {
