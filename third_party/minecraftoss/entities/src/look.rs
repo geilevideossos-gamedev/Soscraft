@@ -142,7 +142,13 @@ impl LookControl {
     }
 
     pub fn tick_limited(&mut self, position: DVec3, eye_height: f32, body_yaw: f32, navigating: bool, max_head_y_rot: f32) {
-        self.pitch = 0.0;
+        self.tick_from(position, eye_height, body_yaw, navigating, max_head_y_rot, true);
+    }
+
+    pub fn tick_from(&mut self, position: DVec3, eye_height: f32, body_yaw: f32, navigating: bool, max_head_y_rot: f32, reset_pitch: bool) {
+        if reset_pitch {
+            self.pitch = 0.0;
+        }
         if self.cooldown > 0 {
             self.cooldown -= 1;
             let xd = self.wanted.x - position.x;
