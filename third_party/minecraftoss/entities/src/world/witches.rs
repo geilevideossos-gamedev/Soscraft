@@ -421,6 +421,7 @@ impl EntityWorld {
         entity.previous_position = entity.potion.position;
         if let Some(hit) = entity.potion.tick(&*world, &targets, owner_box) {
             let potion = entity.potion.clone();
+            self.projectile_block_hits.extend(hit.block.map(|pos| (pos, hit.location, potion.velocity)));
             self.potion_breaks.push(PotionBreak { position: potion.position, color: potion.potion.color(), instant: potion.potion.instant() });
             self.splash(&potion, hit, players);
         }

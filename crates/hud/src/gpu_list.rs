@@ -197,6 +197,7 @@ pub struct HudTessPass {
     pub script_menus: TessJob,
     /// The Minecraft map's hotbar and inventory.
     pub minecraft: TessJob,
+    pub minecraft_held_map: TessJob,
     pub minecraft_fire: TessJob,
     pub minecraft_loading: TessJob,
     pub minecraft_portal: TessJob,

@@ -1249,6 +1249,14 @@ pub fn act(
                     }
                     minecraft_terrain::bucket::Change::Rocket(boost_ticks) => {
                         if body.launch_rocket(boost_ticks) {
+                            entities.attach_rocket(
+                                player_id,
+                                minecraft_terrain::firework::RocketLaunch {
+                                    at: player.pos,
+                                    fireworks: minecraft_terrain::firework::fireworks(stack),
+                                },
+                                boost_ticks,
+                            );
                             hand.swing = Some(0.0);
                             finish_item_use(
                                 entities,
@@ -1363,6 +1371,32 @@ pub fn act(
                     }
                     None => HandUse::Failed,
                 }
+            } else if held
+                .as_ref()
+                .is_some_and(|stack| stack.id == minecraft_terrain::maps::EMPTY_MAP)
+            {
+                let mut maps = globals
+                    .maps
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let here = (feet, dimension.dimension_type());
+                let infinite = !game_mode.consumes_items();
+                if let Some(rest) = minecraft_terrain::maps::use_empty_map(
+                    &mut maps, inventory, slot, here, infinite,
+                ) {
+                    entities
+                        .view
+                        .world_items
+                        .toss(rest, eye_block, mc_yaw, pitch);
+                }
+                effects.push(sound(
+                    minecraft_terrain::maps::TAKE_RESULT_SOUND,
+                    Some(feet),
+                    1.0,
+                    1.0,
+                ));
+                hand.swing = Some(0.0);
+                HandUse::Consumed
             } else if let Some((stack, kind)) = held
                 .as_ref()
                 .and_then(|s| minecraft_terrain::thrown::Throwable::of(&s.id).map(|k| (s, k)))
@@ -2113,6 +2147,30 @@ pub(crate) mod tests {
         }
     }
 
+    struct Gliding(Vec<i32>);
+
+    impl Body for Gliding {
+        fn write_blocks(
+            &mut self,
+            terrain: &mut Terrain,
+            entities: &mut Entities,
+            writes: Vec<(BlockPos, Option<Block>)>,
+        ) {
+            crate::level::write_blocks(terrain, entities, None, writes);
+        }
+
+        fn obstacles(&self, _: &Entities) -> Vec<[f64; 6]> {
+            Vec::new()
+        }
+
+        fn push(&mut self, _: DVec3) {}
+
+        fn launch_rocket(&mut self, boost_ticks: i32) -> bool {
+            self.0.push(boost_ticks);
+            true
+        }
+    }
+
     pub(crate) fn level_and_globals() -> Option<(Level, Globals)> {
         let mut level =
             crate::commands::tests::test_stream().and_then(crate::commands::tests::test_level)?;
@@ -2764,6 +2822,75 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_gliding_players_rocket_rides_along_and_goes_off_at_the_player_when_the_boost_ends() {
+        use minecraft_terrain::firework_rocket::{hand_offset, is_attached};
+        let Some((mut level, globals)) = level_and_globals() else {
+            return;
+        };
+        let mut player = holding(minecraft_terrain::firework::FIREWORK_ROCKET, 64);
+        if let Some(stack) = player.inventory.slots[0].as_mut() {
+            stack.components = Some(serde_json::json!({"minecraft:fireworks": {
+                "flight_duration": 1,
+                "explosions": [{"shape": "small_ball", "colors": [11743532]}]
+            }}));
+        }
+        let gliding = Actor {
+            gliding: true,
+            ..actor(0.0, -60.0)
+        };
+        let mut body = Gliding(Vec::new());
+        act(
+            &mut player,
+            &mut level,
+            &globals,
+            &mut body,
+            &gliding,
+            press(),
+            &moved(),
+            None,
+            0.0,
+        );
+        assert_eq!(body.0.len(), 1, "the rocket boosts the glide");
+        assert_eq!(count(&player), Some(63));
+        let id = u64::from(player.id.0);
+        let entities = level.entities.as_mut().expect("entities");
+        tick_until(entities, id, |entities| {
+            entities.view.thrown.iter().any(is_attached)
+        });
+        let rocket = entities
+            .view
+            .thrown
+            .iter()
+            .find(|view| is_attached(view))
+            .expect("the rocket rides along")
+            .clone();
+        assert_eq!(rocket.owner, id);
+        let hand = hand_offset(Some(&minecraftoss_entities::controls::PlayerControls {
+            id,
+            ..Default::default()
+        }));
+        assert!(
+            (rocket.position - (DVec3::from_array(FEET) + hand)).length() < 1e-9,
+            "it sits in the right hand: {rocket:?}"
+        );
+        tick_until(entities, id, |entities| {
+            entities
+                .player_outputs(id)
+                .is_some_and(|outputs| !outputs.hits.is_empty())
+        });
+        let hits = entities.take_player_outputs(id).hits;
+        assert_eq!(
+            hits.iter().map(|hit| (hit.0, hit.3)).collect::<Vec<_>>(),
+            [(
+                7.0,
+                crate::death::DamageCause::PlayerFireworks {
+                    client: player.id.0
+                }
+            )]
+        );
+    }
+
+    #[test]
     fn held_food_is_eaten_while_use_is_held() {
         let Some((mut level, globals)) = level_and_globals() else {
             return;
@@ -3335,5 +3462,52 @@ pub(crate) mod tests {
         }
         let again = use_once(&mut level, &globals, &mut player, press());
         assert!(again.open_book.is_some(), "a new press opens it again");
+    }
+
+    #[test]
+    fn right_clicking_an_empty_map_makes_a_map_of_where_the_player_stands() {
+        use minecraft_terrain::maps::{
+            CarriedMap, EMPTY_MAP, FILLED_MAP, MapData, TAKE_RESULT_SOUND,
+        };
+        let Some((mut level, globals)) = level_and_globals() else {
+            return;
+        };
+        let mut player = holding(EMPTY_MAP, 3);
+        let acted = use_once(&mut level, &globals, &mut player, press());
+        assert_eq!(count(&player), Some(2), "one empty map is used");
+        let made: Vec<_> = player
+            .inventory
+            .slots
+            .iter()
+            .flatten()
+            .filter(|stack| stack.id == FILLED_MAP)
+            .filter_map(CarriedMap::of)
+            .map(|map| map.id)
+            .collect();
+        assert_eq!(made, [0], "a filled map with the first map id");
+        let fresh = MapData::create_fresh(4.0, 4.0, 0, "minecraft:overworld", true, false);
+        assert_eq!(globals.maps.lock().unwrap().get(0), Some(&fresh));
+        assert_eq!((fresh.x_center, fresh.z_center), (0, 0));
+        assert!(
+            acted
+                .effects
+                .contains(&sound(TAKE_RESULT_SOUND, Some(FEET), 1.0, 1.0)),
+            "{:?}",
+            acted.effects
+        );
+        assert_eq!(player.hand.swing, Some(0.0));
+        player.inventory.slots[0] = Some(ItemStack::new(EMPTY_MAP, 1));
+        use_once(&mut level, &globals, &mut player, press());
+        let held = player.inventory.slots[0].as_ref().expect("the map in hand");
+        assert_eq!(
+            CarriedMap::of(held).map(|map| (map.item, map.id)),
+            Some((FILLED_MAP.to_owned(), 1)),
+            "the last empty map turns into the map in the hand"
+        );
+        player.mode = PlayerMode::new(GameMode::Creative);
+        player.inventory.slots[0] = Some(ItemStack::new(EMPTY_MAP, 1));
+        use_once(&mut level, &globals, &mut player, press());
+        assert_eq!(count(&player), Some(1), "creative keeps its empty map");
+        assert_eq!(globals.maps.lock().unwrap().last_id(), 2);
     }
 }

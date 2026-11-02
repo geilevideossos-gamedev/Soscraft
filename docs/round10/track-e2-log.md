@@ -7,6 +7,8 @@ A commit can't name its own hash, so each entry names the commit before it. Its 
 ## Protocol
 
 - Group `fw-burst`, commit 1 ("Minecraft firework rockets carry their stars"): `firework_rocket::Burst` (inside `EntitySnapshot.firework_bursts`, sent to friends in the `ToClient::Bursts` blob) carries `explosions: Vec<firework::Explosion>` instead of `colors: Vec<i32>`. The release step bumps `PROTOCOL`.
+- Group `fw-elytra` ("An elytra rocket goes off at the end of its boost"): no format change, but a rocket's `ThrownView.owner` in `EntitySnapshot.thrown_views` now names the rider of an elytra rocket (other rockets keep `MOB_THROWER`). A friend on an older build would draw that rocket's sprite in the rider's hand. The bump for `fw-burst` covers it.
+- Group `maps-held`, commit 2 ("Minecraft friends get the pictures of the maps they carry"): new `ToClient::MapData(MapUpdate)` between `SkateRefused` and `SpawnPosition`, so `MapData` takes index 35 and `SpawnPosition` moves from 35 to 36. New structs `MapUpdate`, `MapMark` and `MapPatch` in `messages.rs`. The release step bumps `PROTOCOL`.
 
 ## Group ti1-targets-and-hurt
 
@@ -825,4 +827,635 @@ One kit for the whole track (27 stacks). It needs E1's kit parser for the two st
 
 ```
 IW4L_MINECRAFT_KIT=minecraft:trident+loyalty=3,minecraft:snowball*16,minecraft:egg*16,minecraft:wind_charge*16,minecraft:splash_potion@harming,minecraft:splash_potion@healing,minecraft:blaze_spawn_egg*2,minecraft:strider_spawn_egg*2,minecraft:saddle,minecraft:zombie_spawn_egg*16,minecraft:pillager_spawn_egg*4,minecraft:villager_spawn_egg*4,minecraft:oak_door*8,minecraft:oak_planks*64,minecraft:oak_fence*16,minecraft:lead*16,minecraft:cow_spawn_egg*8,minecraft:shears,minecraft:cat_spawn_egg*4,minecraft:cod*64,minecraft:chest*4,minecraft:firework_rocket*64,minecraft:firework_rocket[fireworks={flight_duration:1,explosions:[{shape:large_ball,colors:[I;11743532],has_trail:1b}]}]*64,minecraft:firework_rocket[fireworks={flight_duration:0,explosions:[{shape:burst,colors:[I;15790320,11743532]},{shape:small_ball,colors:[I;2437522]},{shape:large_ball,colors:[I;14602026]}]}]*64,minecraft:dispenser*4,minecraft:lever*4,minecraft:cobblestone*64
+```
+
+## Group fw-shapes
+
+### 1. Minecraft firework stars burst in their own shapes
+
+After 48b1ecf2.
+
+- **Vanilla (26.3, checked with javap):**
+  - `ClientLevel.createFireworks` hands a starred burst to a `FireworkParticles$Starter` (it plays sounds unless the rocket is silent). `ParticleEngine.add` queues it, and the queue joins the particle groups at the end of the next engine tick, after the groups have ticked; so the Starter's first tick is the tick after that, and the sparks and flash it makes tick from the tick after theirs.
+  - `Starter`: lifetime `2 * stars - 1`, plus 15 when any star twinkles. It does not move.
+    - On `life == 0`: `entity.firework_rocket.large_blast` (or `large_blast_far`) when there are 3 or more stars or any `large_ball`, else `blast` (or `blast_far`); "far" is a camera 16 or more blocks away (`distanceToSqr >= 256`); AMBIENT, volume 20, pitch `0.95 + nextFloat * 0.1`.
+    - On every even `life` with `life / 2 < stars`, star `life / 2` bursts. A star without colours uses black (`DyeColor.BLACK`, 1973019). `small_ball` is `createParticleBall(0.25, 2)`, `large_ball` `createParticleBall(0.5, 4)`, `star` `createParticleShape(0.5, STAR_PARTICLE_COORDS, false)`, `creeper` `createParticleShape(0.5, CREEPER_PARTICLE_COORDS, true)`, `burst` `createParticleBurst`. Then a `flash` particle at the Starter in the star's first colour.
+    - `life++`; when `life > lifetime` the Starter goes, first playing `twinkle` (or `twinkle_far`), volume 20, pitch `0.9 + nextFloat * 0.15`, when a star twinkles.
+  - `createParticleBall(speed, size)`: y, x and z run from `-size` to `size` over the cube's surface only (inside, z jumps from `-size` to `size`). A spark's direction is the cell plus `(nextDouble - nextDouble) * 0.5` on each axis, divided by `length / speed + nextGaussian * 0.05`. That is 98 sparks for a small ball and 386 for a large one.
+  - `createParticleShape(speed, coords, creeper)`: one spark at `coords[0] * speed` (no z), then three copies of the outline turned by `start + i * PI * 0.34` around the up axis (0.034 for the creeper; `start = nextFloat * PI`), each walking from point to point in quarter steps with a spark on each side (x and z mirrored). That is 121 sparks for a star and 265 for a creeper face.
+  - `createParticleBurst`: 70 sparks from half the rocket's motion, as before.
+  - `createParticle`: a `firework` spark with alpha 0.99 and a random colour of the star (fade, trail and twinkle are the next commit).
+  - `ParticleGroup.add`: a group holds at most 16384 particles; from 12288 on, a new one is kept with chance `((16384 - size) / 4096)^2`.
+- **Changed:**
+  - `minecraft_terrain/src/firework_particles.rs`:
+    - `burst(burst)` queues a `Starter` (a starless burst queues nothing); the queue joins at the end of the next `tick`.
+    - `tick(camera, blocked)` ticks the sparks, the flashes, then the starters, and returns the bangs and twinkles as `FireworkSound { event, at, volume, pitch }`.
+    - New `starter_lifetime`, `blast_sound` and `twinkle_sound`; the ball, star, creeper and burst sparks (`STAR_COORDS`, `CREEPER_COORDS`); one flash per star in its first colour; the `large_blast`, `large_blast_far`, `twinkle` and `twinkle_far` sound ids; `TWINKLE_DELAY`; the spark cap `MAX_SPARKS` (16384, thinning from 12288).
+  - `minecraft_survival/src/entity_view.rs`: `bursts()` hands a starred burst to the particles (the firework loop, `:359`); `tick_scene` plays the sounds the starters return (`:854`), heard from the camera of the last frame.
+- **Tests:**
+  - `firework_particles::tests`:
+    - `a_burst_waits_a_tick_then_throws_seventy_sparks_of_its_colour_with_a_flash_and_a_bang` (replaces the old burst test: nothing on the first tick, then 70 sparks, one flash and the bang at volume 20; far from 16 blocks).
+    - `a_starter_lives_two_ticks_a_star_and_fifteen_more_with_a_twinkle` (lifetimes 1, 5 and 18; the twinkle, or its far form, 18 ticks after the bang of a two-star rocket with a twinkling star; a one-star Starter is gone after its second tick).
+    - `the_bang_is_large_for_a_large_ball_or_three_stars_and_far_from_sixteen_blocks` (one small ball, two, one large ball, three stars, a small and a large one, the far forms, exactly 16 blocks).
+    - `each_shape_throws_the_sparks_of_its_loops` (98, 386, 121, 265 and 70, one flash each).
+    - `balls_fly_out_at_their_speed_and_shapes_start_straight_up_in_mirrored_pairs` (ball sparks within 10% of 0.25 or 0.5; the star's first spark is (0, 0.5, 0), the creeper's (0, 0.1, 0), and the rest come in left-right mirrored pairs).
+    - `stars_burst_one_every_second_tick_each_with_a_flash_in_its_first_colour` (70, 70, 168, 168, 238 sparks over ticks 0 to 4; the flashes red, black and blue; each star's sparks only in its own colours, black for the star without colours).
+    - `sparks_thin_out_when_crowded_and_stop_at_the_cap`.
+    - `sparks_fall_fade_and_go_while_the_flash_lasts_four_ticks` and `a_rocket_leaves_a_white_trail_that_stops_on_the_ground` pass with the new `tick`.
+  - `entity_view::tests`: `a_firework_burst_bangs_and_sparkles_a_tick_later_for_whoever_sees_it` (was `a_firework_burst_bangs_and_sparkles_for_whoever_sees_it`: the sparks and the bang come with the ticks), new `a_twinkling_large_ball_bangs_deep_then_crackles_sixteen_ticks_later`.
+- **Decisions:**
+  - A burst's bang and sparks come a tick later than before, as vanilla's queued Starter does.
+  - The starters, the sparks and the cap share the particles' one random (vanilla gives every particle its own and the engine another).
+  - The cap counts sparks only. Vanilla's translucent group also holds the flashes and other translucent particles.
+- **Test steps** (survival, `/time set night`, open flat ground; put the four rockets of the kit in the hotbar):
+  1. **FW-S1. A small ball.** Right-click the grass 3 blocks ahead with the lime rocket. It bursts into a small round ball of lime sparks with a lime flash and the normal bang. **Screenshot FW-S1.**
+  2. **FW-S2. A large ball.** Place the red rocket the same way. Its ball of red sparks is about twice as wide, and the bang is the deeper "large blast". (Its trail comes with the next commit.) **Screenshot FW-S2.**
+  3. **FW-S3. A star and a creeper.** Place the two-star rocket. It climbs higher, then shows a yellow five-pointed star (three thin stars turned a little around the up axis), and a tenth of a second later a lime creeper face, with the normal bang. About 0.8 s after the bang comes a crackling sound. (The fade to blue and the flicker come with the next commit.) **Screenshot FW-S3.**
+  4. **FW-S4. Three stars.** Place the three-star rocket. It stays low and bursts three times, a tenth of a second apart: a white and red fountain, a small blue ball and a large yellow ball, each with a flash of its first colour, and the deep bang. **Screenshot FW-S4.**
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:firework_rocket[fireworks={flight_duration:1,explosions:[{shape:small_ball,colors:[I;4312372]}]}]*64,minecraft:firework_rocket[fireworks={flight_duration:1,explosions:[{shape:large_ball,colors:[I;11743532],has_trail:1b}]}]*64,minecraft:firework_rocket[fireworks={flight_duration:2,explosions:[{shape:star,colors:[I;14602026],fade_colors:[I;2437522]},{shape:creeper,colors:[I;4312372],has_twinkle:1b}]}]*64,minecraft:firework_rocket[fireworks={flight_duration:0,explosions:[{shape:burst,colors:[I;15790320,11743532]},{shape:small_ball,colors:[I;2437522]},{shape:large_ball,colors:[I;14602026]}]}]*64,minecraft:cooked_beef*32
+```
+
+### 2. Minecraft firework sparks fade, trail and twinkle
+
+After a4abdfa5.
+
+- **Vanilla (26.3, checked with javap):**
+  - `Starter.createParticle` sets the spark's trail and twinkle from its star, alpha 0.99, a random colour of the star and, when the star has fade colours, `setFadeColor` with a random one of them.
+  - `SimpleAnimatedParticle.tick` (the spark's base): once `age > lifetime / 2`, the alpha drops as before and, with a fade colour, each of red, green and blue moves a fifth of the way to the fade colour every tick (`rCol += (fadeR - rCol) * 0.2`).
+  - `SparkParticle.tick`: after that, a spark with a trail, `age < lifetime / 2` and `(age + lifetime) % 2 == 0` adds a new spark at its own position with no motion, alpha 0.99, its current colour, its twinkle and no trail, whose age starts at half its own lifetime (so it fades and shrinks at once). The copy of the fade reads `SparkParticle`'s own `hasFade`, a field nothing else sets (`setFadeColor` sets the one in `SimpleAnimatedParticle`), so a trail spark never fades.
+  - `SparkParticle.extract`: a twinkling spark is drawn only while `age < lifetime / 3` or `((age + lifetime) / 3) % 2 == 0`, so after a third of its life it blinks in three-tick steps.
+- **Changed:** `minecraft_terrain/src/firework_particles.rs`: a spark keeps `fade`, `trail` and `twinkle` from its star; `tick` fades its colour in the second half of its life and lays the trail sparks (added after the sparks have ticked, through the cap); `append_mesh` skips a twinkling spark while it blinks off (`Spark::shown`). The rocket's own flight trail is unchanged (no fade, trail or twinkle, as vanilla's).
+- **Tests** (`firework_particles::tests`):
+  - `a_fading_spark_turns_to_its_fade_colour_by_the_end_of_its_life`: both fade colours of a star are picked; no fade in the first half; at age 47 every spark is within 0.02 of its fade colour and matches `fade + (start - fade) * 0.8^(age - lifetime / 2)`; a star without fade colours keeps its colour.
+  - `a_trailing_spark_leaves_still_sparks_of_its_colour_behind_in_its_first_half`: trail sparks appear exactly on the ticks with `age < lifetime / 2` and `(age + lifetime) % 2 == 0`, at the spark's position with no motion, in its colour, at half their lifetime, twinkling like it, without trail or fade; they keep their colour while the spark fades.
+  - `a_twinkling_spark_blinks_in_threes_after_a_third_of_its_life`: the hidden ages of a 48-tick twinkling spark (16, 17, 21-23, 27-29, ...), none without twinkle.
+  - `a_twinkling_spark_draws_nothing_while_it_blinks_off`: one quad at ages 15 and 18, none at 16.
+  - All tests of the touched crates pass on this commit's code: `minecraft_terrain` 1566 with 3 ignored, `minecraft_survival` 801 + 1; `check -p launcher` is clean.
+- **Decisions:**
+  - Trail sparks never fade, as in vanilla (the leftover `hasFade` field above): a fading star's trail keeps the colour of the spark that laid it.
+  - The trail sparks are drawn from their first frame with the sprite of their age; vanilla shows the largest sprite until their first tick (one tick at most).
+- **Test steps** (survival, `/time set night`, open flat ground; the kit of commit 1):
+  1. **FW-S5. Trails.** Place the red rocket 3 blocks ahead. Its big red ball leaves short red streaks behind each spark as they fly out and fall (sparks hanging in the air where the ball's sparks were), which fade away soon after. **Screenshot FW-S5.**
+  2. **FW-S6. Fade and twinkle.** Place the two-star rocket. From about 1.2 s after the burst the yellow star turns blue as its sparks fall and dim. The lime creeper face starts to flicker on and off after about 0.8 s, together with the crackling sound. **Screenshot FW-S6** (while the star is turning blue).
+  3. **FW-S7. Plain stars stay plain.** Place the three-star rocket. Its three bursts keep their colours to the end, with no streaks and no flicker.
+- **Kit:** the kit of commit 1.
+
+```
+IW4L_MINECRAFT_KIT=minecraft:firework_rocket[fireworks={flight_duration:1,explosions:[{shape:small_ball,colors:[I;4312372]}]}]*64,minecraft:firework_rocket[fireworks={flight_duration:1,explosions:[{shape:large_ball,colors:[I;11743532],has_trail:1b}]}]*64,minecraft:firework_rocket[fireworks={flight_duration:2,explosions:[{shape:star,colors:[I;14602026],fade_colors:[I;2437522]},{shape:creeper,colors:[I;4312372],has_twinkle:1b}]}]*64,minecraft:firework_rocket[fireworks={flight_duration:0,explosions:[{shape:burst,colors:[I;15790320,11743532]},{shape:small_ball,colors:[I;2437522]},{shape:large_ball,colors:[I;14602026]}]}]*64,minecraft:cooked_beef*32
+```
+
+## Group fw-craft
+
+### 1. Minecraft firework stars and rockets are crafted like vanilla
+
+After e3acf73a.
+
+- **Vanilla (26.3, checked with javap and the jar's recipe files):**
+  - `recipe/firework_star.json` (`crafting_special_firework_star`), `firework_star_fade.json` (`_firework_star_fade`) and `firework_rocket.json` (`_firework_rocket`) name their ingredients as fields: the star's `shapes` map (`large_ball` fire charge, `star` gold nugget, `creeper` `#skulls`, `burst` feather), `trail` diamond, `twinkle` glowstone dust, `fuel` gunpowder and `dye` `#dyes`; the fade's `target` firework star and `dye`; the rocket's `shell` paper, `fuel` gunpowder and `star` firework star, with 3 rockets as the result.
+  - `FireworkStarRecipe.matches`: at least 2 items; each item is the twinkle, the trail or the fuel (each at most once), a dye (it must carry the `minecraft:dye` component; any number) or a shape (at most one); anything else fails; it needs the fuel and a dye. `assemble`: shape `small_ball` unless a shape item is there, the dyes' firework colours in grid order, no fade colours, the trail and the twinkle.
+  - `FireworkStarFadeRecipe`: at least 2 items; dyes (any number) and exactly one star, nothing else. The result is the star with all its components (`TransmuteRecipe.createWithOriginalComponents`, count 1) and its fade colours replaced by the dyes' colours; a star without `firework_explosion` starts from `FireworkExplosion.DEFAULT` (a `small_ball` without colours).
+  - `FireworkRocketRecipe`: at least 2 items; one paper, 1 to 3 gunpowder and any number of stars, nothing else. The result is the 3 rockets with `fireworks {flight_duration = gunpowder count, explosions = the stars' firework_explosion in grid order}`; a star without that component adds nothing.
+  - The rocket item's default `fireworks` is `{flight_duration 1, explosions []}` (`Items`), and a component set to its default leaves the stack's patch. The firework star has no default explosion. The codecs leave out `colors`, `fade_colors`, `has_trail`, `has_twinkle` and `explosions` at their defaults.
+  - `CustomRecipe.isSpecial` is true: these recipes are not placeable, not shown in the recipe book and never unlocked (`ServerRecipeBook.addRecipes`). The recipe manager tries crafting recipes in id order, so `firework_rocket` comes before `firework_rocket_simple` (paper and gunpowder).
+- **Changed:** vendored `third_party/minecraftoss/player/src/crafting.rs`:
+  - `Kind` gets `FireworkStar`, `FireworkStarFade` and `FireworkRocket`, read by `parse_recipe` from the three special types and their fields (an unknown shape name drops the recipe).
+  - New `special_result` follows each recipe's `matches` and `assemble`. `matching` uses it for the special kinds; `recipe_matches` (and so `matching_id`) asks whether it gives a result.
+  - `crafting_recipes` and `crafting_grid_candidates` leave the special kinds out, so the recipe book neither lists, places nor unlocks them. `with_extra` counts only the listed recipes, so the fork's display indices still start right after the vanilla ones.
+  - New `DYE_COLORS` (the 16 `DyeColor` names and firework colours in vanilla order), `dye_color`, `set_component` (sets a component, or with `None` leaves it at the item's default, and drops a `!` removal of it) and `transmuted` (the result with the input's components).
+- **Tests** (vendored `crafting::tests`):
+  - `firework_stars_take_their_shape_colours_trail_and_twinkle_from_the_grid`: gunpowder, red dye, fire charge and diamond make one red `large_ball` star with a trail; dyes keep grid order; a creeper head with glowstone gives a twinkling creeper; no shape gives `small_ball`; two fuels, two shapes, two trails, two twinkles, no dye, no fuel, a stray stick or a lone gunpowder make nothing; a dye's `minecraft:dye` component sets its colour and `!minecraft:dye` stops it being a dye.
+  - `firework_rockets_fly_one_level_per_gunpowder_with_their_stars_in_grid_order`: paper, 2 gunpowder and 2 stars make 3 rockets with flight 2 and both stars in grid order; 3 gunpowder give flight 3; paper with one gunpowder, or with one gunpowder and a star without an explosion, gives 3 plain rockets with no components (through the special recipe, which comes first); 4 gunpowder, two papers, no paper, no gunpowder or a stray item make nothing.
+  - `dyes_give_a_firework_star_its_fade_colours`: a named star of 5 and a blue dye give one star with the name, its shape, colours and trail, and the blue fade; a second craft replaces the fades; a plain star gives a `small_ball` with only fade colours; a lone star, two stars or a stray item make nothing.
+  - `special_recipes_stay_out_of_the_recipe_book_but_craft_from_the_grid`: only the plain rocket recipe is listed and placeable, a fork recipe's display index comes right after it, a special recipe is never unlocked, and taking the result from the table uses one paper, one gunpowder and one star.
+  - `the_jar_firework_recipes_craft_stars_and_rockets` (with the real 26.3 jar, skipped without it): the star, a skeleton-skull creeper, a 2-gunpowder rocket, the plain rocket without components, the fade, and no result for 4 gunpowder.
+  - On this commit's code: `minecraftoss-player` 204 tests pass (with the stand-in scenario files), `minecraft_terrain`'s recipe, crafting and firework tests (94, with the real data, among them `fork_display_indices_come_after_vanilla`) pass, and `check -p launcher` is clean.
+- **Decisions:**
+  - Special recipes stay in the one recipe list in id order, as vanilla's recipe manager tries them. Paper and one gunpowder go through the special rocket recipe first and give the same plain rockets as `firework_rocket_simple`.
+  - A crafted rocket with flight 1 and no stars has no `minecraft:fireworks` component (vanilla drops a default value from the patch), so it stacks with plain rockets. Fields at their default are left out, and a true `has_trail` or `has_twinkle` is written as `1`, the form kits, `/give` and loaded saves give, so crafted and given stars stack.
+  - A dye's colour comes from its `minecraft:dye` component when the stack sets one, otherwise from the colour in its `<colour>_dye` id; the item catalog does not carry the default component.
+  - A rocket copies each star's `firework_explosion` as the star holds it.
+- **Left for later:** the star's icon keeps the model's default grey (`minecraft:firework` tint), and neither the star nor the rocket has its tooltip lines; the colours show when the rocket bursts.
+- **Protocol:** no message change.
+- **Test steps** (survival, by day, open flat ground; place the crafting table first):
+  1. **FW-C1. Stars.** At the crafting table, put gunpowder, red dye, fire charge and diamond in any four cells: the result is one firework star (grey icon). Take it. Then put gunpowder, lime dye, the creeper head and glowstone dust in: a second star. Take it. **Screenshot FW-C1** (the second star in the result slot).
+  2. **FW-C2. Fade.** Put the lime star and one blue dye in: one star. Take it.
+  3. **FW-C3. Rockets.** Put paper and 2 gunpowder in the bottom row, the red star in the top left cell and the fading lime star in the middle: 3 rockets. Take them and place one on the grass 3 blocks ahead. It climbs higher than a plain rocket, bursts into a big red ball with trails and the deep bang, and a tenth of a second later into a lime creeper face that turns blue and flickers with a crackle. **Screenshot FW-C3.**
+  4. **FW-C4. Gunpowder.** Put paper and 4 gunpowder in: no result. Take one gunpowder out: 3 rockets. Put paper and one gunpowder in instead and take the 3 rockets onto the kit's stack of 16 plain rockets: they join it (19).
+  5. **FW-C5. Recipe book.** Open the recipe book and search "firework": it shows the plain rocket recipe only, as vanilla does.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:crafting_table,minecraft:gunpowder*64,minecraft:paper*32,minecraft:red_dye*16,minecraft:lime_dye*16,minecraft:blue_dye*16,minecraft:fire_charge*8,minecraft:diamond*8,minecraft:glowstone_dust*16,minecraft:creeper_head,minecraft:firework_rocket*16,minecraft:cooked_beef*32
+```
+
+### 2. Minecraft shields take a banner's pattern in the crafting grid
+
+After ceadbff0.
+
+- **Vanilla (26.3, checked with javap and `recipe/shield_decoration.json`):**
+  - The recipe type `crafting_special_shielddecoration` names `banner` (`#minecraft:banners`) and `target` (`minecraft:shield`), with the shield as the result.
+  - `ShieldDecorationRecipe.matches`: exactly 2 items; one banner (a `BannerItem` in the tag) and one shield whose `banner_patterns` (default empty) has no layers; a second banner, a second shield, a patterned shield or anything else fails.
+  - `assemble`: the shield with all its components (`TransmuteRecipe.createWithOriginalComponents`, count 1), then `banner_patterns` set to the banner's and `base_color` set to the banner's colour (`BannerItem.getColor`). The banner's other components stay behind.
+  - The shield item's default `banner_patterns` is the empty list (`Items`), so a plain banner leaves the shield without that component; `base_color` has no default and is always set.
+  - Being a `CustomRecipe`, it is special like the firework recipes (commit 1) and works in the 2x2 grid too.
+- **Changed:** vendored `third_party/minecraftoss/player/src/crafting.rs`: `Kind::ShieldDecoration { banner, target }`, read by `parse_recipe` from `crafting_special_shielddecoration`; its `special_result` arm follows `matches` and `assemble` above. New `BANNER_PATTERNS` and `BASE_COLOR` keys, `banner_color` (the colour in a `<colour>_banner` id) and `banner_patterns` (a stack's non-empty pattern list). The recipe book leaves it out like the firework recipes.
+- **Tests** (vendored `crafting::tests`):
+  - `a_banner_and_an_unpatterned_shield_and_nothing_else_make_a_patterned_shield`: not listed or placeable; a black plain banner gives a shield with `base_color` black and no patterns; a patterned white banner anywhere in the grid gives its patterns and white; a shield with an empty pattern list (and a red base colour) or with its patterns removed still combines and takes the banner's colour; a patterned shield, a lone shield or banner, two shields, two banners or a stray stick make nothing.
+  - `a_decorated_shield_keeps_its_name_damage_and_enchantments`: the shield's name, damage, enchantments and repair cost stay, the banner's name does not move; in the 2x2 grid the black shield comes out and both items are used up.
+  - `the_jar_shield_decoration_takes_a_banner` (with the real 26.3 jar, skipped without it): not listed; the black and the patterned white shield; a third item makes nothing.
+  - On this commit's code: `minecraftoss-player` 207 tests pass (with the stand-in scenario files), `minecraft_terrain`'s recipe, crafting, firework and shield tests (97, with the real data) pass, and `check -p launcher` is clean.
+- **Decisions:**
+  - A banner whose patterns were removed with `!minecraft:banner_patterns` counts as a plain banner here. Vanilla would remove the component from the shield too; such a banner only comes from a command.
+  - A shield with a base colour but no patterns still combines, as in vanilla, and takes the banner's colour.
+- **Left for later:** how the shield looks is E1's E-banners (`banner-items`). Until that is merged, a decorated shield looks plain in the hand and as an icon, though its stack carries the colour and patterns.
+- **Protocol:** no message change.
+- **Test steps** (survival, by day; place the crafting table first). This is step BC-6 of E-banners:
+  1. **FW-C6. A black shield.** At the crafting table, put the black banner and a plain shield in any two cells: the result is a shield. Take it: the banner is used up. With E1's `banner-items` merged, the shield is black. **Screenshot FW-C6.**
+  2. **FW-C7. A patterned shield that keeps its enchantment.** Put the white patterned banner and the worn, enchanted shield in: the result shield keeps the glint and the durability bar (and, with `banner-items`, shows the black creeper and the red border on white). Take it. **Screenshot FW-C7.**
+  3. **FW-C8. What does not combine.** The red shield with the yellow cross and a black banner: no result. A plain shield with two black banners: no result. A plain shield, a black banner and a stick: no result.
+  4. **FW-C9. The small grid.** Open the inventory and put a black banner and the second plain shield in its 2x2 crafting grid: the result is a shield, as at the table.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:crafting_table,minecraft:black_banner*4,minecraft:white_banner[banner_patterns=[{pattern:"minecraft:creeper",color:"black"},{pattern:"minecraft:border",color:"red"}]]*4,minecraft:shield*2,minecraft:shield+unbreaking=3+damage=200,minecraft:shield[base_color=red,banner_patterns=[{pattern:"minecraft:cross",color:"yellow"}]],minecraft:stick*4,minecraft:cooked_beef*32
+```
+
+## Group fw-elytra
+
+### 1. An elytra rocket goes off at the end of its boost
+
+After 6d7cfdaf.
+
+- **Vanilla (26.3, checked with javap):**
+  - `FireworkRocketItem.use` while fall flying spawns `new FireworkRocketEntity(level, stack, player)`: owned by the player and attached to it, at the player's feet, with the usual lifetime `10 * (1 + flight) + nextInt(6) + nextInt(7)`. The boost lasts as long as the rocket, so the fork's boost of `lifetime + 1` ticks (`firework::boost_ticks`) gives the attached rocket a lifetime of `boost_ticks - 1`.
+  - `FireworkRocketEntity.tick` for an attached rocket: while the rider is fall flying it boosts the rider and sits at the rider's position plus `getHandHoldingItemAngle(FIREWORK_ROCKET)`, else at the rider's position; its motion is the rider's motion; then `getHitResultOnMoveVector` along that motion, with no move of its own, and `hitTargetOrDeflectSelf` on a hit. `checkLeftOwner` never lets it leave its owner, which it touches, so it never hits its rider. The launch sound, `life++` and `explode` after `lifetime` follow as for any rocket.
+  - `Entity.getHandHoldingItemAngle`: for a player, `calculateViewVector(0, yRot + 80) * 0.5` for the right arm, or `yRot - 80` when only the offhand holds the item (the main arm is right by default).
+  - `dealExplosionDamage`: the attached entity takes the full `5 + 2 * stars` through `fireworks(rocket, owner)`, with no distance or sight check; every other living entity within 5 blocks is hurt as by any burst. With no stars nobody is hurt. `calculateHorizontalHurtKnockbackDirection` pushes the rider away from the rocket.
+  - `shouldRender` is false for an attached rocket: only its client-side trail particles show.
+- **Changed:**
+  - `minecraft_terrain/src/firework_rocket.rs`: `Rocket` keeps `rider` and `hand`. `Rocket::attached(rider, feet, hand, boost_ticks, fireworks, random)` (lifetime `boost_ticks - 1`); `Rocket::follow(world, targets, rider)` puts the rocket at the rider's feet plus the hand, takes the rider's movement since the last tick as its motion, tests the hit along it and ends like `tick` (the shared end is the new private `after_hit`). New `hand_offset(controls)`, `strength()` (now used by `damage_to`), `HAND_REACH`, `HAND_TURN` and `is_attached(view)`. An attached rocket's view names its rider as `owner`.
+  - `minecraft_terrain/src/server.rs`:
+    - `Command::AttachRocket { rider, launch, boost_ticks }` (next to `LaunchRocket`), `ServerHandle::attach_rocket` and `ServerSim::attach_rocket`, with the hand from the rider's controls.
+    - `tick_rockets` moves an attached rocket with its rider's body from the `players` it already gets and the hand from that player's controls, so a friend's rocket follows the friend. Its first tick plays no launch sound.
+    - `rocket_blast` gives the rider the full strength; the others are hurt as before.
+  - `minecraft_survival/src/actions.rs`: the `Change::Rocket` arm calls the new `Entities::attach_rocket` with the player's feet and the stack's fireworks when the body boosts. A friend's rocket use runs through the same arm on the host.
+  - `minecraft_survival/src/entity_view.rs`: an attached rocket's sprite is not drawn; its trail still is (the trail loop takes every rocket view).
+  - `docs/MINECRAFT-SURVIVAL.md`: the elytra paragraph says the rocket goes off at the end of the boost.
+- **Tests:**
+  - `firework_rocket::tests::the_rocket_sits_half_a_block_out_in_the_hand_that_holds_it`: west of a player facing south, east with the rocket only in the offhand, the right hand with rockets in both hands or none, south of a player facing east, no offset without controls.
+  - `firework_rocket::tests::an_elytra_rocket_rides_at_its_riders_hand_and_bursts_when_the_boost_ends`: lifetime 20 for a 21-tick boost; every tick at the rider's feet plus the hand, with the rider's movement as its motion; it goes off on tick 21 without ever hitting the rider standing in its path; 7 for one star; a starless one lives as long and has no strength.
+  - `firework_rocket::tests::an_elytra_rocket_bursts_early_on_a_mob_in_its_riders_path_and_stays_put_without_its_rider`.
+  - `server::tests::an_elytra_rocket_rides_its_player_and_goes_off_at_it_when_the_boost_ends` (needs the 26.3 data): for the host (id 4) and a friend (id 5) gliding apart, each rocket's view rides its own player's hand, the level plays no launch sound, the burst is on tick 21 at the rider's hand, and the only hit is the rider's 7.0 with `by` the rider; a starless rocket bursts on tick 21 with no hit.
+  - `actions::tests::a_gliding_players_rocket_rides_along_and_goes_off_at_the_player_when_the_boost_ends` (needs the 26.3 data): a gliding player's one-star rocket boosts the body, leaves 63, rides at the player's right hand and hits the player for 7 as `PlayerFireworks` by that player.
+- **Decisions:**
+  - The host does not know when a player stops gliding, so the rocket keeps the hand offset until it goes off (vanilla moves it to the feet once the rider lands). The hand is the right one unless only the offhand holds a rocket, as the fork has no left-handed main arm.
+  - The host does not know a player's motion either, so the rocket's hit test runs along the rider's movement over the last tick.
+  - The launch whoosh stays the item use's sound (at the player, heard by everyone), and the attached rocket plays none on its first tick, so it is heard once.
+  - An attached rocket's view names its rider in `ThrownView.owner`, which no client read for rockets, so the wire format stays and the client can leave its sprite out.
+  - A rider who has left or changed dimension leaves the rocket where it was; it goes off there at the end of its life, as vanilla's rocket does without its attached entity.
+  - With pvp off the rider takes nothing, as `canHarmPlayer` refuses a player's own rocket (the `fw-launch` filter). The rider is pushed away from the rocket in its hand, half a block to the side, like vanilla's knockback from the rocket.
+- **Left for later:**
+  - An elytra rocket that bursts early on a mob or a block still boosts for its full time (in the brief).
+  - A second rocket used during a boost extends the body's boost to the longer of the two (`launch_rocket` takes the maximum), while vanilla adds both boosts; each rocket still goes off at the end of its own lifetime.
+- **Protocol:** see the Protocol section (no format change).
+- **Test steps** (survival, by day, open ground, `/gamerule pvp true`; the red and three-star rockets need E1's kit parser):
+  1. **FW-E1. The red rocket.** Put on the elytra (chest slot), `/tp ~ ~60 ~`, jump and jump again in the air to glide, then use the red rocket. You boost forward and a trail of white sparks follows you; no rocket sprite sits at your hand. After 1 to 1.6 s the rocket goes off at your right side: the deep bang, a big red ball with trails around you, and you lose 3.5 hearts. **Screenshot FW-E1** (the red ball around you).
+  2. **FW-E2. A plain rocket.** Glide again and use a plain rocket: the same boost, then a few grey puffs at your side, no bang and no damage.
+  3. **FW-E3. Three stars.** Glide and use the three-star rocket: a short boost, three bursts one after another and 5.5 hearts lost. Eat a golden apple.
+  4. **FW-E4. Without pvp.** `/gamerule pvp false`, glide and use the red rocket: the boost and the red ball, but no damage. `/gamerule pvp true`.
+  5. **FW-E5. Near a zombie.** Hatch 3 zombies on flat ground, `/tp ~ ~8 ~` above them, glide down past them and use the red rocket a second before you pass: when it goes off within 5 blocks of a zombie, that zombie flashes red and is knocked away from the burst.
+  6. **FW-E6. The friend's rocket** (two windows with `scripts\mp-local.ps1`, `/kit @a` from the host). The friend glides from `/tp ~ ~60 ~` and uses the red rocket. The friend boosts and, at the end of the boost, the red ball goes off at the friend and the friend loses 3.5 hearts. The host sees the trail behind the friend and the red ball at the friend. **Screenshots FW-E6a (host) and FW-E6b (friend).**
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:elytra,minecraft:firework_rocket*64,minecraft:firework_rocket[fireworks={flight_duration:1,explosions:[{shape:large_ball,colors:[I;11743532],has_trail:1b}]}]*64,minecraft:firework_rocket[fireworks={flight_duration:0,explosions:[{shape:burst,colors:[I;15790320,11743532]},{shape:small_ball,colors:[I;2437522]},{shape:large_ball,colors:[I;14602026]}]}]*64,minecraft:zombie_spawn_egg*8,minecraft:golden_apple*16,minecraft:cooked_beef*32
+```
+
+## Group bell-hits
+
+### 1. Snowballs, tridents and wind charges ring Minecraft bells
+
+After 89c60502.
+
+- **Vanilla (26.3, checked with javap):**
+  - `Projectile.onHitBlock` calls `BlockState.onProjectileHit` with the hit, and every projectile's own `onHitBlock` calls it through `super`: thrown items and potions, arrows and tridents (`AbstractArrow.onHitBlock`, after `lastState` and before the arrow stops), wind charges, fireballs, shulker bullets, llama spit and firework rockets. `DragonFireball.onHit` calls `super.onHit` before its cloud.
+  - `BellBlock.onProjectileHit`: `onHit(level, state, hit, the owner if it is a player, true)`, which checks `isProperHit` (a side, not up or down, at most 0.8124 above the block's bottom, a side that fits the attachment) and then `attemptToRing` with the struck face: block event 1 with the face's 3D value and `block.bell.use` at volume 2.
+  - `FireworkRocketEntity.onHitBlock`: `explode` when it has stars, then `super.onHitBlock`, so a rocket rings a bell with or without stars. A rocket keeps its motion after its move (`setDeltaMovement(dm)`), so one pressing on a block strikes it again every tick.
+  - `AbstractWindCharge.onHitBlock`: `super.onHitBlock` first (the ring from the struck side), then the burst a quarter block off the face, whose `BellBlock.onExplosionHit` rings the bell along its facing. `ServerLevel.blockEvent` queues equal events once.
+- **Changed:**
+  - `minecraft_terrain/src/bells.rs`: `rings_from(block, face, hit_y)` (`is_bell && proper_hit`).
+  - `minecraft_terrain/src/server.rs`:
+    - `ServerSim::projectile_hit_block(pos, face, at)`, vanilla's `BlockState.onProjectileHit`: on a proper hit it rings the bell through `ring_bell` with the struck face. Later block reactions (target blocks, chorus flowers, decorated pots) belong here too.
+    - The private `projectile_struck(pos, at, motion)` finds the face with `thrown::struck_face` along the motion and calls the seam.
+    - `tick_thrown` collects each landing's block and face and calls the seam after the frame hits, before the splashes and the wind bursts, so a wind charge's burst ring comes last.
+    - `tick_tridents` calls it for the new `TridentEvent::Block`, `tick_rockets` for the new `RocketEvent::Block`, and `tick_dragon_fireballs` for a fireball's block hit before its cloud.
+  - `minecraft_terrain/src/trident.rs`: `TridentEvent::Block { pos, at, velocity }` (next to `Struck`), pushed where the trident sticks, with the flight it struck with.
+  - `minecraft_terrain/src/firework_rocket.rs`: `RocketHit::Block` keeps the block and the hit point, and `after_hit` pushes `RocketEvent::Block { pos, at, velocity }` on every block hit, after a burst. `RocketEvent` loses `Eq`.
+  - `minecraft_terrain/src/dragon_fireball.rs`: `DragonFireball::tick` returns its `FireballHit`; the hit's location is the burst point it returned before.
+  - `docs/MINECRAFT-SURVIVAL.md`: a paragraph on projectiles ringing bells.
+- **Tests:**
+  - `bells::tests::a_projectile_rings_only_a_bell_and_only_from_a_proper_side`.
+  - `trident::tests::a_trident_reports_the_block_it_sticks_in_once_with_its_flight`.
+  - `firework_rocket::tests::a_rocket_reports_the_block_it_strikes_and_a_starless_one_strikes_it_every_tick`; `a_starless_rocket_under_a_roof_waits_out_its_lifetime` now also checks that it strikes the roof.
+  - `server::tests` (with the 26.3 data):
+    - `a_snowball_on_a_bells_side_rings_it_and_one_on_its_top_does_not`: on a floor bell facing north, a snowball on the top or the east side makes no sound and no block event; one on the north side plays one `block.bell.use` at volume 2, queues block event 1 north, and the villager 4 blocks away hears it.
+    - `a_thrown_trident_rings_a_hanging_bell`: a ceiling bell rings north from a trident flying south into it.
+    - `a_wind_charge_on_a_bells_side_rings_it_twice_and_ends_on_its_facing`: two use sounds, the block events south and then north.
+    - `a_wind_burst_beside_a_bell_rings_it` (the existing burst ring had no test): a player's burst one block away rings it along its facing; one three blocks away does not; a breeze's burst without mob griefing does not.
+  - The tests read the direction from the level's `bell_rings` after its block events run. E1's `Output.block_events` is not on this branch, so the swing on the client is not tested here.
+- **Decisions:**
+  - A projectile's ring is queued while the projectiles tick, after `ServerSim::tick` has run this tick's block events, so the bell hears it (and swings) one tick later than in vanilla.
+  - There is no `bell_ring` statistic, because the fork has no statistics. The seam takes no owner: vanilla gives `GameEvent.BLOCK_CHANGE` the player who threw it, and that game event is track W's (`Level::ring_bell`).
+  - A rocket rings a bell on every block hit, with or without stars, as vanilla's `onHitBlock` does. A plain rocket pressing on a bell's side therefore rings it every tick until it puffs.
+  - Tridents, rockets and dragon fireballs take their struck face from `thrown::struck_face` along their motion, as thrown items already do.
+  - MW2 bullets don't ring bells, because vanilla has no bullets. The player has no bow, so the player's rings come from snowballs, eggs, potions, pearls, bottles, tridents, wind charges and rockets.
+- **Merge notes:** track D's breeze charges fly in `ServerSim.thrown` as wind charges, so they ring bells through `tick_thrown` once both are merged. W's `projectile_landed` calls sit next to the new lines in `tick_thrown` and `tick_tridents`; keep both.
+- **Protocol:** no message change.
+- **Test steps** (survival, Normal, by day, flat ground; the swing needs E1's `bells-swing`, so until it is merged a ring is the sound only):
+  1. **BH-1. Throws.** Look north and place a bell on cobblestone, so that it faces you. From 5 blocks in front of it, throw a snowball at the side facing you, below the rim: it rings. Throw one onto its top: no ring. Throw an egg, a splash water potion and the trident at the side facing you: each rings. Walk round and throw a snowball at one of the two other sides: no ring. **Screenshot BH-1** (just after a ring).
+  2. **BH-2. Villagers.** Place the bed 10 blocks away, use a villager spawn egg next to the bell and ring the bell with a snowball: the villager reacts as to a hand ring and goes to hide.
+  3. **BH-3. Wind charges.** Throw a wind charge at the side facing you: it rings twice in quick succession. Throw one at the ground one block beside the bell: it rings once. **Screenshot BH-3.**
+  4. **BH-4. Rockets.** Place a dispenser two blocks in front of the bell, facing it, with a lever on it and a plain rocket inside. Pull the lever: the rocket flies into the bell and rings it again and again while it presses on it, then puffs. Put the red rocket in and pull the lever again: it bursts on the bell with one ring.
+  5. **BH-5. Friend** (two windows with `scripts\mp-local.ps1`, `/kit @a` from the host). The friend throws a snowball at the side facing them: both windows hear the ring.
+- **Kit** (18 backpack slots; the red rocket needs E1's kit parser):
+
+```
+IW4L_MINECRAFT_KIT=minecraft:bell*4,minecraft:cobblestone*64,minecraft:snowball*16,minecraft:egg*16,minecraft:splash_potion@water*4,minecraft:trident+loyalty=3,minecraft:wind_charge*32,minecraft:dispenser*2,minecraft:lever*2,minecraft:firework_rocket*16,minecraft:firework_rocket[fireworks={flight_duration:1,explosions:[{shape:large_ball,colors:[I;11743532],has_trail:1b}]}]*16,minecraft:villager_spawn_egg*2,minecraft:white_bed,minecraft:ender_pearl*8,minecraft:cooked_beef*16
+```
+
+### 2. Skeleton arrows and fireballs ring Minecraft bells
+
+After 1247a5c0.
+
+- **Vanilla (26.3, checked with javap):** the mobs' projectiles reach `BlockState.onProjectileHit` the same way: `AbstractArrow.onHitBlock` (skeletons, strays, pillagers, piglins), `LargeFireball.onHit` and `WitherSkull.onHit` (through `super.onHit`, before their explosion), `SmallFireball.onHitBlock` (before it lights the fire), `ShulkerBullet.onHitBlock`, `LlamaSpit.onHitBlock` and `AbstractThrownPotion.onHitBlock` (a witch's potion, before the water douses).
+- **Changed:**
+  - Vendored `entities/src/projectile.rs`: `Arrow` keeps its block hit (the block, the hit point and the flight it struck with) from `tick_world`, and `take_block_hit()` hands it over once.
+  - Vendored `entities/src/world.rs`: `projectile_block_hits` (next to `level_events`) and `EntityWorld::take_projectile_block_hits()`. The arrow tick moves an arrow's block hit into it; `fireball_hit` (fireballs and wither skulls), `shulker_bullet_hit`, `tick_potion` (witch potions) and `tick_llama_spit` push theirs with one line each.
+  - Vendored `entities/src/llama_spit.rs`: `SpitHit::Block` carries the block and the hit point; `world/equines.rs` pushes it before the entity hit (E1 owns the rest of that file).
+  - `minecraft_terrain/src/server.rs`: `mob_projectiles_hit_blocks`, called in `tick_mobs_with` after the creepers explode and before the fireballs do, sends each hit through `projectile_struck` to the `projectile_hit_block` seam of commit 1.
+  - `docs/MINECRAFT-SURVIVAL.md`: the bell paragraph names the mobs' projectiles.
+- **Tests:**
+  - Vendored `projectile::tests::an_arrow_reports_the_block_it_sticks_in_once_with_its_flight`.
+  - Vendored `world::tests::mob_projectiles_report_the_block_they_strike_once`: an arrow, a small fireball, llama spit and a witch's potion falling on the floor are each reported once, on the floor's top with a downward flight; the stuck arrow is not reported again.
+  - Vendored `llama_spit::tests::spit_hurts_what_it_meets_and_ends_on_a_wall` checks the wall block and hit point of the spit's last hit.
+  - `server::tests` (with the 26.3 data): `a_skeletons_arrow_into_a_bell_rings_it` (a skeleton's arrow flying south sticks in a floor bell facing north, rings it north once and not again while it stays stuck) and `a_blazes_fireball_into_a_bell_rings_it` (a blaze's fireball flying south bursts on a wall bell facing east and rings it north).
+- **Decisions:**
+  - The mobs' hits are drained right after the mobs tick and before the fireball explosions, so a ghast's fireball rings a bell before its blast can break it. The ring's block event is then dropped with the bell, as vanilla drops an end-of-tick block event whose block is gone, while the sound still plays.
+  - Shulker bullets push their block hit with one line like the others, without a test of their own: a bullet homes on a target and needs one to fly.
+  - Arrows and fire charges an ominous trial spawner drops are the same world arrows and fireballs, so they ring bells too.
+  - Track D's breezes turn arrows back on main (`Arrow::deflect`); a deflected arrow strikes no block that tick, so it reports nothing until it does.
+- **Merge notes:** on main, W's `arrow_landed` sits inside the arrow's hit-sound block and D's `deflect` before it; the new line sits between them. D's deflection lines in `world/fireballs.rs` and `world/shulker_bullets.rs` are in the tick functions, the new lines in the hit functions.
+- **Protocol:** no message change.
+- **Test steps** (survival, Normal, flat ground, `/time set night`; the swing needs E1's `bells-swing`):
+  1. **BH-6. Skeleton.** Look north and place a bell on cobblestone, so that it faces you, and stand 3 blocks south of it with the shield. Hatch a skeleton 12 blocks north of the bell, so that the bell stands between you. Crouch behind the bell: each arrow that hits the bell's front rings it and sticks in it. **Screenshot BH-6** (an arrow in the bell).
+  2. **BH-7. Blaze.** Do the same with a blaze: each fireball that hits the bell's front rings it and lights a fire beside it. Put the fire out with the water bucket.
+  3. **BH-8. Llama.** Hatch a llama 6 blocks north of the bell, hit it once with the sword and step behind the bell: when its spit hits the bell's front, the bell rings.
+  4. **BH-9. Witch.** Hatch a witch 8 blocks north of the bell and stand behind the bell: a potion it throws that breaks on the bell's front rings it.
+  5. **BH-10. Friend** (two windows with `scripts\mp-local.ps1`, `/kit @a` from the host). The friend stands next to the host while the skeleton shoots at them: both windows hear each ring.
+- **Kit** (16 backpack slots):
+
+```
+IW4L_MINECRAFT_KIT=minecraft:bell*4,minecraft:cobblestone*64,minecraft:oak_planks*64,minecraft:skeleton_spawn_egg*2,minecraft:blaze_spawn_egg*2,minecraft:llama_spawn_egg*2,minecraft:witch_spawn_egg*2,minecraft:iron_sword,minecraft:shield,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots,minecraft:golden_apple*8,minecraft:cooked_beef*16,minecraft:water_bucket
+```
+
+## Group maps-held
+
+### 1. Minecraft maps mark their holder and their target
+
+After a0285a18.
+
+- **Vanilla (26.3, checked with javap):**
+  - `MapItem.inventoryTick`: a map item with saved data calls `MapItemSavedData.tickCarriedBy(player, stack, null)` from every slot that ticks (`Inventory.tick` for the 36 main slots, `EntityEquipment.tick` for armour and the offhand); `update` (filling in) only for an unlocked map in a hand (group `maps-explore`).
+  - `tickCarriedBy`: the ticking player gets a `HoldingPlayer` if it has none. Then for every holder in `carriedBy`: a removed player, or one whose inventory holds no stack of the same item with the same `map_id` (`mapMatcher`), loses its holder and its marker; otherwise, when it stands in the map's dimension and the map has `trackingPosition`, `addDecoration(PLAYER, name, x, z, yRot)`. A holder other than the ticking player that wears `#map_invisibility_equipment` (a carved pumpkin) in an armour, body or saddle slot loses its marker. The loop removes a holder without stepping its index back, so the next holder is skipped that tick. Last, each entry of the stack's `minecraft:map_decorations` that the map does not show yet is added with `addDecoration(type, key, x, z, rotation)`.
+  - `addDecoration` runs `calculateDecorationLocationAndType` (ported in `maps-loot` as `MapData::decoration`): no location removes the marker; a changed one replaces it in place (a `LinkedHashMap`), and `trackCount` types (`player`, `frame`, `red_marker`, `blue_marker`, `player_off_map`, `player_off_limits`, the 16 banners) move `trackedDecorationCount`. `calculateRotation` spins every marker of a Nether map, targets too, since a level is always passed.
+  - The markers live only in the saved data object, not in its codec, so they are never saved.
+- **Changed:**
+  - `minecraft_terrain/src/maps.rs`:
+    - `MAP_ITEMS` (the 17 26.3 map items) and `is_map_item`, `tracks_count`, and `wears_map_invisibility(inventory)` (the jar's item tag through the inventory's recipe book).
+    - `CarriedMap::of(stack)`: the item, its `minecraft:map_id` and the marks of its `minecraft:map_decorations`; `Carrier`: a player's UUID, dimension, x, z, yaw, carried maps and whether they wear a pumpkin.
+    - `Held`: a map's markers in insertion order, its tracked count and its holders. `MapStore` keeps a `Held` per map beside the map data and runs `tick_carried(carriers, game_time)`, a port of `tickCarriedBy` without item frames.
+  - `minecraft_survival/src/maps.rs` (new): `carrier(player)` from `Player.place` and the inventory, and `tick(maps, players, game_time, ticks)`, which ticks every carried map once per server tick.
+  - `render_anim/src/minecraft_world.rs`: the host calls `minecraft_survival::maps::tick` once a frame right after the tick plan, for every player in every level.
+- **Tests:**
+  - `maps::tests::a_carried_map_marks_its_holder_and_its_target_like_vanilla`: the holder's marker first, then the stack's red X (rotation 8); `player_off_map` at 300 map units, no marker at 400 on a plain map, `player_off_limits` on an unlimited one; in another dimension the marker stays; no holder marker without `trackingPosition`; every marker of a Nether map spins; a map without data is not held; the tracked count.
+  - `maps::tests::every_holder_is_marked_until_they_drop_the_map_or_leave`: two holders in tick order; a pumpkin wearer is hidden by another holder's tick and shown again by their own; a holder carrying another map item with the same id loses their marker; the holder after a dropped one moves a tick later; a holder who left the game loses their marker.
+  - `maps::tests::carried_maps_read_their_id_and_marks_from_map_items_only`, `maps::tests::marks_of_carried_maps_are_never_saved` and `maps::tests::a_carved_pumpkin_on_the_head_hides_its_wearer_from_maps` (with the 26.3 jar).
+  - `minecraft_survival` `maps::tests::players_mark_the_maps_they_carry_where_they_stand`: from the offhand and the backpack, not from an empty map, and nothing for a player with no place.
+- **Decisions:**
+  - Holders and markers are keyed by the player's UUID; vanilla keys the marker by the player's name. No client sees the key.
+  - A player holds maps only while the host knows where they stand (`Player.place`: dimension, feet and yaw); a player with no place counts as gone. During a dimension change the place stays in the old dimension until the player arrives.
+  - Maps tick from every inventory slot, not from the cursor or the ender chest, as vanilla. Maps in item frames are left for later (brief).
+  - The maps tick once per server tick of the frame's batch, frozen ticks included, since vanilla players tick under `/tick freeze`; each tick spins Nether markers with its own game time.
+  - The markers are kept in `MapStore` beside `MapData`, so ticking them never marks a map file for saving.
+  - Vanilla's skip of the holder after a removed one is kept.
+- **Test steps:** none in game for this commit alone: nothing draws the markers until group `maps-view`, whose steps check them (the brief's E-maps steps 4 and 5).
+- **Kit:** none.
+
+### 2. Minecraft friends get the pictures of the maps they carry
+
+After 08bf2ed1.
+
+- **Vanilla (26.3, checked with javap):**
+  - `ServerPlayer.doTick`, after the player's own tick (and so after its maps' `tickCarriedBy`), runs `synchronizeSpecialItemUpdates` for every stack of the inventory: `MapItemSavedData.getUpdatePacket(id, player)` asks that player's `HoldingPlayer` for `nextUpdatePacket`.
+  - `HoldingPlayer` starts with `dirtyData` set over the whole map (0,0 to 127,127) and `dirtyDecorations` set. `nextUpdatePacket`: a dirty map becomes one `MapPatch` of the dirty rectangle (`colors[i + j * width]`) and is clean again; dirty markers are sent, all of them, only when `tick++ % 5 == 0` (the count moves only while they are dirty); no packet when neither. The packet is `ClientboundMapItemDataPacket(id, scale, locked, Optional<markers>, Optional<patch>)`.
+  - `setColor` marks the map for saving and every holder's rectangle (`markColorsDirty` grows it, or starts it when clean); `updateColor` only when the colour changes. `addDecoration` (on a changed marker) and `removeDecoration` (always) mark every holder's markers dirty.
+  - The client (`ClientPacketListener.handleMapItemData`) makes the map with the packet's scale and lock the first time (`createForClient`), then replaces all markers when sent and copies the patch in. `handleRespawn` carries the client's maps over to the new level.
+- **Changed:**
+  - `minecraft_net/src/messages.rs`: `ToClient::MapData(MapUpdate)`; `MapUpdate { id, scale, locked, decorations: Option<Vec<MapMark>>, patch: Option<MapPatch> }`, `MapMark { kind, x, y, rot }`, `MapPatch { x, y, width, height, colors }`.
+  - `minecraft_terrain/src/maps.rs`:
+    - `Holding` keeps vanilla's `HoldingPlayer` state (the dirty rectangle, dirty markers and the send count) and builds the next `MapUpdate`; `Held` marks every holder's markers dirty as vanilla does.
+    - `MapStore::tick_carried` queues each carrier's updates right after its maps tick, `take_updates(uuid)` hands them over, and a player who no longer carries anything loses waiting updates. `set_color` and `update_color` (vanilla's `setColor` and `updateColor`) for group `maps-explore`.
+    - `MapCache` and `ClientMap` (scale, lock, colours, markers and a `version` that counts applied updates, for the drawing in `maps-view`): `apply(update)` as vanilla's client.
+  - `minecraft_survival/src/maps.rs`: `take_updates`. `session.rs`: `Sessions::send_maps` puts each friend's updates in its outbox. `remote.rs`: `RemoteWorld.maps`, filled from `ToClient::MapData`.
+  - `render_anim/src/minecraft_host.rs`: `send_maps` every frame next to `send_spawns`. `render_anim/src/minecraft_world.rs`: `Runtime.map_cache`, cleared when a world loads and filled from the host's own updates right after the map tick.
+  - `docs/MINECRAFT-SURVIVAL.md`: a paragraph on maps.
+- **Tests:**
+  - `minecraft_net` `codec::tests::a_map_picture_reaches_the_friend_whole_or_in_part` (index 35; the whole 128 x 128 picture in less than 16 KB plus 32 bytes; markers only; no markers is not an empty list); `every_message_to_the_client_round_trips` covers `MapData`; the world spawn test takes index 36.
+  - `maps::tests::a_holder_gets_the_whole_map_first_and_then_only_the_dirty_rectangle`: the first update is the whole map with the markers; nothing when nothing changed; moved markers on the fifth try; three painted pixels give a 5 x 5 patch without markers; an unchanged `update_color` changes nothing; a painted map is saved; a new holder gets the whole map while the old one gets one pixel; a player who leaves loses waiting updates.
+  - `maps::tests::a_map_cache_takes_whole_maps_patches_and_marks_like_the_vanilla_client`: the cache follows the store's colours and markers; a known map keeps its first scale and lock; an empty marker list clears them; a patch is cut at the edge; a new id starts blank.
+  - `session::tests::each_friend_gets_the_pictures_of_the_maps_it_carries` (with the 26.3 data): nothing before a tick; the friend's session gets the whole picture with its marker once; the host's queue stays empty; a repainted pixel arrives alone.
+  - `remote::tests::the_friend_keeps_the_pictures_of_its_maps` (with the 26.3 data).
+- **Decisions:**
+  - `MapData` sits next to `SpawnPosition` (the compasses' spawn): only `SpawnPosition`'s index moves.
+  - The message keeps vanilla's optional markers: none sent leaves the friend's markers, an empty list clears them. Marker names (banners) are not sent, as there are no banner markers yet.
+  - The host's own picture comes through the same per-player updates, taken straight from `globals.maps` without the wire, so its markers move at most every fifth tick, like a vanilla single-player client on its built-in server.
+  - The friend's cache belongs to `RemoteWorld`, not to the level, so it outlives a dimension change, as vanilla's `handleRespawn` keeps the maps.
+  - Only the 17 map items are synced. Vanilla syncs any stack with a `map_id`, which outside of commands only map items have.
+- **Test steps:** none in game for this commit alone: nothing draws a map until group `maps-view`, whose friend steps (the brief's E-maps F1 to F3) check the pictures.
+- **Kit:** none.
+
+## Group maps-view
+
+### 1. Minecraft shows the held map in first person
+
+After f26f20f6, the unfinished commit of this group (stopped for the week on 2026-10-29). This commit finishes it: it checks the unfinished work against javap, builds it, runs its tests and adds the docs, with one change to its code (the channel shading in `map_picture::shade` brackets the shift, same result).
+
+- **Vanilla (26.3, checked with javap):**
+  - `FirstPersonHandsAndItemsRenderer.submitArmWithItem`: nothing at all while scoping (`isScoping`). A stack with `DataComponents.MAP_ID` in the main hand with an empty offhand goes to `renderTwoHandedMap`; any other stack with a map id goes to `renderOneHandedMap` on its own arm.
+  - `renderTwoHandedMap(xRot, inverseArmHeight, attack)`: `translate(0, 0.1 sin(attack π), -0.4 sin(√attack π))`, `translate(0, 0.04 - 1.2 inverseArmHeight - 0.5 tilt, -0.72)`, `rotX(-85 tilt)`, the two arms, `rotX(20 sin(√attack π))`, `scale(2)`. `calculateMapTilt` is `-cos(clamp(1 - xRot / 45 + 0.1, 0, 1) π) 0.5 + 0.5`.
+  - `renderOneHandedMap`: `translate(side 0.125, -0.125, 0)`, the arm, `translate(side 0.51, -0.08 - 1.2 inverseArmHeight, -0.75)`, then with `s = sin(√attack π)`: `translate(side -0.5 s, 0.4 sin(√attack 2π) - 0.3 s, -0.3 sin(attack π))`, `rotX(-45 s)`, `rotY(side s -30)`.
+  - `renderMap`: `rotY(180)`, `rotZ(180)`, `scale(0.38)`, `translate(-0.5, -0.5, 0)`, `scale(1/128)`. The background quad spans -7 to 135 (`MAP_BORDER` 7): `map_background_checkerboard` when the client has the map's data, `map_background` when it has not. `MapRenderer.render` then draws the 128 x 128 colours over 0 to 128.
+  - `MapRenderer.render`: each marker is `translate(x/2 + 64, y/2 + 64)`, `rotZ(rot 360/16)`, `scale(4)`, `translate(-0.125, 0.125)`, a quad from -1 to 1 with (u0, v0) at (-1, 1); later markers lie on top.
+  - `MapColor.<clinit>`: 62 colours `new MapColor(id, rgb)`, ids 0 to 61. `calculateARGBColor` is transparent for `NONE`, otherwise `channel * modifier / 255` with the brightness modifiers 180, 220, 255 and 135. `MapDecorationTypes.<clinit>`: 40 `register(id, asset, …)` calls; the sprites are `textures/map/decorations/<asset>.png`.
+- **Changed:**
+  - `minecraft_terrain/src/map_picture.rs` (new): `MapPalette::from_class` reads `MapColor.<clinit>` with `class_file.rs`, `decoration_assets` the marker types and their textures from `MapDecorationTypes.<clinit>`, and `read_jar` both from the jar. `MapLook::load` adds the two backgrounds and the 40 sprites from the packs, with warnings, not errors, for anything missing. `compose(look, map)` builds the picture at twice the map's resolution (284 x 284 RGBA): the background, the colours as 2 x 2 blocks inside the 7-pixel border, then each marker's 8 x 8 sprite turned by `rot * 22.5°`.
+  - `frame/src/minecraft_ui.rs`: `MinecraftUi.held_maps: Vec<McHeldMap>` next to `spyglass_scope`; `McHeldMap { picture, hands, pitch, swing }` and `McMapHands { Both, Right, Left }`.
+  - `render_anim/src/minecraft_held_map.rs` (new): `layout(main, offhand)`, two-handed only with an empty offhand, and `HeldMaps`, which keeps one picture per hand and composes it again only when its map id or its `MapCache` version changes, into the same image.
+  - `render_anim/src/minecraft_hand.rs` `held_hand_mesh`: a stack with a map id is skipped right after `let Some((slot, stack))`.
+  - `render_anim/src/minecraft_world.rs` (the host, from `Runtime.map_cache`) and `minecraft_remote.rs` (a friend, from `RemoteWorld.maps`): the map looks are loaded with the world, and the pictures are set on `MinecraftUi` next to the hand mesh from the same `Held`, so they follow its rules (no items in third person, asleep, skating, dead or while scoping).
+  - `hud/src/minecraft_held_map.rs` (new) and the job `HudTessPass.minecraft_held_map`: the vanilla pose projected with the hand's fixed 70° field of view (as `minecraft_hand::hand_clip`), in 16 x 16 cells so the perspective stays straight. It is the first Minecraft overlay drawn, so the fire, the spyglass scope and the hotbar cover it.
+  - `docs/MINECRAFT-SURVIVAL.md`: the maps paragraph.
+- **Tests:**
+  - `map_picture::tests::map_colours_are_shaded_like_vanilla_brightness`: GRASS (`0x7FB238`) at NORMAL is (109, 153, 48), with HIGH, LOW and LOWEST too; `NONE` and unknown ids are transparent.
+  - `map_picture::tests::a_map_picture_is_its_colours_at_twice_the_size_inside_the_frame` and `markers_are_eight_map_pixels_turned_by_a_sixteenth_per_step` (rotations 0, 4, 8 and -12; an unknown marker draws nothing).
+  - `map_picture::tests::the_jar_gives_the_map_colours_and_marker_textures` (with the 26.3 jar and pack): 62 colours with GRASS, `COLOR_ORANGE` 15, `COLOR_BROWN` 26 and `GLOW_LICHEN` 61; 40 marker types and sprites; the 64 x 64 and 128 x 128 backgrounds.
+  - `render_anim` `minecraft_held_map::tests::the_map_is_held_in_both_hands_only_while_the_offhand_is_empty` and `a_held_map_swings_with_its_own_hand_and_is_redrawn_when_its_picture_changes` (also: nothing while scoping).
+  - `hud` `minecraft_held_map::tests`: `the_map_tilts_up_as_the_holder_looks_down`, `looking_down_the_two_handed_map_faces_the_eye_upright_and_centred`, `looking_ahead_the_two_handed_map_lies_low_and_leans_away`, `a_one_handed_map_sits_beside_its_hand_and_the_left_mirrors_the_right`, `a_swing_moves_the_map_and_a_finished_swing_puts_it_back` and `nothing_is_drawn_behind_the_eye`.
+  - Run on this commit: `test -p minecraft_terrain` 1590 passed with 3 ignored, `-p frame` 28, `-p hud` 205, `-p render_anim` 219; `check -p launcher` clean.
+- **Decisions:**
+  - The held map is a HUD overlay at vanilla's place, not a quad in the hand mesh, which samples only the block atlas (brief).
+  - `MinecraftUi.held_maps` is a list instead of the brief's one `held_map`: vanilla draws a one-handed map in each hand when both hands hold one.
+  - Any stack with a `minecraft:map_id` is drawn as a map and left out of the hand mesh, as vanilla checks the component, not the item. A map item without an id is drawn as an item.
+  - The map is drawn at full brightness, while vanilla lights it with the light at the player (`RenderTypes.text`). The arms are not drawn, the equip lowering (`inverseArmHeight`) is 0 and the hands' lag behind the camera is left out, as for every held item in the fork.
+  - The pitch is the view's own, not interpolated between ticks.
+  - A picture is composed on the CPU only when an update for its map arrives (markers at most every fifth tick), into the same image, so a 284 x 284 picture is built at most a few times a second.
+- **Protocol:** no message change.
+- **Test steps** (survival, Normal, by day; the host, then a friend in a second window with `scripts\mp-local.ps1` and `/kit @a` from the host):
+  1. **MV-1. A treasure map.** Load a world with the kit. Run `/locate structure minecraft:shipwreck` and `/tp` to it, drink a water breathing potion and take the Buried Treasure Map from the map chest (or from an ocean ruin chest, as in maps-loot commit 2).
+  2. **MV-2. Two hands.** Select the map with nothing in the offhand and look straight ahead: the map lies low at the bottom of the screen, leaning away. Look down: it rises and faces you in the middle of the screen, with a parchment border, a grey checkerboard where nothing is mapped, orange coastline outlines, the red X and your white arrow pointing where you look. No map item shows in the hand (**MV-2_two_hands**).
+  3. **MV-3. One hand.** Put a torch in the offhand and select the map again: the map moves to the right, smaller, held in one hand, and the torch shows on the left (**MV-3_one_hand**). Press F with the map selected: the map is on the left and the torch on the right.
+  4. **MV-4. Swing and arrow.** Left-click the air: the map swings with its hand. Walk and turn: your arrow moves and turns on the map. Walk away from the X until the arrow reaches the map's edge: it becomes a white circle that stays on the edge (**MV-4_edge**).
+  5. **MV-5. Hidden.** Press F5: no map on screen in third person; press F5 until you are back in first person. Put the spyglass in the offhand, select the map and right-click: the map is gone while you look through the spyglass and comes back after.
+  6. **MV-6. Treasure.** Boat to the X and dig at it with the shovel: a chest under the sand holds a heart of the sea (**MV-6_treasure**).
+  7. **MV-7. Reload.** Save and quit, load the world again and hold the map: it shows the same coastline and X.
+  8. **MV-F1. Friend.** The host drops the treasure map with Q next to the friend, and the friend picks it up and holds it: the friend sees the same coastline and X with their own arrow. The friend then opens another shipwreck map chest and holds that map: its own coastline and X show (**MV-F1_friend**).
+- **Kit** (17 backpack slots):
+
+```
+IW4L_MINECRAFT_KIT=minecraft:potion@long_water_breathing,minecraft:potion@long_water_breathing,minecraft:potion@long_water_breathing,minecraft:potion@night_vision,minecraft:potion@night_vision,minecraft:oak_boat,minecraft:iron_shovel,minecraft:diamond_shovel,minecraft:diamond_pickaxe,minecraft:compass,minecraft:torch*64,minecraft:cobblestone*64,minecraft:cooked_beef*32,minecraft:turtle_helmet,minecraft:diamond_sword,minecraft:shield,minecraft:spyglass
+```
+
+## Group maps-colours
+
+### 1. Minecraft reads block map colours from the 26.3 jar
+
+After 5e83e1f0.
+
+- **Vanilla (26.3, checked with javap):**
+  - `BlockBehaviour$Properties`: the `mapColor` function starts as `state -> MapColor.NONE`. `mapColor(MapColor)` and `mapColor(DyeColor)` store constant functions (`dye.getMapColor()`), `mapColor(Function)` stores the function itself. `ofLegacyCopy(block)` copies the block's `mapColor`, and `ofFullCopy` starts from `ofLegacyCopy`.
+  - `BlockStateBase.<init>` keeps `properties.mapColor.apply(state)` for every state, and `getMapColor` returns it. `BlockBehaviour.defaultMapColor()` applies the function to `defaultBlockState()`.
+  - No block constructor changes the map colour: the only classes in the jar that name `mapColor` are `Blocks`, `BlockBehaviour`, `BlockBehaviour$Properties`, `BlockBehaviour$BlockStateBase`, `DyeColor` and `MapItemSavedData$MapPatch`.
+  - `Blocks.<clinit>` has no branches. It registers through `register` (four overloads, all ending in `BuiltInRegistries.BLOCK`, so a block's registry id is its registration order), the helpers `registerSlab`, `registerStair`, `registerLegacyStair` and `registerWall` (`ofLegacyCopy` or `ofFullCopy` of the base block) and `wallVariant`, and the property builders:
+    - `logProperties(top, side, sound)`: `axis == Y ? top : side`.
+    - `netherStemProperties(colour)`, `leavesProperties` (`PLANT`), `shulkerBoxProperties(colour)` and `candleProperties(colour)`.
+    - `waterloggedMapColor(colour)`: `WATER` while waterlogged (barrier, light).
+  - 26.3 registers the dyed blocks through `ColorCollection.registerBlocks(ids, register, factory, dye -> properties)`, once per dye in `DyeColor` order, and their stairs and slabs through `ColorCollection.zipMap`. Copper blocks come from `WeatheringCopperCollection.registerBlocks(ids, register, waxed, weathering, state -> properties)`: unaffected, exposed, weathered and oxidized, then the four waxed ones. Several copper property lambdas pick their colour with a `switch` over `Blocks$1.$SwitchMap$…WeatherState`.
+  - The state lambdas: beds `part == FOOT ? dye.getMapColor() : WOOL`, crops `age >= 6 ? COLOR_YELLOW : PLANT`, lightning rods `COPPER_BLOCK.weathering().pick(state).defaultMapColor()` (the waxed ones the same through `waxed()`).
+  - `DyeColor(id, name, diffuse, mapColor, terracottaColor, firework, text)`: dyed terracotta takes `getTerracottaColor()`.
+  - Copper bars and chains have no map colour (`Properties.of()` without `mapColor`), so they are `NONE` like iron bars.
+- **Changed:**
+  - `minecraft_terrain/src/block_map_colors.rs` (new): `BlockMapColors::read_jar(jar, states)` gives the `MapColor` id of every block state (`id(state)`, `NONE` 0 when a block has none). It runs `Blocks.<clinit>` in a small bytecode interpreter: the `Blocks` helpers and lambdas are interpreted, and `register`, `Properties`, `DyeColor`, `Block.defaultMapColor`, `BlockState.getValue` and the colour and copper collections are built in. The names come from `BlockItemIds` and `BlockIds`, the dye colours from `DyeColor.<clinit>`, the switch cases from `Blocks$1`. Property fields are followed through static aliases and super classes to their name (`BedBlock.PART` → `AbstractBedBlock.PART` → `BlockStateProperties.BED_PART` → `"part"`). The `BlockStates` trait gives the states, and `BlockRegistry` (the 26.3 block catalog) implements it.
+  - `minecraft_terrain/src/class_file.rs`: `ClassFile.super_name`, read from the class file. `keyframes.rs`: its test class sets it.
+  - `minecraft_terrain/src/lib.rs`: the module.
+- **Tests:**
+  - `block_map_colors::tests::blocks_take_their_map_colour_from_their_properties_like_vanilla`: a hand-made `Blocks` class: a fixed colour, `ofLegacyCopy`, a log whose axis lambda reads a property through an alias and a super class, `defaultMapColor` of the log's default state, and a colour collection with `mapColor(DyeColor)`.
+  - `block_map_colors::tests::a_block_without_a_map_colour_is_none_and_the_catalog_must_match_the_jar`: a wrong name or block count in the catalog is an error naming the block; without `mapColor` every block is `NONE`.
+  - `block_map_colors::tests::switches_jump_to_their_case_or_their_default`: `tableswitch` and `lookupswitch` targets.
+  - `block_map_colors::tests::every_26_3_block_state_gets_its_vanilla_map_colour` (with the 26.3 jar and catalog): every one of the catalog's states gets an id; air 0, `grass_block` 1, `sand` 2, `stone` 11, `water` 12, `oak_log[axis=y]` 13 and `[axis=x]`/`[axis=z]` 34 (`PODZOL`), oak planks 13, red bed head 3 (`WOOL`) and foot 28 (`COLOR_RED`), white wool 8, red terracotta 50, wheat age 0 7 and age 7 18, copper 15, exposed copper 44, oxidized and waxed oxidized copper 55, the oxidized and waxed exposed lightning rods like their copper, copper and iron bars 0, a waterlogged barrier or light 12 and a dry barrier 0.
+- **Decisions:**
+  - The n-th block `Blocks.<clinit>` registers is catalog block n, as vanilla's registry ids follow registration. Every name the id classes give (plain ids and the dyed collections) must match the catalog at that place, and the counts must match, or reading fails. The copper collections' names are not worked out and are checked by their place only.
+  - Block factories are never run, since no block constructor touches the map colour. A block keeps the colour rule it had when it registered, as each state keeps its colour from construction.
+  - An enum property value matches a constant by its lower-case name (`BedPart.FOOT` ↔ `foot`, `Direction$Axis.Y` ↔ `y`).
+  - Anything the interpreter does not know fails the whole read with the place in the bytecode, rather than guessing a colour.
+  - The table is not used in game yet: group `maps-explore` (commit 2) loads it with the world for `MapItem.update`.
+- **Protocol:** no message change.
+- **Test steps:** none in game for this commit alone: nothing reads the table until `maps-explore` commit 2 ("Minecraft maps fill in as their holder walks"), whose steps check the colours.
+- **Kit:** none.
+
+## Group maps-explore
+
+### 1. Minecraft maps fill in as their holder walks
+
+After ef4fae51.
+
+- **Vanilla (26.3, checked with javap):**
+  - `MapItem.inventoryTick(stack, level, entity, slot)`: after `tickCarriedBy`, a map that is not locked runs `update(level, entity, data)` when `slot` is a HAND slot. `Inventory.tick` passes `MAINHAND` only for the selected hotbar slot and `null` for the others; `EntityEquipment.tick` passes `OFFHAND` for the offhand. So a map fills in from the selected slot or the offhand only.
+  - `MapItem.update`: nothing unless the player's level is the map's dimension. `s = 1 << scale`; the holder's pixel is `floor(x - centreX) / s + 64` (Java division, towards zero); the radius is `128 / s`, halved when the dimension `hasCeiling`. `getHoldingPlayer(player).step++`. For each column `x` from `px - r + 1` to `px + r - 1`, only when `(x & 15) == (step & 15)` or the column before changed a pixel: the rows `z` from `pz - r - 1` to `pz + r - 1`, inside `0 <= x < 128`, `-1 <= z < 128`, at block `((centre / s) + x - 64) * s`. A pixel whose chunk `isEmpty` is skipped, and the slope keeps the height before it.
+  - With a ceiling every pixel is DIRT (weight 10) or STONE (weight 100) by `h = x + z * 231871; h = h * h * 31287121 + h * 11; (h >> 20) & 1`, at height 100. Otherwise, for each of its `s * s` block columns: from the `WORLD_SURFACE` height down to the first block with a map colour (bedrock below the floor); a block holding a fluid counts the fluid blocks below it as depth and is drawn as `getCorrectStateForFluidBlock` (the fluid's own block unless its top face is sturdy); the height adds `y / (s * s)`. The pixel takes the most common colour, the first counted on a tie (`LinkedHashMultiset`, `copyHighestCountFirst`).
+  - Brightness: WATER uses `depth / (s * s) * 0.1 + ((x + z) & 1) * 0.2` (below 0.5 HIGH, above 0.9 LOW, else NORMAL); any other colour `(height - height before) * 4 / (s + 4) + (((x + z) & 1) - 0.5) * 0.4` (above 0.6 HIGH, below -0.6 LOW, else NORMAL). Rows below 0 only feed the slope; pixels at `r * r` or more from the holder are left, and those past `(r - 2)^2` only on odd `x + z`. `updateColor` marks the holders' dirty rectangles.
+  - `checkBanners` runs for every block column; banner markers are left for later (brief).
+- **Changed:**
+  - `minecraft_terrain/src/maps.rs`:
+    - `MapSurface` (ceiling, floor, loaded chunks, `WORLD_SURFACE` height and per block the map colour, whether it holds a fluid and the colour it is drawn with) and `MapBlock`.
+    - `MapData::fill_in(holder, step, surface)` ports `MapItem.update` and returns the pixels that change; `speckle` is the ceiling pattern; `COLOR_DIRT`, `COLOR_STONE` and `COLOR_WATER`.
+    - `SceneSurface` reads a `HandcraftedScene` with the `BlockMapColors` table: loaded means a generated chunk is there, the height is the highest non-air block, fluids come from the catalog's fluid states and sturdy tops from the catalog's support shapes.
+    - `CarriedMap.hand`, the holder's `step`, and `MapStore::tick_carried_on(carriers, game_time, surfaces)`, which runs the fill-in right after each in-hand map's `tickCarriedBy` and before the holder's update is built, so a painted rectangle goes out in the same tick. `tick_carried` is the same without surfaces.
+  - `minecraft_survival/src/maps.rs`: `carrier` marks the selected slot and the offhand as hands; `tick` takes the levels and the map colours and gives each level's scene, with its dimension's `has_ceiling`.
+  - `minecraft_survival/src/data.rs`: `GameData.map_colors` and `load_map_colors(blocks)`, read from the data jar with the block registry; a failure is a warning and maps stay blank.
+  - `render_anim/src/minecraft_world.rs`: the host loads the map colours with the game data and passes the levels and colours to the map tick. `session.rs` tests pass no colours.
+  - `docs/MINECRAFT-SURVIVAL.md`: the maps paragraph.
+- **Tests:**
+  - `maps::tests::a_held_map_fills_in_the_stripe_of_its_step_and_runs_on_while_columns_change`: on flat grass, step 1 paints columns 1 to 127 (each one changed, so the next one runs); step 2 changes nothing; step 16 paints only column 0; with sand on every fourth column, step 4 changes only columns 4, 20, …, 116; an unloaded column leaves its pixels and stops the run until the next stripe column.
+  - `maps::tests::map_pixels_are_shaded_by_water_depth_and_slopes_like_vanilla`: depths 1, 4, 5, 9 and 12 on even and odd pixels; one block up is HIGH on both pixels and one block down LOW on both (vanilla's rounding makes 0.6000000000000001), two blocks up HIGH, flat NORMAL.
+  - `maps::tests::a_pixel_takes_its_most_common_block_and_the_first_on_a_tie`: a 2 x 2 pixel with a tie and with three of one, air above looked through, the depth averaged, a waterlogged block drawn as water, an empty column as bedrock at the floor, and a column with no colour down to the floor.
+  - `maps::tests::maps_of_dimensions_with_a_ceiling_show_the_vanilla_speckle`: the hash at seven spots; the halved radius, the circle and the dithered outer ring.
+  - `maps::tests::a_map_in_hand_fills_in_and_its_holder_gets_the_painted_rectangle`: a map in the backpack does not fill in; in hand it paints columns 1 to 127 and the holder's next update is that rectangle (1, 0, 127 x 128); the map is saved; column 0 fills on the sixteenth step; a map of another dimension, a locked map and a map with no loaded level stay blank.
+  - `maps::tests::a_streamed_scene_shows_maps_its_blocks_fluids_and_loaded_chunks` (26.3 jar and data): dirt 10, stone and bedrock 11, water 12; loaded chunks, heights, a waterlogged bottom slab drawn as water and a top slab as stone, lava, glass looked through, and a fill over them.
+  - `minecraft_survival` `maps::tests::maps_in_the_selected_slot_and_the_offhand_are_in_hand`, `maps::tests::a_held_map_fills_in_from_the_level_its_holder_stands_in` (26.3 data: nothing without colours, the stone floor at y 200 with them) and `data::tests::map_colours_come_from_the_jar_for_every_block_state`.
+  - Run on this commit: `test -p minecraft_terrain` 1600 passed with 3 ignored, `test -p minecraft_survival` 808 passed; `check -p launcher` clean.
+- **Decisions:**
+  - Only loaded chunks are drawn. Vanilla's `getChunk` loads a missing chunk on the spot; the server keeps every chunk within the view distance of each player loaded, which covers the 128 blocks at the default view distance.
+  - Banner markers (`checkBanners`) are left for later, as in the brief.
+  - The map colours are read once when the world opens (about half a second in a debug build). Without the jar or with a jar the reader does not understand, held maps stay blank and the log says why.
+  - The fill-in runs on the host for every player, friends included, in each level's own scene; friends get the painted rectangles through the `maps-held` updates.
+- **Protocol:** no message change.
+- **Test steps** (survival, Normal, by day; the empty-map steps come with the next commit):
+  1. **MX-1. Treasure map.** Load a world with the kit. Run `/locate structure minecraft:shipwreck` and `/tp` to it, drink a water breathing potion and take the Buried Treasure Map from the map chest.
+  2. **MX-2. Filling in.** Select the map with nothing in the offhand and swim or boat towards the red X. Once inside the map's area, the land and sea around you fill in, a few columns a moment, in a circle around you: sand, grass and stone in their colours, water blue and darker where it is deeper, and land lighter where it rises towards the south and darker where it falls (**MX-2_filling**).
+  3. **MX-3. Offhand.** Put the map in the offhand (F) with the torch selected: it keeps filling in as you move.
+  4. **MX-4. Backpack.** Put the map in the backpack, swim 100 blocks along the coast and take it out again: the part you passed without it in hand stays as it was.
+  5. **MX-F1. Friend.** A friend holding the map while walking fills it in too (the host drops it with Q for them).
+- **Kit** (17 backpack slots, the same as `maps-view`):
+
+```
+IW4L_MINECRAFT_KIT=minecraft:potion@long_water_breathing,minecraft:potion@long_water_breathing,minecraft:potion@long_water_breathing,minecraft:potion@night_vision,minecraft:potion@night_vision,minecraft:oak_boat,minecraft:iron_shovel,minecraft:diamond_shovel,minecraft:diamond_pickaxe,minecraft:compass,minecraft:torch*64,minecraft:cobblestone*64,minecraft:cooked_beef*32,minecraft:turtle_helmet,minecraft:diamond_sword,minecraft:shield,minecraft:spyglass
+```
+
+### 2. Minecraft empty maps turn into maps of where you stand
+
+After bde09f23.
+
+- **Vanilla (26.3, checked with javap):**
+  - `EmptyMapItem.use` (an item use, so after any block the player clicks has taken the click): `stack.consume(1, player)` (nothing is used up with infinite materials, that is in creative), `ITEM_USED` is awarded, `level.playSound(null, player, UI_CARTOGRAPHY_TABLE_TAKE_RESULT, player.getSoundSource(), 1, 1)` plays the sound at the player for everyone, and `MapItem.create(level, player.getBlockX(), player.getBlockZ(), 0, true, false)` makes the map. When the stack is now empty the map becomes the held item (`heldItemTransformedTo`); otherwise `Inventory.add` takes it, and what does not fit is dropped like a Q drop (`drop(stack, false)`). The result is `SUCCESS`, so the hand swings.
+  - `MapItem.create`: a new `filled_map` stack; `createFresh(x, z, scale, tracking, unlimited, dimension)` of the player's level, then `getFreeMapId()` and `setMapData`, and the stack gets `minecraft:map_id`. Holding the right button repeats the use, so a stack of empty maps turns into maps every four ticks.
+  - The sound event is `ui.cartography_table.take_result` (`SoundEvents.<clinit>`), in the 26.3 `sounds.json`.
+- **Changed:**
+  - `minecraft_terrain/src/maps.rs`: `EMPTY_MAP`, `FILLED_MAP` and `TAKE_RESULT_SOUND`; `MapStore::create` ports `MapItem.create` (fresh data on the vanilla grid, the next free id, saved with the index); `use_empty_map(store, inventory, slot, (feet, dimension), infinite)` ports `EmptyMapItem.use` on the inventory and returns the map that did not fit.
+  - `minecraft_survival/src/actions.rs` `act`: right-clicking with an empty map, after the spyglass, locks `globals.maps`, uses the map at the player's feet in their level, drops a map that did not fit in the look direction, plays the sound at the feet and swings the hand. It runs on the host for the host and for friends.
+  - `docs/MINECRAFT-SURVIVAL.md`: the maps paragraph.
+- **Tests:**
+  - `maps::tests::an_empty_map_turns_into_a_map_of_where_its_user_stands`: three empty maps at (1000.7, -300.2) leave two and add a `filled_map` with id 0 in the next free slot, whose data is `create_fresh(1000, -301, 0)` centred on (1024, -256) with tracking on and unlimited tracking off, written with `last_id` 0; the last empty map is replaced in the hand by map 1 of the Nether; creative uses nothing up; a full inventory hands the new map back to be dropped; any other item makes no map.
+  - `actions::tests::right_clicking_an_empty_map_makes_a_map_of_where_the_player_stands` (26.3 data): one empty map fewer, the filled map with id 0, its data centred by `create_fresh` at the player's block, the take sound at the feet and the swing; the last empty map turns into the map in the hand; creative keeps its empty map.
+  - Run on this commit: `test -p minecraft_terrain --lib maps::` 26 passed, `test -p minecraft_survival` 809 passed; `check -p launcher` clean.
+- **Decisions:**
+  - The fork keeps no statistics, so `ITEM_USED` is not counted.
+  - The map goes into the inventory with the same `add_item` the bottles use (the used slot first for stacking, then the first free slot of 0-35), as vanilla's `Inventory.add`; a new map never stacks with another, since its id differs.
+  - The sound plays at the player's feet for everyone, as `playSound(null, player, …)`; the fork's heard sounds have no sound source category.
+- **Protocol:** no message change.
+- **Test steps** (survival, Normal, by day; steps MX-1 to MX-4 and MX-F1 of the previous commit come first):
+  1. **MX-5. A new map.** Move the 8 empty maps to the hotbar, select them and right-click the air: one empty map is used (7 left), the cartography table's take sound plays and a Map appears in the first free slot, the hotbar first (**MX-5_new_map**).
+  2. **MX-6. It fills in.** Select the new Map with nothing in the offhand: your arrow is in it and the land around you fills in, a few columns a moment, out to the map's edges; walk 30 blocks and the arrow moves while new land fills in (**MX-6_filled**).
+  3. **MX-7. The last one.** Select the empty maps again and press Q until one is left, then right-click: the new map replaces it in the hand straight away.
+  4. **MX-8. Creative.** Run `/gamemode creative`, put an empty map in the hand and right-click: the empty map stays and a new map appears each time. Run `/gamemode survival`.
+  5. **MX-9. Nether.** Run `/execute in minecraft:the_nether run tp @s 0 128 0` (the Nether roof), right-click an empty map and hold the new map: it fills in with vanilla's brown and grey speckle in a smaller circle, and your arrow spins (**MX-9_nether**).
+  6. **MX-10. Saved.** Save and quit, load the world again and hold each new map: they keep their pictures, and the world's `data/minecraft/maps/` folder holds one numbered file per map.
+  7. **MX-F2. Friend.** In the friend's window, put an empty map in the hand and right-click: the friend gets a map, the host hears the take sound from the friend, and the friend's map fills in as they walk.
+- **Kit** (18 backpack slots, the `maps-view` kit with 8 empty maps):
+
+```
+IW4L_MINECRAFT_KIT=minecraft:potion@long_water_breathing,minecraft:potion@long_water_breathing,minecraft:potion@long_water_breathing,minecraft:potion@night_vision,minecraft:potion@night_vision,minecraft:oak_boat,minecraft:iron_shovel,minecraft:diamond_shovel,minecraft:diamond_pickaxe,minecraft:map*8,minecraft:compass,minecraft:torch*64,minecraft:cobblestone*64,minecraft:cooked_beef*32,minecraft:turtle_helmet,minecraft:diamond_sword,minecraft:shield,minecraft:spyglass
+```
+
+## Group ti4-end-targets
+
+### 1. Minecraft snowballs and tridents hit end crystals and the ender dragon
+
+After 9c8c70c5.
+
+- **Vanilla (26.3, checked with javap):**
+  - `Projectile.canHitEntity` takes any entity whose `canBeHitByProjectile()` holds, that is `isAlive() && isPickable()`. `EndCrystal.isPickable` and `EnderDragonPart.isPickable` are true and `EnderDragon.isPickable` is false, so a thrown thing stops on a crystal or on one of the dragon's eight parts, never on the dragon's own box. A part is a plain `Entity`, alive until the dragon is removed.
+  - `AbstractWindCharge.canHitEntity` refuses other wind charges and `END_CRYSTAL`, so a wind charge flies through crystals.
+  - `Snowball.onHitEntity` hurts with `thrown(this, owner)` for 0 (3 only on a blaze); `ThrownEgg` and `ThrownEnderpearl` for 0; `ThrownTrident` 8 with `trident(this, owner)`; `AbstractWindCharge` 1 with `windCharge(this, owner)`. Potions and bottles o' enchanting have no `onHitEntity` and just break.
+  - `EndCrystal.hurtServer`: any source that is not the dragon's and that the crystal is not invulnerable to removes it, even at 0 damage, and a non-explosion source blows it up with power 6 as `explosion(crystal, source.getEntity())`.
+  - `EnderDragon.hurt(level, part, source, damage)`: nothing while DYING; `phase.onHurt`; a part other than the head and neck takes `damage / 4 + min(damage, 1)`; below 0.01 nothing; only a source whose entity is a `Player` (or `#always_hurts_ender_dragons`) hurts it. `AbstractDragonSittingPhase.onHurt` (SittingFlaming, SittingScanning, SittingAttacking; not Hovering) returns 0 when the direct entity is an `AbstractArrow` (a trident) or a `WindCharge`, and sets it alight for a second.
+  - `LivingEntity.dealDefaultKnockback`: a projectile's knockback is `knockback(0.4, -motion.x, -motion.z)`, along its flight. `EnderDragon.knockback` does nothing while it sits.
+- **Changed:**
+  - `minecraft_terrain/src/end_crystal.rs`:
+    - `END_TARGET` (`u64::MAX / 8`, below `item_frame::FRAME_TARGET`): a crystal is `END_TARGET + id`, a dragon part `END_TARGET + 2^60 + id * 8 + part`. `EndTarget::target_id` and `EndTarget::of_target` turn one into the other; any id outside `END_TARGET..FRAME_TARGET` is `None`.
+    - `end_targets(crystals, dragons)`: each crystal's 2 x 2 pick box and the 8 part boxes (`ender_dragon::part_box`) of every dragon that is not removed, as `PotionTarget`s.
+    - `EndDamage.arrow` (an arrow or a wind charge struck) and `EndDamage::thrown(amount, player, arrow)`; `attack` and `explosion` set it false.
+  - `minecraft_terrain/src/ender_dragon.rs` `hurt_part`: a dragon in one of the three perching phases takes 0 from an `arrow` hit.
+  - `minecraft_terrain/src/server.rs`:
+    - `tick_tridents` adds the end targets to every trident's targets; a strike on one runs `thrown_end_hit` with the trident's 8, blamed on the thrower (none for a drowned's trident or a thrower that is not here).
+    - `tick_thrown` adds them to every thrown thing's targets, without the crystals for a wind charge. A snowball, egg or pearl that strikes one runs `thrown_end_hit` with 0 and a wind charge with 1 (as an `arrow` hit), blamed on the player who threw it (none for a snow golem's or a dispenser's throw); the mob hurt, the snow golem hit and the wind charge's mob hurt skip end targets. A potion or bottle breaks on one as on a mob.
+    - New private `thrown_end_hit(target, damage, velocity)`: for a dragon part it sets `from` to the dragon's position less the flight's velocity, so a full hit pushes the dragon along the throw, then runs `end_hit`.
+  - `docs/MINECRAFT-SURVIVAL.md`: the End paragraph and the dragon fight limits.
+- **Tests:**
+  - `end_crystal::tests::thrown_things_aim_at_crystals_and_dragon_parts_by_their_own_ids`: one crystal and a dragon give 9 targets with the pick box and the 8 part boxes; every id goes back to its crystal or part and lies below `FRAME_TARGET`; a frame id, a player id and a mob id are not end targets; a removed dragon drops out.
+  - `ender_dragon::tests::a_perched_dragon_shrugs_off_tridents_and_wind_charges`: in each of the three perching phases an `arrow` hit of 8 does nothing and any other 8 lands; a hovering dragon takes 3 on the body; a flying one takes 8 on the head, nothing from 0, and nothing without a player.
+  - `server::tests::a_snowball_breaks_an_end_crystal_and_a_trident_hurts_the_dragon_head_by_eight`: a real flight through `tick_thrown` breaks on the crystal's front and destroys it with a power 6 blast blamed on the player; a trident through `tick_tridents` takes 8 off the head and pushes the dragon 0.4 along the throw; a second one takes 3 off the body.
+  - `server::tests::a_potion_breaks_on_an_end_crystal_a_wind_charge_passes_it_and_a_perched_dragon_shrugs_off_a_trident`: a splash potion breaks on the crystal's front and leaves it; a wind charge flies through the crystal and bursts on the head beyond it for 1; a trident at a dragon perched in SittingScanning does nothing and does not move it.
+  - Both server tests fail with the end targets left out of `tick_thrown` and `tick_tridents` (checked).
+  - Run on this commit: `test -p minecraft_terrain` 1605 passed with 3 ignored; `check -p launcher` clean.
+- **Decisions:**
+  - The push of a thrown hit on the dragon follows the flight (vanilla's `calculateHorizontalHurtKnockbackDirection`), not the thrower's position as the brief said: `thrown_end_hit` sets `from` so that `hurt_part`'s existing knockback points along the throw.
+  - A wind charge flies through crystals (vanilla `AbstractWindCharge.canHitEntity`), so the brief's "a wind charge 1" applies to the dragon only.
+  - The perching rule is a new `EndDamage.arrow` flag, set for tridents and wind charges, rather than a damage kind, so the knockback and the crystal's blast stay those of an attack. The trident is not set alight, as the fork's tridents can't burn. Hovering counts as sitting for knockback but is not one of vanilla's sitting phase classes, so it still takes trident hits.
+  - A dying dragon's parts stay targets until it is removed, as vanilla's parts stay alive; its hits do nothing.
+  - A throw with no player behind it (a snow golem's snowball, a drowned's trident, a dispenser's snowball, egg or wind charge) still breaks crystals, with an unblamed blast, and never hurts the dragon.
+  - Splash and lingering potions break on crystals and parts without effect. Vanilla's harming or healing splash would reach the dragon's own box; that is left out and listed in `MINECRAFT-SURVIVAL.md`.
+- **Protocol:** no message change; `EndDamage` stays on the server thread.
+- **Test steps** (survival, Normal, in a world whose dragon is alive; wear the diamond armour from the kit and keep at least 8 blocks from a crystal you hit, as each one blows up with power 6):
+  1. **TE-1. Snowball.** Run `/execute in minecraft:the_end run tp @s 100 50 0` and walk onto the main island. Place obsidian on the ground 10 blocks from you and an end crystal on it, step back and throw a snowball at the crystal: the snowball breaks on it (white crumbs) and the crystal explodes (**TE-1_snowball_crystal**).
+  2. **TE-2. Potion and wind charge.** Place a second crystal the same way. Throw a harming splash at it: the potion shatters on the crystal and the crystal stays. Throw a wind charge at it: the charge flies through it and bursts behind it, and the crystal stays (**TE-2_crystal_stays**).
+  3. **TE-3. Egg.** Throw an egg at the same crystal: it explodes (sometimes a chick hatches first).
+  4. **TE-4. Trident at the dragon.** Hold the loyalty trident and wait for the dragon to swoop low past you or to come down to the exit portal. Throw it at its head while it flies: the dragon flashes red, the pink boss bar drops by about a 25th and the trident flies back to you. A hit on its body or wings drops the bar by less (**TE-4_trident_dragon**).
+  5. **TE-5. Perched.** When the dragon perches on the exit portal and breathes purple flames on it, throw the trident at it from outside the flames: it bounces off, the dragon does not flash and the boss bar stays. A snowball breaks on it with no effect either (**TE-5_perched**).
+  6. **TE-6. Pillar crystal.** Throw a snowball up at the crystal on top of one of the low pillars that has no iron cage: it explodes and the dragon swoops at you; if it was healing from that crystal, its beam ends.
+  7. **TE-F1. Friend.** The friend throws a snowball at a crystal the host placed: it explodes in both windows. The friend's trident at the flying dragon's head drops the boss bar for both (**TE-F1_friend**).
+- **Kit** (18 backpack slots; the same for the friend):
+
+```
+IW4L_MINECRAFT_KIT=minecraft:trident+loyalty=3,minecraft:trident,minecraft:snowball*16,minecraft:egg*16,minecraft:wind_charge*16,minecraft:end_crystal*4,minecraft:obsidian*8,minecraft:splash_potion@harming*2,minecraft:potion@slow_falling,minecraft:shield,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots,minecraft:golden_apple*16,minecraft:cooked_beef*32,minecraft:cobblestone*64
+```
+
+## Segment e2b review fixes
+
+### 1. Minecraft friends who rejoin see the whole picture of their maps
+
+After bb0995c7.
+
+- **Defect (group `maps-held`, commit 2):** the host keeps each player's map sync state (vanilla's `HoldingPlayer`: the dirty rectangle, the dirty markers, the send count and the fill-in step) in `MapStore`, keyed by UUID, and only `tick_carried_by` of a map dropped the state of a player who had gone. When a friend was the only one carrying a map and left the game, nobody ticked that map, so the friend's old state stayed. On rejoining, the friend's client starts with an empty map cache, but the host found the old state with nothing dirty and sent only the markers: the friend's held map stayed a blank grey checkerboard with their arrow, until each pixel happened to change again.
+- **Vanilla (26.3, checked with javap):** `MapItemSavedData.carriedByPlayers` is keyed by the `Player` object, and a rejoining player is a new `ServerPlayer`, so `tickCarriedBy` gives it a new `HoldingPlayer` with the whole map dirty (`0,0` to `127,127`), and the client gets the whole picture again. The old holder is dropped, with its marker, the next time anyone ticks the map (`isRemoved`).
+- **Changed:** `minecraft_terrain/src/maps.rs`: at the end of `MapStore::tick_carried_on`, every held map forgets the holders that are not among this tick's carriers (a player who left, or one with no place yet), with their markers (`Held::forget_absent`). A map someone ticks this tick has already dropped them in `tick_carried_by`, so vanilla's order (and its skip of the next holder) is unchanged; a map nobody carries loses them at once instead of when it is next carried, which no one can see.
+- **Tests:** `maps::tests::a_holder_who_left_gets_the_whole_map_again_when_back`: a holder gets the whole map, then nothing; a tick without them leaves the map no holder, no tracked marker and only its red X; back, they get the whole 128 x 128 picture and both markers again. It fails without the change (the holder is still there). `test -p minecraft_terrain`, `test -p minecraft_survival` and `check -p launcher` pass.
+- **Protocol:** no message change.
+- **Test steps** (two windows with `scripts\mp-local.ps1`, `/kit @a` from the host; survival, by day):
+  1. **RV-E2B-1.** The friend right-clicks an empty map, holds the new map and walks 20 blocks so it fills in. The host carries no map.
+  2. The friend quits to the title screen and joins again. The friend selects the same map: it shows the land it had filled in, with the friend's arrow, not a grey checkerboard (**RV-E2B-1_rejoined**).
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:map*4,minecraft:compass,minecraft:cooked_beef*16
+```
+
+## Segment e2b final checks
+
+### 1. Track E2's map code passes clippy
+
+After f8745db5.
+
+- **Clippy:** `clippy -p frame -p hud -p minecraft_net -p minecraft_survival -p minecraft_terrain -p render_anim -p minecraftoss-entities -p minecraftoss-player --locked --all-targets -- -A clippy::approx_constant`, every crate the segment touched since `r10-e2b-base`, with the stand-in `third_party/scenarios/survival` files that `scripts/full-suite.ps1` makes for the player crate's tests (removed again afterwards). Three warnings fell on lines the segment added, all `disallowed_methods` (`Option::unwrap_or_default`, which `clippy.toml` forbids), and all three are fixed; the older warnings stay. rustc gave the vendored crates no warnings on the segment's lines. The five new files still pass `rustfmt --check` on their committed content.
+- **Changed (same behaviour):**
+  - `minecraft_terrain/src/map_picture.rs` `decoration_assets`: a `register` call takes its id and texture as the last two strings with a slice pattern instead of two `pop().unwrap_or_default()`.
+  - `minecraft_terrain/src/maps.rs` `MapStore::take_updates`: takes the player's waiting updates with `get_mut(..).map_or_else(Vec::new, std::mem::take)`, as `minecraft_survival/src/entities.rs` takes its queues (`unwrap_or_else(Vec::new)` trips `clippy::unwrap_or_default` and `map_or_else(Vec::new, |updates| updates)` trips `clippy::unnecessary_option_map_or_else`). The emptied list stays in the map until the end of the next `tick_carried_on`, which keeps only the carriers' lists, so nothing that reaches a player changes.
+- **Tests:** none added (no behaviour change). The test run is the next entry.
+- **Test steps and kit:** none (no change in game).
+
+### 2. Test run
+
+After 34ab991b (the clippy fix). Log only.
+
+- **Tests:** on the code of `34ab991b`, `test -p <crate> --locked --no-fail-fast` for every crate the segment touched, in one run: `frame` 28, `hud` 205, `minecraft_net` 27, `minecraft_survival` 809 + 1, `minecraft_terrain` 1606 with 3 ignored, `render_anim` 219, `minecraftoss-entities` 499 and `minecraftoss-player` 207 (with the stand-in scenario files). All passed, with no flaky reruns. `check -p launcher --locked` is clean.
+- **Owner's test steps:** the steps of each commit of the segment above stand (groups `fw-shapes` to `ti4-end-targets` and the review fix), with the combined kit below. The steps that name E1's `bells-swing`, `banner-items` or kit parser work once E1 is in, which `minecraft-survival` has since 0b24cb27.
+
+## Segment e2b combined kit
+
+One kit for the whole segment (27 stacks): the trail, two-star and three-star rockets and a plain stack for `fw-shapes` and `fw-elytra`, a star's makings for `fw-craft`, a banner and plain shields for the shield, a bell and the throws for `bell-hits`, empty maps and the shipwreck gear for the map groups and the review fix, and the crystals for `ti4-end-targets`. Anything else a step needs comes from that step's own kit line or `/give`: the lime rocket of FW-S1, lime and blue dye, glowstone dust and the creeper head, the patterned banner and the worn and red shields, the stick, the dispenser and lever, the splash water and harming potions, the villager, zombie, skeleton, blaze, llama and witch spawn eggs, the bed, the pearls, the second (plain) trident, the diamond armour, the night vision and slow falling potions, the compass, the torch, the water bucket, the diamond tools, cobblestone and planks.
+
+```
+IW4L_MINECRAFT_KIT=minecraft:elytra,minecraft:firework_rocket*64,minecraft:firework_rocket[fireworks={flight_duration:1,explosions:[{shape:large_ball,colors:[I;11743532],has_trail:1b}]}]*64,minecraft:firework_rocket[fireworks={flight_duration:2,explosions:[{shape:star,colors:[I;14602026],fade_colors:[I;2437522]},{shape:creeper,colors:[I;4312372],has_twinkle:1b}]}]*64,minecraft:firework_rocket[fireworks={flight_duration:0,explosions:[{shape:burst,colors:[I;15790320,11743532]},{shape:small_ball,colors:[I;2437522]},{shape:large_ball,colors:[I;14602026]}]}]*64,minecraft:crafting_table,minecraft:gunpowder*64,minecraft:paper*32,minecraft:red_dye*16,minecraft:fire_charge*8,minecraft:diamond*8,minecraft:black_banner*4,minecraft:shield*2,minecraft:bell*4,minecraft:trident+loyalty=3,minecraft:snowball*16,minecraft:egg*16,minecraft:wind_charge*16,minecraft:map*8,minecraft:potion@long_water_breathing,minecraft:oak_boat,minecraft:iron_shovel,minecraft:spyglass,minecraft:end_crystal*4,minecraft:obsidian*8,minecraft:golden_apple*16,minecraft:cooked_beef*32
 ```

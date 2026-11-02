@@ -1458,6 +1458,7 @@ impl ServerSim {
         self.throw_mob_snowballs();
         self.throw_breeze_charges();
         self.explode_creepers();
+        self.mob_projectiles_hit_blocks();
         self.explode_fireballs();
         self.break_around_withers();
         if !frozen {
@@ -1727,6 +1728,29 @@ impl ServerSim {
         self.level.ring_bell(minecraftoss_core::BlockPos::new(pos.0, pos.1, pos.2), direction)
     }
 
+    pub fn projectile_hit_block(&mut self, pos: BlockPos, face: minecraftoss_player::Face, at: glam::DVec3) {
+        let state = self.level.block(minecraftoss_core::BlockPos::new(pos.0, pos.1, pos.2));
+        let rings = self.mob_tables.names.get(usize::from(state.0)).and_then(Option::as_ref).is_some_and(|block| crate::bells::rings_from(block, face, at.y - f64::from(pos.1)));
+        if rings {
+            self.ring_bell(pos, Some(crate::bells::face_name(face)));
+        }
+    }
+
+    fn projectile_struck(&mut self, pos: BlockPos, at: glam::DVec3, motion: glam::DVec3) {
+        let face = {
+            let Self { level, states, mob_tables, .. } = self;
+            let world = crate::server_mobs::MobWorld { level: std::cell::RefCell::new(level), states, tables: mob_tables };
+            crate::thrown::struck_face(&world, pos, at, motion)
+        };
+        self.projectile_hit_block(pos, face, at);
+    }
+
+    fn mob_projectiles_hit_blocks(&mut self) {
+        for (pos, at, motion) in self.mobs.take_projectile_block_hits() {
+            self.projectile_struck(pos, at, motion);
+        }
+    }
+
     pub fn tick_bells(&mut self) {
         let game_time = self.level.game_time;
         let level = &self.level;
@@ -1763,13 +1787,18 @@ impl ServerSim {
                     owner_box = Some((target.min, target.max));
                 }
             }
+            let rider = rocket.rider.map(|rider| players.iter().find(|p| p.id == rider).map(|p| (p.feet, crate::firework_rocket::hand_offset(self.mobs.player_controls(rider)))));
             let events = {
                 let Self { level, states, mob_tables, .. } = self;
                 let world = crate::server_mobs::MobWorld { level: std::cell::RefCell::new(level), states, tables: mob_tables };
-                rocket.tick(&world, &targets, owner_box)
+                match rider {
+                    Some(at) => rocket.follow(&world, &targets, at),
+                    None => rocket.tick(&world, &targets, owner_box),
+                }
             };
             for event in events {
                 match event {
+                    RocketEvent::Launched if rocket.rider.is_some() => {}
                     RocketEvent::Launched => {
                         self.level.sounds.push(minecraftoss_world::level::burning::LevelSound { event: crate::firework::LAUNCH_SOUND, pos: rocket.position.to_array(), volume: crate::firework::LAUNCH_VOLUME, pitch: 1.0 });
                     }
@@ -1778,6 +1807,7 @@ impl ServerSim {
                         self.level.game_event_from(crate::game_events::EXPLODE, rocket.position.to_array(), rocket.owner.player().map(minecraftoss_world::level::game_event::EventSource::Player).or(rocket.owner.mob().map(minecraftoss_world::level::game_event::EventSource::Mob)), None);
                         self.rocket_blast(rocket, players);
                     }
+                    RocketEvent::Block { pos, at, velocity } => self.projectile_struck(pos, at, velocity),
                 }
             }
         }
@@ -1795,7 +1825,8 @@ impl ServerSim {
                 .filter(|mob| !mob.dead)
                 .filter_map(|mob| rocket.damage_to(&world, mob.position, f64::from(mob.size.1)).map(|damage| (mob.id, damage)))
                 .collect();
-            hits.extend(players.iter().filter(|p| p.targetable()).filter_map(|p| rocket.damage_to(&world, p.feet, 1.8).map(|damage| (crate::thrown::PLAYER_TARGET + p.id, damage))));
+            let damage_to = |p: &crate::thrown::PlayerBody| if rocket.rider == Some(p.id) { rocket.strength() } else { rocket.damage_to(&world, p.feet, 1.8) };
+            hits.extend(players.iter().filter(|p| p.targetable()).filter_map(|p| damage_to(p).map(|damage| (crate::thrown::PLAYER_TARGET + p.id, damage))));
             hits
         };
         for (id, damage) in damages {
@@ -2408,6 +2439,7 @@ impl ServerSim {
             let mut targets = mob_targets.clone();
             targets.extend(crate::thrown::player_targets(players, trident.owner));
             targets.extend(self.frames.targets());
+            targets.extend(crate::end_crystal::end_targets(&self.crystals, &self.dragons));
             let owner = players.iter().find(|p| p.id == trident.owner).map(|p| {
                 let owner = crate::trident::TridentOwner::of(p);
                 crate::trident::TridentOwner { bounds: crate::thrown::skip_own_mount(&self.mobs, &mut targets, p.id, owner.bounds), ..owner }
@@ -2435,6 +2467,12 @@ impl ServerSim {
                             self.frame_action(frame, crate::item_frame::FrameAction::Shot { infinite: false });
                         }
                     }
+                    TridentEvent::Struck { target, velocity } if crate::end_crystal::EndTarget::of_target(target).is_some() => {
+                        if let Some(end) = crate::end_crystal::EndTarget::of_target(target) {
+                            let player = (trident.mob_owner.is_none() && trident.owner != crate::trident::UNKNOWN_OWNER).then_some(trident.owner);
+                            self.thrown_end_hit(end, crate::end_crystal::EndDamage::thrown(crate::trident::DAMAGE, player, true), velocity);
+                        }
+                    }
                     TridentEvent::Struck { target, velocity } if trident.mob_owner.is_some() => self.mob_trident_struck(trident.mob_owner.unwrap_or(0), target, velocity),
                     TridentEvent::Struck { target, velocity } => match crate::thrown::struck_player(target) {
                         Some(player) => self.players_struck.push(crate::thrown::PlayerStruck { player, by: trident.owner, damage: crate::trident::DAMAGE, kind: crate::trident::DAMAGE_TYPE, velocity }),
@@ -2442,6 +2480,7 @@ impl ServerSim {
                             crate::thrown::hurt_by(&mut self.mobs, target, crate::trident::DAMAGE, crate::trident::DAMAGE_TYPE, velocity, trident.owner);
                         }
                     },
+                    TridentEvent::Block { pos, at, velocity } => self.projectile_struck(pos, at, velocity),
                     TridentEvent::Sound { event, at, volume, pitch } => {
                         self.level.sounds.push(minecraftoss_world::level::burning::LevelSound { event, pos: at.to_array(), volume, pitch });
                     }
@@ -2549,6 +2588,12 @@ impl ServerSim {
         true
     }
 
+    pub fn attach_rocket(&mut self, rider: u64, launch: crate::firework::RocketLaunch, boost_ticks: i32) {
+        let mut random = minecraftoss_player::rng::LegacyRandom::new(self.sound_random.next_long());
+        let hand = crate::firework_rocket::hand_offset(self.mobs.player_controls(rider));
+        self.rockets.push(crate::firework_rocket::Rocket::attached(rider, launch.at, hand, boost_ticks, launch.fireworks, &mut random));
+    }
+
     pub fn take_eye_answers(&mut self) -> Vec<crate::eye_of_ender::EyeAnswer> {
         self.eyes.take_answers()
     }
@@ -2580,7 +2625,10 @@ impl ServerSim {
         }
         let mob_targets = crate::thrown::targets(&self.mobs);
         let frame_targets = self.frames.targets();
+        let end_targets = crate::end_crystal::end_targets(&self.crystals, &self.dragons);
         let mut frame_hits = Vec::new();
+        let mut end_hits = Vec::new();
+        let mut block_hits = Vec::new();
         let mut struck = Vec::new();
         let mut shot_by_mobs = Vec::new();
         let mut hatched = Vec::new();
@@ -2597,6 +2645,7 @@ impl ServerSim {
                 let mut targets = mob_targets.clone();
                 targets.extend(crate::thrown::player_targets(players, t.owner));
                 targets.extend(frame_targets.iter().cloned());
+                targets.extend(end_targets.iter().filter(|target| t.kind != Throwable::WindCharge || !matches!(crate::end_crystal::EndTarget::of_target(target.id), Some(crate::end_crystal::EndTarget::Crystal(_)))).cloned());
                 let mut owner_box = crate::thrown::owner_box(players, t.owner);
                 if let Some(shooter) = t.shooter {
                     owner_box = None;
@@ -2632,7 +2681,14 @@ impl ServerSim {
                 let hurts = matches!(t.kind, Throwable::Snowball | Throwable::Egg | Throwable::EnderPearl);
                 let frame = landed.mob.and_then(crate::item_frame::struck_frame);
                 frame_hits.extend(frame.filter(|_| hurts || t.kind == Throwable::WindCharge));
-                if let Some(mob) = landed.mob.filter(|&id| hurts && crate::thrown::struck_player(id).is_none() && frame.is_none()) {
+                let end = landed.mob.and_then(crate::end_crystal::EndTarget::of_target);
+                if let Some(end) = end.filter(|_| hurts || t.kind == Throwable::WindCharge) {
+                    let amount = if t.kind == Throwable::WindCharge { crate::wind::DAMAGE } else { 0.0 };
+                    let player = (t.shooter.is_none() && t.owner != crate::thrown::MOB_THROWER).then_some(t.owner);
+                    end_hits.push((end, crate::end_crystal::EndDamage::thrown(amount, player, t.kind == Throwable::WindCharge), landed.velocity));
+                }
+                block_hits.extend(landed.block.zip(landed.face).map(|(block, face)| (block, face, landed.at)));
+                if let Some(mob) = landed.mob.filter(|&id| hurts && crate::thrown::struck_player(id).is_none() && frame.is_none() && end.is_none()) {
                     match t.shooter {
                         Some(shooter) => shot_by_mobs.push((shooter, mob, landed.velocity)),
                         None if t.owner == crate::thrown::MOB_THROWER => {}
@@ -2660,7 +2716,7 @@ impl ServerSim {
                     }
                     Throwable::WindCharge => {
                         let center = if landed.mob.is_some() { t.position() } else { crate::wind::burst_point(landed.at, landed.face) };
-                        bursts.push((landed.mob.filter(|_| frame.is_none()), landed.velocity, t.owner, center, t.shooter, crate::wind::Charge::of(&t.item)));
+                        bursts.push((landed.mob.filter(|_| frame.is_none() && end.is_none()), landed.velocity, t.owner, center, t.shooter, crate::wind::Charge::of(&t.item)));
                     }
                     Throwable::SplashPotion | Throwable::LingeringPotion => {
                         let contents = t.contents();
@@ -2698,6 +2754,12 @@ impl ServerSim {
         }
         for id in frame_hits {
             self.frame_action(id, crate::item_frame::FrameAction::Shot { infinite: false });
+        }
+        for (end, damage, velocity) in end_hits {
+            self.thrown_end_hit(end, damage, velocity);
+        }
+        for (pos, face, at) in block_hits {
+            self.projectile_hit_block(pos, face, at);
         }
         for (cell, pitch, hit, direction, amount) in awards {
             self.level.sounds.push(minecraftoss_world::level::burning::LevelSound { event: crate::thrown::BREAK_SOUND, pos: cell, volume: 1.0, pitch });
@@ -3231,11 +3293,15 @@ impl ServerSim {
                     fireball.fireball.alive = false;
                     continue;
                 }
-                bursts.extend(fireball.tick(&world, &targets));
+                bursts.extend(fireball.tick(&world, &targets).map(|hit| (hit, fireball.fireball.velocity)));
             }
             dragon_fireballs.list.retain(|fireball| fireball.fireball.alive);
         }
-        for at in bursts {
+        for (hit, velocity) in bursts {
+            let at = hit.location;
+            if let Some(pos) = hit.block {
+                self.projectile_struck(pos, at, velocity);
+            }
             self.clouds.push(crate::dragon_fireball::breath_cloud(crate::dragon_fireball::cloud_position(at, &targets)));
             self.dragon_fireballs.burst(at);
             let pitch = crate::dragon_fireball::explode_pitch(self.sound_random.next_float());
@@ -3476,6 +3542,14 @@ impl ServerSim {
     pub fn elden_hurt(&mut self, id: u64, source: elden_boss::Source, player: Option<u64>) {
         self.mobs.elden_hurt(id, source, player);
         self.drop_death_loot();
+    }
+
+    fn thrown_end_hit(&mut self, target: crate::end_crystal::EndTarget, damage: crate::end_crystal::EndDamage, velocity: glam::DVec3) {
+        let dragon = match target {
+            crate::end_crystal::EndTarget::DragonPart { id, .. } => self.dragons.list.iter().find(|dragon| dragon.id == id).map(|dragon| dragon.position),
+            crate::end_crystal::EndTarget::Crystal(_) => None,
+        };
+        self.end_hit(target, dragon.map_or(damage, |at| damage.from_position(at - velocity)));
     }
 
     fn crystal_destroyed(&mut self, destroyed: crate::end_crystal::Destroyed) {
@@ -4250,6 +4324,7 @@ pub enum Command {
     ThrowTrident(Box<crate::trident::ThrownTrident>),
     ThrowEye { owner: u64, throw: Box<crate::ender_eye::EyeThrow> },
     LaunchRocket { owner: u64, launch: Box<crate::firework::RocketLaunch> },
+    AttachRocket { rider: u64, launch: Box<crate::firework::RocketLaunch>, boost_ticks: i32 },
     BottleBreath { player: u64, feet: glam::DVec3, height: f64 },
     Save,
     SetWeather { weather: &'static str, duration: i32 },
@@ -4801,6 +4876,10 @@ impl ServerHandle {
         self.send(Command::LaunchRocket { owner, launch: Box::new(launch) });
     }
 
+    pub fn attach_rocket(&mut self, rider: u64, launch: crate::firework::RocketLaunch, boost_ticks: i32) {
+        self.send(Command::AttachRocket { rider, launch: Box::new(launch), boost_ticks });
+    }
+
     pub fn bottle_breath(&mut self, player: u64, feet: glam::DVec3, height: f64) {
         self.send(Command::BottleBreath { player, feet, height });
     }
@@ -4984,6 +5063,7 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                     out.eye_answers.extend(sim.take_eye_answers());
                 }
                 Command::LaunchRocket { owner, launch } => out.item_uses.push((owner, sim.launch_rocket(owner, *launch))),
+                Command::AttachRocket { rider, launch, boost_ticks } => sim.attach_rocket(rider, *launch, boost_ticks),
                 Command::BottleBreath { player, feet, height } => out.item_uses.push((player, sim.bottle_breath(feet, height))),
                 Command::SetWeather { weather, duration } => {
                     sim.set_weather_for(weather, duration);
@@ -8179,6 +8259,97 @@ mod tests {
         assert_eq!(e.illager.health, health, "a snowball does it no harm");
         assert!(e.illager.body.velocity.z > 0.3 && e.illager.body.velocity.x.abs() < 0.05, "pushed along the throw: {:?}", e.illager.body.velocity);
         assert_eq!(e.ai.state.hurt_by.map(|(by, _)| by), Some(minecraftoss_entities::monster_ai::Target::Player(0)));
+    }
+
+    fn crystal_and_dragon_ahead(server: &mut ServerSim) {
+        let tag = server.crystals.fresh_tag(glam::DVec3::new(8.5, 200.0, 9.5), false);
+        server.crystals.add(&tag).expect("a crystal");
+        let mut random = minecraftoss_player::rng::LegacyRandom::new(3);
+        let tag = crate::ender_dragon::Dragons::fresh_tag(glam::DVec3::new(8.5, 230.0, 14.5), 0.0, &mut random);
+        server.dragons.add(&tag).expect("a dragon");
+        server.dragons.list[0].set_phase(crate::ender_dragon::Phase::HoldingPattern);
+        server.dragons.list[0].parts = [glam::DVec3::new(8.5, 240.0, 14.5); 8];
+    }
+
+    fn thrown_ahead(item: &'static str) -> (crate::thrown::PlayerBody, crate::thrown::Throw<'static>) {
+        let throw = crate::thrown::Throw { owner: 0, item, components: None, eye: glam::DVec3::new(8.5, 201.62, 5.5), yaw: 0.0, pitch: 0.0, motion: glam::DVec3::ZERO, on_ground: true };
+        (player_at(0, [8.5, 200.0, 5.5], true), throw)
+    }
+
+    fn trident_ahead(server: &mut ServerSim, seed: u64) {
+        let (player, throw) = thrown_ahead(crate::trident::ITEM);
+        let mut random = minecraftoss_player::rng::LegacyRandom::new(seed);
+        let stack = minecraftoss_player::inventory::ItemStack::new(crate::trident::ITEM, 1);
+        server.throw_trident(crate::trident::ThrownTrident::launch(&throw, stack, false, &mut random));
+        for _ in 0..6 {
+            server.tick_tridents(&[player]);
+        }
+    }
+
+    #[test]
+    fn a_snowball_breaks_an_end_crystal_and_a_trident_hurts_the_dragon_head_by_eight() {
+        use crate::ender_dragon::{BODY, HEAD, MAX_HEALTH};
+        let Some((mut server, _)) = door_world() else { return };
+        crystal_and_dragon_ahead(&mut server);
+        let (player, throw) = thrown_ahead("minecraft:snowball");
+        let mut random = minecraftoss_player::rng::LegacyRandom::new(5);
+        server.throw(crate::thrown::Thrown::launch(&throw, &mut random).expect("a snowball"));
+        let mut hits = Vec::new();
+        for _ in 0..10 {
+            server.tick_thrown(&[player]);
+            hits.extend(server.take_thrown_hits());
+        }
+        assert_eq!(hits.len(), 1);
+        assert!(hits[0].at.z > 8.0 && hits[0].at.z < 8.6 && hits[0].at.y > 201.0, "it breaks on the crystal's front: {hits:?}");
+        assert!(server.crystals.list.is_empty(), "a snowball breaks a crystal");
+        assert_eq!(server.blasts, vec![(Blast { center: [8.5, 200.0, 9.5], power: 6.0, fire: false }, BlastSource::Player(0))], "and it blows up, blamed on the thrower");
+        server.dragons.list[0].parts[HEAD] = glam::DVec3::new(8.5, 200.9, 12.5);
+        trident_ahead(&mut server, 5);
+        let dragon = &server.dragons.list[0];
+        assert_eq!(dragon.health, MAX_HEALTH - 8.0, "a trident deals 8 to the head");
+        assert!(dragon.velocity.z > 0.39 && dragon.velocity.x.abs() < 0.05, "pushed along the throw: {:?}", dragon.velocity);
+        let dragon = &mut server.dragons.list[0];
+        dragon.damage_cooldown = 0;
+        dragon.parts[HEAD] = glam::DVec3::new(8.5, 240.0, 14.5);
+        dragon.parts[BODY] = glam::DVec3::new(8.5, 200.9, 12.5);
+        trident_ahead(&mut server, 6);
+        assert_eq!(server.dragons.list[0].health, MAX_HEALTH - 11.0, "and 3 to the body");
+    }
+
+    #[test]
+    fn a_potion_breaks_on_an_end_crystal_a_wind_charge_passes_it_and_a_perched_dragon_shrugs_off_a_trident() {
+        use crate::ender_dragon::{HEAD, MAX_HEALTH};
+        let Some((mut server, _)) = door_world() else { return };
+        crystal_and_dragon_ahead(&mut server);
+        server.dragons.list[0].parts[HEAD] = glam::DVec3::new(8.5, 200.9, 14.5);
+        let mut random = minecraftoss_player::rng::LegacyRandom::new(5);
+        let (player, throw) = thrown_ahead(crate::thrown::SPLASH_POTION);
+        server.throw(crate::thrown::Thrown::launch(&throw, &mut random).expect("a potion"));
+        for _ in 0..12 {
+            server.tick_thrown(&[player]);
+        }
+        let breaks = server.take_potion_breaks();
+        assert_eq!(breaks.len(), 1);
+        assert!(breaks[0].position.z > 7.9 && breaks[0].position.z < 8.6, "it breaks on the crystal's front: {breaks:?}");
+        assert_eq!(server.crystals.list.len(), 1, "a potion leaves the crystal");
+        assert!(server.blasts.is_empty());
+        let (player, throw) = thrown_ahead("minecraft:wind_charge");
+        server.throw(crate::thrown::Thrown::launch(&throw, &mut random).expect("a wind charge"));
+        for _ in 0..10 {
+            server.tick_thrown(&[player]);
+        }
+        assert_eq!(server.crystals.list.len(), 1, "a wind charge flies through a crystal");
+        assert!(server.thrown_views().is_empty(), "and bursts on the dragon's head");
+        assert_eq!(server.dragons.list[0].health, MAX_HEALTH - 1.0);
+        let dragon = &mut server.dragons.list[0];
+        dragon.damage_cooldown = 0;
+        dragon.velocity = glam::DVec3::ZERO;
+        dragon.set_phase(crate::ender_dragon::Phase::SittingScanning);
+        trident_ahead(&mut server, 5);
+        let trident = server.tridents.last().expect("the trident");
+        assert!(trident.dealt_damage && trident.position.z < 15.0, "it struck the head: {:?}", trident.position);
+        assert_eq!(server.dragons.list[0].health, MAX_HEALTH - 1.0, "a perched dragon shrugs off a trident");
+        assert_eq!(server.dragons.list[0].velocity, glam::DVec3::ZERO);
     }
 
     #[test]
@@ -15751,6 +15922,159 @@ mod tests {
         assert!(!server.mobs.glowing(near), "the glow lasts three seconds");
     }
 
+    fn bell_at(server: &mut ServerSim, scene: &mut HandcraftedScene, pos: BlockPos, attachment: &str, facing: &str) {
+        place(server, scene, pos, Block::new("minecraft:bell").with("attachment", attachment).with("facing", facing));
+        server.level.sounds.clear();
+    }
+
+    fn bell_uses(server: &ServerSim) -> usize {
+        server.level.sounds.iter().filter(|s| s.event == crate::bells::USE_SOUND && s.volume == 2.0).count()
+    }
+
+    fn bell_rings(server: &mut ServerSim) -> Vec<(BlockPos, minecraftoss_core::pos::Direction)> {
+        server.level.tick();
+        let rings = server.level.bell_rings.iter().map(|(pos, direction)| ((pos.x, pos.y, pos.z), *direction)).collect();
+        server.hear_bells();
+        rings
+    }
+
+    fn thrown_from(item: &str, eye: [f64; 3], yaw: f32, seed: u64) -> crate::thrown::Thrown {
+        let mut random = minecraftoss_player::rng::LegacyRandom::new(seed);
+        crate::thrown::Thrown::throw(item, glam::DVec3::from_array(eye), yaw, 0.0, glam::DVec3::ZERO, true, &mut random).expect("a throwable")
+    }
+
+    #[test]
+    fn a_snowball_on_a_bells_side_rings_it_and_one_on_its_top_does_not() {
+        use minecraftoss_core::pos::Direction;
+        let Some((mut server, mut scene)) = door_world() else { return };
+        if server.level.registries().entities.is_none() {
+            return;
+        }
+        let bell = (8, 200, 8);
+        bell_at(&mut server, &mut scene, bell, "floor", "north");
+        server.summon("minecraft:villager", [8.5, 200.0, 12.5], None, 0.0).unwrap();
+        let heard = |server: &ServerSim| server.mobs.villagers()[0].ai.as_ref().unwrap().brain.memories.heard_bell_time.get().copied();
+        server.throw(thrown_down("minecraft:snowball", 1));
+        for _ in 0..20 {
+            server.tick_thrown(&[]);
+        }
+        let hits = server.take_thrown_hits();
+        assert!(hits.len() == 1 && (hits[0].at.y - 201.0).abs() < 1e-6, "it breaks on the bell's top: {hits:?}");
+        assert_eq!(bell_uses(&server), 0);
+        assert!(bell_rings(&mut server).is_empty());
+        assert_eq!(heard(&server), None);
+        server.throw(thrown_from("minecraft:snowball", [12.5, 200.6, 8.5], 90.0, 2));
+        for _ in 0..10 {
+            server.tick_thrown(&[]);
+        }
+        let hits = server.take_thrown_hits();
+        assert!(hits.len() == 1 && (hits[0].at.x - 9.0).abs() < 1e-6, "it breaks on the frame's east side: {hits:?}");
+        assert_eq!(bell_uses(&server), 0, "a floor bell facing north rings only from the north and the south");
+        assert!(bell_rings(&mut server).is_empty());
+        server.throw(thrown_from("minecraft:snowball", [8.5, 200.6, 4.5], 0.0, 3));
+        for _ in 0..10 {
+            server.tick_thrown(&[]);
+        }
+        let hits = server.take_thrown_hits();
+        assert!(hits.len() == 1 && (hits[0].at.z - 8.25).abs() < 1e-6, "it breaks on the frame's north side: {hits:?}");
+        assert_eq!(bell_uses(&server), 1);
+        assert_eq!(bell_rings(&mut server), [(bell, Direction::North)], "it swings from the struck side");
+        assert!(heard(&server).is_some(), "the villager hears it");
+    }
+
+    #[test]
+    fn a_thrown_trident_rings_a_hanging_bell() {
+        use minecraftoss_core::pos::Direction;
+        let Some((mut server, mut scene)) = door_world() else { return };
+        let bell = (8, 202, 8);
+        place(&mut server, &mut scene, (8, 203, 8), Block::new("minecraft:stone"));
+        bell_at(&mut server, &mut scene, bell, "ceiling", "east");
+        let mut random = minecraftoss_player::rng::LegacyRandom::new(5);
+        let throw = crate::thrown::Throw { owner: 0, item: crate::trident::ITEM, components: None, eye: glam::DVec3::new(8.5, 202.6, 5.5), yaw: 0.0, pitch: 0.0, motion: glam::DVec3::ZERO, on_ground: true };
+        let stack = minecraftoss_player::inventory::ItemStack::new(crate::trident::ITEM, 1);
+        server.throw_trident(crate::trident::ThrownTrident::launch(&throw, stack, false, &mut random));
+        for _ in 0..10 {
+            server.tick_tridents(&[]);
+        }
+        assert!(server.level.sounds.iter().any(|s| s.event == crate::trident::HIT_GROUND_SOUND), "it sticks in the bell");
+        assert_eq!(bell_uses(&server), 1);
+        assert_eq!(bell_rings(&mut server), [(bell, Direction::North)], "a hanging bell rings from every side");
+    }
+
+    #[test]
+    fn a_wind_charge_on_a_bells_side_rings_it_twice_and_ends_on_its_facing() {
+        use minecraftoss_core::pos::Direction;
+        let Some((mut server, mut scene)) = door_world() else { return };
+        let bell = (8, 200, 8);
+        bell_at(&mut server, &mut scene, bell, "floor", "north");
+        server.throw(thrown_from("minecraft:wind_charge", [8.5, 200.5, 11.5], 180.0, 9));
+        for _ in 0..10 {
+            server.tick_thrown(&[]);
+        }
+        assert!(server.thrown_views().is_empty());
+        assert_eq!(bell_uses(&server), 2, "the hit and the burst both ring it");
+        assert_eq!(bell_rings(&mut server), [(bell, Direction::South), (bell, Direction::North)]);
+    }
+
+    #[test]
+    fn a_wind_burst_beside_a_bell_rings_it() {
+        use minecraftoss_core::pos::Direction;
+        let Some((mut server, mut scene)) = door_world() else { return };
+        let bell = (8, 200, 8);
+        bell_at(&mut server, &mut scene, bell, "floor", "east");
+        server.wind_burst(glam::DVec3::new(8.5, 200.5, 9.5), &[], crate::wind::Charge::Player);
+        assert_eq!(bell_uses(&server), 1);
+        assert_eq!(bell_rings(&mut server), [(bell, Direction::East)], "along its facing");
+        server.level.sounds.clear();
+        server.wind_burst(glam::DVec3::new(8.5, 200.5, 11.5), &[], crate::wind::Charge::Player);
+        assert_eq!(bell_uses(&server), 0, "a burst three blocks away is too far");
+        server.mobs.set_mob_griefing(false);
+        server.wind_burst(glam::DVec3::new(8.5, 200.5, 9.5), &[], crate::wind::Charge::Breeze);
+        assert_eq!(bell_uses(&server), 0, "a breeze's burst rings it only with mob griefing");
+        assert!(bell_rings(&mut server).is_empty());
+    }
+
+    #[test]
+    fn a_skeletons_arrow_into_a_bell_rings_it() {
+        use minecraftoss_core::pos::Direction;
+        let Some((mut server, mut scene)) = door_world() else { return };
+        let bell = (8, 200, 8);
+        bell_at(&mut server, &mut scene, bell, "floor", "north");
+        let archer = server.mobs.spawn_skeleton(minecraftoss_entities::skeleton::Skeleton::new(glam::DVec3::new(8.5, 200.0, 2.5)), true);
+        let arrow = minecraftoss_entities::projectile::Arrow::in_flight(glam::DVec3::new(8.5, 200.5, 4.5), glam::DVec3::new(0.0, 0.0, 1.6), minecraftoss_player::rng::LegacyRandom::new(1));
+        server.mobs.spawn_owned_arrow(archer, arrow);
+        server.set_simulation_area((0, 0), 1);
+        for _ in 0..5 {
+            server.tick_mobs(&[], false);
+        }
+        assert!(server.mobs.arrows().iter().all(|entity| entity.arrow.in_ground), "it sticks in the bell");
+        assert_eq!(bell_uses(&server), 1);
+        assert_eq!(bell_rings(&mut server), [(bell, Direction::North)]);
+        for _ in 0..5 {
+            server.tick_mobs(&[], false);
+        }
+        assert_eq!(bell_uses(&server), 1, "a stuck arrow rings it once");
+    }
+
+    #[test]
+    fn a_blazes_fireball_into_a_bell_rings_it() {
+        use minecraftoss_core::pos::Direction;
+        use minecraftoss_entities::fireball::{Fireball, FireballKind, Shooter};
+        let Some((mut server, mut scene)) = door_world() else { return };
+        let bell = (8, 200, 8);
+        place(&mut server, &mut scene, (9, 200, 8), Block::new("minecraft:stone"));
+        bell_at(&mut server, &mut scene, bell, "single_wall", "east");
+        let blaze = server.mobs.spawn_blaze(minecraftoss_entities::blaze::Blaze::new(glam::DVec3::new(8.5, 200.0, 2.5)), true);
+        server.mobs.spawn_fireball(Fireball::shoot(FireballKind::Small, Shooter::Mob(blaze), glam::DVec3::new(8.5, 200.5, 5.5), glam::DVec3::Z));
+        server.set_simulation_area((0, 0), 1);
+        for _ in 0..30 {
+            server.tick_mobs(&[], false);
+        }
+        assert!(server.mobs.fireballs().is_empty(), "it burst on the bell");
+        assert_eq!(bell_uses(&server), 1);
+        assert_eq!(bell_rings(&mut server), [(bell, Direction::North)], "a wall bell facing east rings from the north");
+    }
+
     #[test]
     fn a_rung_bell_sends_block_event_one_with_its_direction() {
         let Some((mut server, mut scene)) = door_world() else { return };
@@ -15877,6 +16201,56 @@ mod tests {
         }).collect();
         hits.sort_unstable();
         assert_eq!(hits, [(4, Some(4), None), (5, Some(4), None)], "the owner is hurt by its own rocket too");
+    }
+
+    #[test]
+    fn an_elytra_rocket_rides_its_player_and_goes_off_at_it_when_the_boost_ends() {
+        use crate::firework::{Explosion, Fireworks, RocketLaunch, FIREWORK_ROCKET};
+        use crate::firework_rocket::{hand_offset, is_attached};
+        use minecraftoss_entities::controls::PlayerControls;
+        use minecraftoss_entities::world::PlayerHitKind;
+        let Some((mut server, _)) = door_world() else { return };
+        let holding = |id: u64, yaw: f32| PlayerControls { id, yaw, main_hand: Some(FIREWORK_ROCKET.to_owned()), ..PlayerControls::default() };
+        server.mobs.set_player_controls(&[holding(4, 0.0), holding(5, 90.0)]);
+        let host = |tick: i32| crate::thrown::PlayerBody { id: 4, feet: glam::DVec3::new(2.5, 230.0, 2.0 + 0.5 * f64::from(tick)), alive: true, spectator: false };
+        let friend = |tick: i32| crate::thrown::PlayerBody { id: 5, feet: glam::DVec3::new(14.5, 220.0 - 0.3 * f64::from(tick), 2.0 + 0.7 * f64::from(tick)), alive: true, spectator: false };
+        let glide = |server: &mut ServerSim, rider: u64, explosions: Vec<Explosion>| {
+            let body = |tick| if rider == 4 { host(tick) } else { friend(tick) };
+            server.attach_rocket(rider, RocketLaunch { at: body(0).feet, fireworks: Fireworks { flight: 1, explosions } }, 21);
+            server.firework_bursts.clear();
+            server.level.sounds.clear();
+            let hand = hand_offset(server.mobs.player_controls(rider));
+            let mut hits = Vec::new();
+            let mut ticks = 0;
+            while !server.rockets.is_empty() && ticks < 40 {
+                ticks += 1;
+                server.tick_rockets(&[host(ticks), friend(ticks)]);
+                if let Some(view) = server.rocket_views().first() {
+                    assert!(is_attached(view) && view.owner == rider, "{view:?}");
+                    assert!((view.position - (body(ticks).feet + hand)).length() < 1e-9, "it rides its own player: {view:?}");
+                }
+                hits.extend(server.take_rocket_hits().into_iter().map(|hit| match hit.kind {
+                    PlayerHitKind::Fireworks { by, at } => (ticks, hit.player_id, hit.damage, by, hit.source, at),
+                    other => panic!("{other:?}"),
+                }));
+            }
+            assert!(!server.level.sounds.iter().any(|s| s.event == crate::firework::LAUNCH_SOUND), "the item use already whooshed");
+            assert_eq!(server.firework_bursts.len(), 1);
+            assert!((server.firework_bursts[0].position - (body(21).feet + hand)).length() < 1e-9);
+            (ticks, hits, server.firework_bursts[0].explosions.len())
+        };
+        let red = || vec![Explosion::burst(11743532)];
+        for rider in [4, 5] {
+            let (ticks, hits, stars) = glide(&mut server, rider, red());
+            let feet = if rider == 4 { host(21).feet } else { friend(21).feet };
+            let hand = hand_offset(server.mobs.player_controls(rider));
+            assert_eq!((ticks, stars), (21, 1), "it goes off on the boost's last tick");
+            assert_eq!(hits, [(21, rider, 7.0, Some(rider), None, feet + hand)], "only its rider is hit, at full strength");
+            let (ticks, hits, stars) = glide(&mut server, rider, Vec::new());
+            assert_eq!((ticks, stars), (21, 0));
+            assert!(hits.is_empty(), "a starless rocket only puffs");
+        }
+        assert!(hand_offset(server.mobs.player_controls(5)).z < -0.49, "the friend faces west, so its right hand is north");
     }
 
     #[test]

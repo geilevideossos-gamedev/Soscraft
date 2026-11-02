@@ -21,7 +21,7 @@ pub struct SpitTarget {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum SpitHit {
     Entity(u64),
-    Block,
+    Block(minecraftoss_player::Pos, DVec3),
 }
 
 #[derive(Clone, Debug)]
@@ -153,9 +153,9 @@ impl LlamaSpit {
         }
         let hit = match (struck, block) {
             (Some(id), _) => Some(SpitHit::Entity(id)),
-            (None, Some((pos, _))) if !is_air(world, pos) => {
+            (None, Some((pos, at))) if !is_air(world, pos) => {
                 self.alive = false;
-                Some(SpitHit::Block)
+                Some(SpitHit::Block(pos, at))
             }
             _ => None,
         };
@@ -320,7 +320,10 @@ mod tests {
         }
         assert_eq!(hits.first(), Some(&SpitHit::Entity(7)), "{hits:?}");
         assert!(!hits.contains(&SpitHit::Entity(1)), "never its llama");
-        assert_eq!(hits.last(), Some(&SpitHit::Block));
+        assert!(
+            matches!(hits.last(), Some(SpitHit::Block((_, _, 8), at)) if (at.z - 8.0).abs() < 1e-9),
+            "the wall where it struck: {hits:?}"
+        );
         assert!(!spit.alive);
     }
 

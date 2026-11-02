@@ -645,6 +645,7 @@ pub(crate) fn host(
     host.sessions.send_elden_bars(&server.players);
     host.sessions.send_views(&server.players);
     host.sessions.send_spawns(&server.globals);
+    host.sessions.send_maps(&server.globals);
     let gears: Vec<_> = server
         .players
         .values()

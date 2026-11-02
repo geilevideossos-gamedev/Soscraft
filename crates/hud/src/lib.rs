@@ -29,6 +29,7 @@ mod minecraft_effects;
 mod minecraft_fire;
 mod minecraft_freeze;
 mod minecraft_gui;
+mod minecraft_held_map;
 mod minecraft_hotbar;
 mod minecraft_inventory;
 mod minecraft_loading;

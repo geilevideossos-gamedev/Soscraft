@@ -176,6 +176,9 @@ pub(crate) fn held_hand_mesh(held: &Held<'_>, view: &mut minecraft_survival::ent
         let Some((slot, stack)) = stack else {
             continue;
         };
+        if crate::minecraft_held_map::drawn_as_map(stack) {
+            continue;
+        }
         let using = held.using.filter(|using| using.slot == slot).map(|using| using.kind);
         let raised = matches!(using, Some(UseShown::Block | UseShown::Charge { .. }));
         let display = minecraft_terrain::pack::ResourceId::parse(&stack.id)
