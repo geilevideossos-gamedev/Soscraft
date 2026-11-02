@@ -989,12 +989,19 @@ fn the_sit_back_and_roll_amounts_ease_in_and_out_like_vanilla() {
     for _ in 0..7 {
         world.tick(&mut grove);
         let state = &panda(&world, id).state;
-        fell.push((state.sit_amount.now, state.back_amount.now, state.roll_amount.now));
+        fell.push((
+            state.sit_amount.now,
+            state.back_amount.now,
+            state.roll_amount.now,
+        ));
     }
     let down = [0.81, 0.62, 0.43, 0.24, 0.05, 0.0, 0.0];
     for (tick, &(sit, back, roll)) in fell.iter().enumerate() {
         assert!(close(sit, down[tick]), "tick {tick}: {sit}");
-        assert!(close(back, up[tick]) && close(roll, up[tick]), "tick {tick}");
+        assert!(
+            close(back, up[tick]) && close(roll, up[tick]),
+            "tick {tick}"
+        );
     }
 
     let goals = panda_mut(&mut world, id).state.goals_mut();

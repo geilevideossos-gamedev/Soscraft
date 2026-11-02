@@ -32,6 +32,7 @@ Files under `third_party/minecraftoss` this track patched or added.
 - Changed again, no new file (pandas-moods 2): `entities/src/world/families/land/pandas.rs` (`roll_delta`, `sneeze`, `after_sneeze`, `handle_roll`, the tail's order), `entities/src/world/families/land/pandas/ai.rs` (the lie, sneeze and roll goals, `stays_down`, `roll_ahead`), `entities/src/world/families/land/pandas/tests.rs` (its tests, `Grove.ledge`).
 - Patched (pandas-thunder 1, hook H4): `player/src/lib.rs` (`World::raining`, `World::thundering`), `world/src/level/fire.rs` (`Level::is_raining` made `pub` with vanilla's `canHaveWeather`, `Level::is_thundering`).
 - Changed again, no new file (pandas-thunder 2): `entities/src/world/families/land/pandas.rs` (`scare`, the thunder half of `worry`), `entities/src/world/families/land/pandas/tests.rs` (its test, `Grove.thunder` and `Grove.pool`).
+- Changed again, no new file (m1b review fix 1): `entities/src/world/families/land/pandas/tests.rs` (two statements wrapped as rustfmt wants).
 
 ## Hooks
 
@@ -967,3 +968,16 @@ Row 19 of `docs/round10/mobs.md` is now `done`. The owner can test the whole sec
 ```
 IW4L_MINECRAFT_KIT=minecraft:panda_spawn_egg*16,minecraft:bamboo*64,minecraft:bone_meal*32,minecraft:cake,minecraft:cake,minecraft:iron_sword,minecraft:bow,minecraft:arrow*64,minecraft:shield,minecraft:flint_and_steel,minecraft:cactus*4,minecraft:sand*8,minecraft:cobblestone*64,minecraft:zombie_spawn_egg*2,minecraft:spawner,minecraft:golden_dandelion*2,minecraft:cooked_beef*32
 ```
+
+### Review fixes (m1b)
+
+#### 1. The Minecraft panda entity tests pass rustfmt
+
+After c1ee9e3c.
+
+- **Defect:** `entities/src/world/families/land/pandas/tests.rs` is a new file of this segment, so its staged content must pass `rustfmt --check --edition 2021` (CLAUDE.md, M10 "Rules"). pandas-drawn left two lines rustfmt would wrap in `the_sit_back_and_roll_amounts_ease_in_and_out_like_vanilla` (the `fell.push` tuple and the back-and-roll `assert!`), and the three later groups kept them.
+- **Changed (vendored entities crate):** those two statements are wrapped the way rustfmt wants. No test logic changed, and no other file was touched.
+- **Tests:** none added; the file now has no `rustfmt --check --edition 2021` diff.
+- **Runs:** `test -p minecraftoss-entities --locked --lib pandas` (29 passed).
+- **Test steps:** none, a test file only.
+- **Kit:** none.
