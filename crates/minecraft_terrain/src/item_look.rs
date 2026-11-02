@@ -52,7 +52,7 @@ impl Charge {
         [Self::Arrow, Self::Rocket]
             .into_iter()
             .find(|charge| charge.name() == name)
-            .unwrap_or_default()
+            .unwrap_or(Self::None)
     }
 }
 

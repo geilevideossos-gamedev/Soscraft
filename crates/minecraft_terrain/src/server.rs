@@ -14819,7 +14819,7 @@ mod tests {
         let changes = server.take_block_entity_changes();
         let standing = changed_banner(&changes, (8, 200, 8));
         assert_eq!(standing.get("id").and_then(Tag::as_str), Some("minecraft:banner"));
-        let patterns: Vec<(&str, &str)> = standing.get("patterns").and_then(Tag::as_list).unwrap_or_default().iter().filter_map(|layer| Some((layer.get("pattern")?.as_str()?, layer.get("color")?.as_str()?))).collect();
+        let patterns: Vec<(&str, &str)> = standing.get("patterns").and_then(Tag::as_list).unwrap_or(&[]).iter().filter_map(|layer| Some((layer.get("pattern")?.as_str()?, layer.get("color")?.as_str()?))).collect();
         assert_eq!(patterns.len(), 8, "{standing:?}");
         assert_eq!((patterns[0], patterns[7]), (("minecraft:rhombus", "cyan"), ("minecraft:border", "black")));
         let stored = standing.get("components").and_then(Tag::as_compound).expect("the other components");

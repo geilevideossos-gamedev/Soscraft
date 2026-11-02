@@ -397,7 +397,7 @@ pub fn append_horses<'a>(
         if let Some(markings) = markings {
             emit(translucent, &markings, &cubes, [1.0; 3]);
         }
-        if let Some((armor, tint, overlay)) = Some(horse).filter(|_| !baby && horse.kind.wears_armor()).and_then(armor_layers) {
+        if let Some((armor, tint, overlay)) = (!baby && horse.kind.wears_armor()).then_some(horse).and_then(armor_layers) {
             let worn = model_layer(horse.kind, false, false, &anim, 0.1, None);
             emit(mesh, &armor, &worn, tint);
             if let Some(overlay) = overlay {

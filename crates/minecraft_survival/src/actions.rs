@@ -2272,7 +2272,7 @@ pub(crate) mod tests {
         level.terrain.friend_changes = Some(Vec::new());
         let entities = level.entities.as_mut().expect("entities");
         crate::level::save_server_block_entities(entities, &mut level.terrain, true);
-        let told = level.terrain.friend_changes.clone().unwrap_or_default();
+        let told = level.terrain.friend_changes.clone().expect("friends' changes are collected");
         assert!(
             told.contains(&pos) && told.iter().all(|at| *at == pos),
             "friends hear of the banner's block entity: {told:?}"
@@ -2294,8 +2294,7 @@ pub(crate) mod tests {
         let names: Vec<&str> = stored
             .as_ref()
             .and_then(Tag::as_compound)
-            .map(|map| map.keys().map(String::as_str).collect())
-            .unwrap_or_default();
+            .map_or_else(Vec::new, |map| map.keys().map(String::as_str).collect());
         assert_eq!(
             names,
             [
@@ -2384,7 +2383,7 @@ pub(crate) mod tests {
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
         let banners = &mut entities.view.banners;
-        let layers = banners.layers(pos).unwrap_or_default();
+        let layers = banners.layers(pos).unwrap_or(&[]);
         assert_eq!(layers.len(), 8);
         assert_eq!(layers[0], ("minecraft:rhombus".to_owned(), "cyan"));
         assert_eq!(layers[7], ("minecraft:border".to_owned(), "black"));

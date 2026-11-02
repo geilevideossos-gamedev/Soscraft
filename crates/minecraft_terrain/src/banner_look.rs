@@ -74,7 +74,7 @@ impl BannerLooks {
     }
 
     fn set(&mut self, pos: BlockPos, tag: Option<&Tag>) {
-        let layers = tag.map(layers).unwrap_or_default();
+        let layers = tag.map_or_else(Vec::new, layers);
         if layers.is_empty() {
             self.banners.remove(&pos);
         } else if self

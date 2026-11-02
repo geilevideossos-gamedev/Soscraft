@@ -1301,10 +1301,57 @@ Commit: "Track E1 code passes clippy", the one after `70df989a`.
   1. **Recipe book tooltips.** Open the inventory and click the recipe book button. Hover a recipe button: its item's tooltip shows as before, with "Right Click for More" under it when the button holds more than one recipe. **Screenshot V1.**
   2. **A ghost recipe.** If the filter button shows "Showing Craftable", click it so all recipes show. Click a recipe with a red background (one you can't pay for): grey ghost items fill the crafting grid. Hover a ghost item: its tooltip shows.
 
+### Clippy on the touched crates of segment e1b
+
+Commit: "Track E1's banner, crossbow and horse armour code passes clippy", the one after `d954c764`.
+
+- **Touched crates:** the union of `git diff --stat r10-e1b-base 68c06510` (segment e1b) and `git diff --stat minecraft-survival...HEAD` (the outline and the review fix): `minecraft_net`, `minecraft_survival`, `minecraft_terrain`, `render_anim`, `render_gpu`, `minecraftoss-entities`, `minecraftoss-player` and `minecraftoss-world`.
+- **Clippy:**
+  - `clippy -p` on all eight, `--locked --all-targets -- -A clippy::approx_constant`, with the `third_party/scenarios` stand-in files of `full-suite.ps1` made for the run and removed after.
+  - `third_party/minecraftoss` is outside the workspace, so `cargo clippy` checks its crates with plain rustc (track F's finding). They were linted for real with `check -p minecraftoss-entities -p minecraftoss-player -p minecraftoss-world --locked --all-targets` and `RUSTC_WRAPPER=clippy-driver`, after touching their `lib.rs` so cargo rebuilt them; their `lib.rs` were touched again afterwards so later builds use rustc.
+  - Every warning was traced with `git blame` to its commit. Thirteen are on lines segment e1b added, none on the outline's or the review fix's lines:
+    - twelve uses of `Option::unwrap_or_default`, which the workspace's `clippy.toml` disallows;
+    - one `clippy::some_filter` in `horse_render.rs`.
+- **Changed** (no behaviour change; every fallback is the same value as before):
+  - `minecraft_terrain`:
+    - `banner_look.rs` `Banners::set`: `tag.map_or_else(Vec::new, layers)`, so a banner with no tag has no layers.
+    - `item_frame.rs` (`FrameView.look`): `map_or_else(String::new, ...)`, so an empty frame has no look.
+    - `item_look.rs` `Charge::named`: `unwrap_or(Self::None)`, so an unknown name is no charge, the enum's default.
+    - `horse_render.rs` `append_horses`: `(!baby && horse.kind.wears_armor()).then_some(horse).and_then(armor_layers)` in place of `Some(horse).filter(..)`.
+    - Tests: `mob_tracking.rs` reads `moves_of(3).unwrap_or(&[])`, and `server.rs` reads the banner's `patterns` list with `unwrap_or(&[])`.
+  - `minecraft_survival` tests:
+    - `actions.rs`: the friends' changes are read with `expect`, so the test fails with a message where it used to fail on the assert after. The stored component names use `map_or_else(Vec::new, ..)`, and the banner layers `unwrap_or(&[])`.
+    - `remote.rs`: the friend's taken-apart banners use `map_or_else(Vec::new, ..)`.
+  - Vendored `minecraftoss-world` `level/components.rs`: `kind` falls back to `unwrap_or("")`, and `collected` to `map_or_else(BTreeMap::new, Clone::clone)`. `unwrap_or_else(BTreeMap::new)` would trip `clippy::unwrap_or_default` instead.
+- **Left alone:**
+  - `minecraft_terrain` `item_icon.rs` `raster_triangle` has 10 arguments (`too_many_arguments`). It already had 9, over the limit of 7, before `ace496b4` added `under`, so the warning is older than the segment.
+  - Every other warning in these crates is on older lines. That includes the `large_enum_variant` of `render_anim` `FpvPoseKind` and `RemoteSkinAction` and of `minecraft_survival` `Open`, none of them touched by the track.
+- **Tests:** none new. All pass:
+
+  | Crate | Result |
+  | --- | --- |
+  | `minecraft_terrain` | 1696 passed, 3 ignored |
+  | `minecraft_survival` | 817 passed, plus `vanilla_world` 1 |
+  | `minecraft_net` | 27 |
+  | `render_anim` | 221 |
+  | `render_gpu` | 41 |
+  | `minecraftoss-entities` | 555 |
+  | `minecraftoss-player` | 200 |
+  | `minecraftoss-world` | 135 |
+
+  `check -p launcher` passes, with only the old `render_frame` and skate warnings.
+- **Protocol:** no change.
+- **Owner's test steps** (survival, a new world, by day on flat grass, the combined kit below; the code these fixes touch, which should look as in release 5):
+  1. **Placed banners.** Build a plank wall three wide and two high. Place the white banner on the ground in front of it and the blue one on the wall: both show their patterns from front and back, and the black banner beside them is plain. **Screenshot C1.**
+  2. **Banner drops.** Break the three banners with the diamond axe: each drops with its pattern, and picked up it still shows it in the hotbar.
+  3. **Frames.** Hang four item frames on the wall and put in the arrow crossbow, the firework crossbow, the plain crossbow and the white banner: they show the arrow, the rocket, no arrow, and the creeper pattern. **Screenshot C2.**
+  4. **Horse armour.** Run `/summon minecraft:horse ~ ~ ~2 {Tame:1b}` twice. Put the red leather horse armour on one horse and the plain one on the other: red with the brown trim, and brown with the same trim. **Screenshot C3.**
+- **Kit:** the combined kit below.
+
 ## Combined kit
 
-One line for a quick look at the whole track in one world (27 backpack slots). Each section above has its full kit. The banner, shield and crossbow entries of E-kit are left out to stay within 27 slots; the E-banners kits carry the patterned banners and shields and the loaded crossbows, and E-kit's `/give` steps still check them.
+One line for a quick look at the whole track in one world (27 backpack slots). Each section above has its full kit. The line favours segment e1b and the outline: patterned banners and the shield, crossbows, item frames, dyed horse armour, bells, llamas, love hearts and glowing pillagers. From the first segment it keeps horses, villagers, ominous bottles and golden apples. It leaves out the book, the elytra and rockets, the wolf, cat and strider eggs, the crops for trading and the composter; their sections carry them.
 
 ```
-IW4L_MINECRAFT_KIT=minecraft:written_book[written_book_content={title:"Kit",author:"Owner",pages:["One, two"]}],minecraft:firework_rocket[fireworks={flight_duration:3}]*16,minecraft:firework_rocket*16,minecraft:elytra,minecraft:horse_spawn_egg*4,minecraft:wolf_spawn_egg*2,minecraft:cat_spawn_egg*2,minecraft:villager_spawn_egg*4,minecraft:strider_spawn_egg*2,minecraft:wheat*64,minecraft:potato*64,minecraft:carrot*64,minecraft:beetroot*64,minecraft:bone*32,minecraft:cod*64,minecraft:golden_carrot*16,minecraft:composter,minecraft:ominous_bottle*2,minecraft:ominous_bottle[ominous_bottle_amplifier=4],minecraft:potion@long_night_vision,minecraft:golden_apple*8,minecraft:milk_bucket,minecraft:saddle,minecraft:saddle,minecraft:hay_block*16,minecraft:leather_horse_armor@red,minecraft:leather_chestplate@red
+IW4L_MINECRAFT_KIT=minecraft:white_banner[banner_patterns=[{pattern:"minecraft:creeper",color:"black"},{pattern:"minecraft:border",color:"red"}]]*8,minecraft:blue_banner[banner_patterns=[{pattern:"minecraft:gradient",color:"white"},{pattern:"minecraft:globe",color:"lime"},{pattern:"minecraft:stripe_bottom",color:"yellow"}]]*4,minecraft:black_banner*2,minecraft:shield[base_color=red,banner_patterns=[{pattern:"minecraft:cross",color:"yellow"}]],minecraft:crossbow[charged_projectiles=[{id:"minecraft:arrow"}]],minecraft:crossbow[charged_projectiles=[{id:"minecraft:firework_rocket"}]],minecraft:crossbow,minecraft:item_frame*8,minecraft:pillager_spawn_egg*16,minecraft:bell*4,minecraft:lever*2,minecraft:oak_planks*64,minecraft:cobblestone*64,minecraft:saddle,minecraft:leather_horse_armor@red,minecraft:leather_horse_armor@blue,minecraft:leather_horse_armor,minecraft:horse_spawn_egg*4,minecraft:llama_spawn_egg*4,minecraft:cow_spawn_egg*2,minecraft:wheat*64,minecraft:villager_spawn_egg*4,minecraft:ominous_bottle*2,minecraft:diamond_axe,minecraft:diamond_sword,minecraft:golden_apple*8,minecraft:cooked_beef*16
 ```

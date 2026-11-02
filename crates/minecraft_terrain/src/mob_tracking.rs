@@ -1751,7 +1751,7 @@ mod tests {
                         assert!(spawn_tracked(friend, *id, sent));
                     }
                 }
-                for mob in tracked.moves_of(3).unwrap_or_default() {
+                for mob in tracked.moves_of(3).unwrap_or(&[]) {
                     show_on(friend, mob);
                 }
             }
