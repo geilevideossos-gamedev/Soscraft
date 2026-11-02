@@ -8,6 +8,7 @@
 use crate::path_search::{FoundPath, NodePos};
 use glam::DVec3;
 use minecraftoss_player::path_type::PathType;
+use minecraftoss_player::rng::LegacyRandom;
 use minecraftoss_player::World;
 use std::collections::HashMap;
 
@@ -40,6 +41,7 @@ pub struct WalkProfile {
     /// (`floor(max(FOLLOW_RANGE, required) * 16)`).
     pub max_visited: Option<i32>,
     pub distance_xz: bool,
+    pub flying: Option<crate::flying::Flight>,
 }
 
 /// `PathfinderMob.getWalkTargetValue` families.
@@ -81,6 +83,7 @@ impl WalkProfile {
             walk_target: WalkTarget::Animal,
             max_visited: None,
             distance_xz: false,
+            flying: None,
         };
         profile.set_malus(PathType::FireInNeighbor, 16.0);
         profile.set_malus(PathType::Fire, -1.0);
@@ -284,6 +287,7 @@ struct Evaluator<'a, W: World + ?Sized> {
     entity_width: i32,
     entity_height: i32,
     entity_depth: i32,
+    fly: Option<&'a mut LegacyRandom>,
 }
 
 /// `Direction.Plane.HORIZONTAL`: north, east, south, west.
@@ -304,6 +308,7 @@ impl<'a, W: World + ?Sized> Evaluator<'a, W> {
             entity_width: width,
             entity_height: (profile.height + 1.0).floor() as i32,
             entity_depth: width,
+            fly: None,
         }
     }
 
@@ -331,6 +336,9 @@ impl<'a, W: World + ?Sized> Evaluator<'a, W> {
 
     /// `WalkNodeEvaluator.getStart`.
     fn start(&mut self) -> usize {
+        if self.fly.is_some() {
+            return self.fly_start();
+        }
         let p = self.walker.position;
         let (bx, _, bz) = self.block_pos();
         let mut start_y = p.y.floor() as i32;
@@ -389,6 +397,9 @@ impl<'a, W: World + ?Sized> Evaluator<'a, W> {
 
     /// `WalkNodeEvaluator.getNeighbors`.
     fn neighbors(&mut self, current: usize) -> Vec<usize> {
+        if self.fly.is_some() {
+            return self.fly_neighbors(current);
+        }
         let pos = self.nodes[current].pos;
         let mut out = Vec::with_capacity(8);
         let mut jump_size = 0;
@@ -621,7 +632,7 @@ impl<'a, W: World + ?Sized> Evaluator<'a, W> {
         if let Some(&path_type) = self.static_types.get(&pos) {
             return path_type;
         }
-        let path_type = path_type_static(self.world, pos);
+        let path_type = if self.fly.is_some() { fly_path_type(self.world, pos, self.block_pos()) } else { path_type_static(self.world, pos) };
         self.static_types.insert(pos, path_type);
         path_type
     }
@@ -814,10 +825,20 @@ fn java_hash_order<T: Copy>(order: &[T], hash: impl Fn(T) -> i32, size: usize) -
 /// reached, to the nearest node of the target it ends closest to. Each
 /// target keeps the node nearest it by raw distance (`Target.updateBest`).
 pub fn find_walk_path_to_any<W: World + ?Sized>(world: &W, profile: &WalkProfile, walker: Walker, targets: &[NodePos], reach_range: i32) -> Option<FoundPath> {
+    find_path_to_any(Evaluator::new(world, profile, walker), targets, reach_range)
+}
+
+pub fn find_fly_path_to_any<W: World + ?Sized>(world: &W, profile: &WalkProfile, walker: Walker, targets: &[NodePos], reach_range: i32, random: &mut LegacyRandom) -> Option<FoundPath> {
+    let mut evaluator = Evaluator::new(world, profile, walker);
+    evaluator.fly = Some(random);
+    find_path_to_any(evaluator, targets, reach_range)
+}
+
+fn find_path_to_any<W: World + ?Sized>(mut evaluator: Evaluator<'_, W>, targets: &[NodePos], reach_range: i32) -> Option<FoundPath> {
     if targets.is_empty() {
         return None;
     }
-    let mut evaluator = Evaluator::new(world, profile, walker);
+    let profile = evaluator.profile;
     let start = evaluator.start();
     // `Collectors.toMap` of `getTarget`: the targets' nodes are made before
     // the search, and the map (16 buckets) orders them by node hash.
@@ -927,4 +948,126 @@ pub fn find_walk_path_to_any<W: World + ?Sized>(world: &W, profile: &WalkProfile
         (chosen?.1, true)
     };
     Some(FoundPath { nodes: reconstruct(chosen), reached: is_reached, target: keys[chosen].1 })
+}
+
+const FLY_STEPS: [(NodePos, &[usize]); 26] = [
+    ((0, 0, 1), &[]),
+    ((-1, 0, 0), &[]),
+    ((1, 0, 0), &[]),
+    ((0, 0, -1), &[]),
+    ((0, 1, 0), &[]),
+    ((0, -1, 0), &[]),
+    ((0, 1, 1), &[0, 4]),
+    ((-1, 1, 0), &[1, 4]),
+    ((1, 1, 0), &[2, 4]),
+    ((0, 1, -1), &[3, 4]),
+    ((0, -1, 1), &[0, 5]),
+    ((-1, -1, 0), &[1, 5]),
+    ((1, -1, 0), &[2, 5]),
+    ((0, -1, -1), &[3, 5]),
+    ((1, 0, -1), &[3, 2]),
+    ((1, 0, 1), &[0, 2]),
+    ((-1, 0, -1), &[3, 1]),
+    ((-1, 0, 1), &[0, 1]),
+    ((1, 1, -1), &[14, 3, 2, 4, 9, 8]),
+    ((1, 1, 1), &[15, 0, 2, 4, 6, 8]),
+    ((-1, 1, -1), &[16, 3, 1, 4, 9, 7]),
+    ((-1, 1, 1), &[17, 0, 1, 4, 6, 7]),
+    ((1, -1, -1), &[14, 3, 2, 5, 13, 12]),
+    ((1, -1, 1), &[15, 0, 2, 5, 10, 12]),
+    ((-1, -1, -1), &[16, 3, 1, 5, 13, 11]),
+    ((-1, -1, 1), &[17, 0, 1, 5, 10, 11]),
+];
+
+impl<W: World + ?Sized> Evaluator<'_, W> {
+    fn fly_start(&mut self) -> usize {
+        let p = self.walker.position;
+        let (bx, by, bz) = self.block_pos();
+        let mut y = (p.y + 0.5).floor() as i32;
+        if self.profile.can_float && self.walker.in_floatable_fluid {
+            y = by;
+            while self.world.block((bx, y, bz)).is_some_and(|b| b.id == "minecraft:water") {
+                y += 1;
+            }
+        }
+        let pos = (bx, y, bz);
+        if !self.fly_can_start_at(pos) {
+            let bb = self.bounding_box();
+            let size = bb.max - bb.min;
+            if (size.x + size.y + size.z) / 3.0 < 1.0 {
+                let grow = DVec3::new((f64::from(1.1f32) - size.x).max(0.0), (f64::from(1.1f32) - size.y).max(0.0), (f64::from(1.1f32) - size.z).max(0.0));
+                let (low, high) = (bb.min - grow, bb.max + grow);
+                let low = (low.x.floor() as i32, low.y.floor() as i32, low.z.floor() as i32);
+                let high = (high.x.floor() as i32, high.y.floor() as i32, high.z.floor() as i32);
+                for _ in 0..10 {
+                    let Some(random) = self.fly.as_deref_mut() else { break };
+                    let x = low.0 + random.next_int((high.0 - low.0 + 1) as u32) as i32;
+                    let y = low.1 + random.next_int((high.1 - low.1 + 1) as u32) as i32;
+                    let z = low.2 + random.next_int((high.2 - low.2 + 1) as u32) as i32;
+                    if self.fly_can_start_at((x, y, z)) {
+                        return self.start_node((x, y, z));
+                    }
+                }
+            } else {
+                for (x, z) in [(bb.min.x, bb.min.z), (bb.min.x, bb.max.z), (bb.max.x, bb.min.z), (bb.max.x, bb.max.z)] {
+                    let corner = (x.floor() as i32, by, z.floor() as i32);
+                    if self.fly_can_start_at(corner) {
+                        return self.start_node(corner);
+                    }
+                }
+            }
+        }
+        self.start_node(pos)
+    }
+
+    fn fly_can_start_at(&mut self, pos: NodePos) -> bool {
+        let path_type = self.cached_path_type(pos);
+        self.profile.malus(path_type) >= 0.0
+    }
+
+    fn fly_neighbors(&mut self, current: usize) -> Vec<usize> {
+        let (x, y, z) = self.nodes[current].pos;
+        let mut found = [None; 26];
+        let mut out = Vec::with_capacity(26);
+        for (i, ((dx, dy, dz), needs)) in FLY_STEPS.into_iter().enumerate() {
+            found[i] = self.fly_accepted((x + dx, y + dy, z + dz));
+            let open = found[i].is_some_and(|n| !self.nodes[n].closed);
+            if open && needs.iter().all(|&j| found[j].is_some_and(|n| self.nodes[n].cost_malus >= 0.0)) {
+                out.push(found[i].expect("open"));
+            }
+        }
+        out
+    }
+
+    fn fly_accepted(&mut self, pos: NodePos) -> Option<usize> {
+        let path_type = self.cached_path_type(pos);
+        let malus = self.profile.malus(path_type);
+        if malus < 0.0 {
+            return None;
+        }
+        let node = self.node_with_cost(pos, path_type, malus);
+        if path_type == PathType::Walkable {
+            self.nodes[node].cost_malus += 1.0;
+        }
+        Some(node)
+    }
+}
+
+pub fn fly_path_type<W: World + ?Sized>(world: &W, (x, y, z): NodePos, mob: NodePos) -> PathType {
+    let mut path_type = world.path_type_from_state((x, y, z));
+    if path_type == PathType::Open && y >= world.min_y() + 1 {
+        let below = (x, y - 1, z);
+        path_type = match world.path_type_from_state(below) {
+            PathType::Fire | PathType::Lava => PathType::Fire,
+            PathType::Damaging => PathType::Damaging,
+            PathType::Cocoa => PathType::Cocoa,
+            PathType::Fence if below != mob => PathType::Fence,
+            PathType::Fence | PathType::Walkable | PathType::Open | PathType::Water => PathType::Open,
+            _ => PathType::Walkable,
+        };
+    }
+    if matches!(path_type, PathType::Walkable | PathType::Open) {
+        path_type = check_neighbour_blocks(world, (x, y, z), path_type);
+    }
+    path_type
 }

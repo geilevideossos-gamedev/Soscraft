@@ -70,7 +70,10 @@ fn toward(position: DVec3, (dx, dy, dz): BlockPos) -> BlockPos {
 /// `GoalUtils.isOutsideLimits`, `isNotStable` (`PathNavigation.isStableDestination`:
 /// a solid-render block below).
 fn unstable_or_outside(world: &dyn World, profile: &WalkProfile, (x, y, z): BlockPos) -> bool {
-    let stable = world.solid_render((x, y - 1, z)) || profile.can_stand_on_fluid && world.fluid_is_lava((x, y, z));
+    let stable = match profile.flying {
+        Some(flight) => flight.is_stable_destination(world, (x, y, z)),
+        None => world.solid_render((x, y - 1, z)) || profile.can_stand_on_fluid && world.fluid_is_lava((x, y, z)),
+    };
     y < world.min_y() || y > world.max_y() || !stable
 }
 

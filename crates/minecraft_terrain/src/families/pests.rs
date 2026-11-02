@@ -1,5 +1,5 @@
 mod endermite_render;
-mod endermites;
+pub(crate) mod endermites;
 mod silverfish;
 mod silverfish_render;
 

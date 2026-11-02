@@ -22,6 +22,7 @@ pub const FOLLOW_RANGE: f64 = 16.0;
 pub const EXPERIENCE: i32 = 3;
 pub const MAX_LIFE: i32 = 2400;
 pub const STEP_SOUND: &str = "entity.endermite.step";
+pub const PEARL_CHANCE: f32 = 0.05;
 
 pub const GOAL_NAMES: [&str; 6] = [
     "FloatGoal",
@@ -79,6 +80,14 @@ fn targets() -> GoalSelector<MonsterGoalContext> {
 }
 
 fn walk(_walk: &mut WalkProfile) {}
+
+pub fn player_rotation(world: &EntityWorld, player: u64) -> (f32, f32) {
+    world
+        .player_views
+        .iter()
+        .find(|(id, _)| *id == player)
+        .map_or((0.0, 0.0), |(_, view)| (view.head_yaw, view.pitch))
+}
 
 #[derive(Clone)]
 pub struct Endermite {

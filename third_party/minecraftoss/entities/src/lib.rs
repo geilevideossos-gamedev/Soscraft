@@ -26,6 +26,7 @@ pub mod enderman;
 pub mod feline;
 pub mod feline_ai;
 pub mod fluid;
+pub mod flying;
 pub mod fireball;
 pub mod follow_parent;
 pub mod ghast;

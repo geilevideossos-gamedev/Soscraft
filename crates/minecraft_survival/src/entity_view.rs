@@ -342,17 +342,19 @@ impl EntityView {
             let kind = match puff.kind {
                 PuffKind::Heart => Kind::Heart,
                 PuffKind::Smoke => Kind::Smoke,
+                PuffKind::Poof => Kind::Poof,
                 PuffKind::HappyVillager => Kind::HappyVillager,
                 PuffKind::AngryVillager => Kind::AngryVillager,
                 PuffKind::Splash => Kind::Splash,
             };
+            let back = if puff.kind == PuffKind::Poof { 10.0 } else { 0.0 };
             let (width, height) = (f64::from(puff.width), f64::from(puff.height));
             for _ in 0..puff.count {
                 let random = &mut self.random;
                 let motion = DVec3::new(random.next_gaussian() * 0.02, random.next_gaussian() * 0.02, random.next_gaussian() * 0.02);
-                let x = puff.feet.x + width * (2.0 * random.next_double() - 1.0);
-                let y = puff.feet.y + height * random.next_double() + puff.lift;
-                let z = puff.feet.z + width * (2.0 * random.next_double() - 1.0);
+                let x = puff.feet.x + width * (2.0 * random.next_double() - 1.0) - motion.x * back;
+                let y = puff.feet.y + height * random.next_double() + puff.lift - motion.y * back;
+                let z = puff.feet.z + width * (2.0 * random.next_double() - 1.0) - motion.z * back;
                 self.ambient.add(kind, DVec3::new(x, y, z), motion);
             }
         }
@@ -1803,6 +1805,22 @@ mod tests {
             assert!((at.x - feet.x).abs() <= 0.6 && (at.z - feet.z).abs() <= 0.6, "{at}");
             assert!(at.y >= feet.y + 0.5 && at.y <= feet.y + 0.85 + 0.5, "{at}");
         }
+    }
+
+    #[test]
+    fn a_spawn_poof_draws_twenty_poofs_set_back_against_their_drift() {
+        use minecraft_terrain::ambient_particles::Kind;
+        use minecraft_terrain::mob_particles::{MobPuff, PuffKind};
+        let mut view = EntityView::new(17);
+        let feet = DVec3::new(2.5, 64.0, 2.5);
+        let poof = MobPuff { kind: PuffKind::Poof, count: 20, feet, width: 0.4, height: 0.3, lift: 0.0, range: 8 };
+        let mut snapshot = EntitySnapshot { mob_puffs: vec![poof], ..EntitySnapshot::default() };
+        view.bursts(&mut snapshot);
+        let drawn: Vec<(Kind, DVec3)> = view.ambient.kinds_at().collect();
+        assert_eq!(drawn.len(), 20);
+        assert!(drawn.iter().all(|(kind, at)| *kind == Kind::Poof && (*at - feet).abs().max_element() < 1.5), "{drawn:?}");
+        let outside = drawn.iter().filter(|(_, at)| (at.x - feet.x).abs() > 0.4 || (at.z - feet.z).abs() > 0.4 || at.y < feet.y || at.y > feet.y + 0.3).count();
+        assert!(outside > 0, "each starts ten steps of its drift back, past the box: {drawn:?}");
     }
 
     #[test]

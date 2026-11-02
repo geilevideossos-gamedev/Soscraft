@@ -125,6 +125,10 @@ pub fn plan_walk_path<W: World + ?Sized>(
     target: DVec3,
     reach_range: i32,
 ) -> Option<PlannedPath> {
+    if profile.flying.is_some() {
+        let block = (target.x.floor() as i32, target.y.floor() as i32, target.z.floor() as i32);
+        return crate::flying::plan_path(body, navigation, world, profile, fluid, &[block], reach_range);
+    }
     if navigation.wall_climber {
         navigation.path_to_position = Some((target.x.floor() as i32, target.y.floor() as i32, target.z.floor() as i32));
     }
@@ -158,6 +162,9 @@ pub fn plan_walk_path_to_any<W: World + ?Sized>(
     targets: &[(i32, i32, i32)],
     reach_range: i32,
 ) -> Option<PlannedPath> {
+    if profile.flying.is_some() {
+        return crate::flying::plan_path(body, navigation, world, profile, fluid, targets, reach_range);
+    }
     if targets.is_empty() || body.position.y < f64::from(world.min_y()) || !(body.on_ground || fluid.in_water() || fluid.in_lava()) {
         return None;
     }
@@ -288,6 +295,7 @@ pub struct GroundNavigation {
     timeout_timer: i64,
     timeout_limit: f64,
     last_timeout_check: i64,
+    pub fly_random: minecraftoss_player::rng::LegacyRandom,
 }
 
 impl GroundNavigation {
@@ -717,4 +725,30 @@ fn center(node: (i32, i32, i32)) -> DVec3 {
         f64::from(node.1),
         f64::from(node.2) + 0.5,
     )
+}
+
+pub(crate) fn adopt_path(navigation: &mut GroundNavigation, path: crate::path_search::FoundPath, reach_range: i32) -> PlannedPath {
+    navigation.target_pos = Some(path.target);
+    navigation.reach_range = reach_range;
+    navigation.reset_stuck_timeout();
+    PlannedPath { nodes: path.nodes, next: 0, reached: path.reached, target: Some(path.target) }
+}
+
+impl GroundNavigation {
+    pub(crate) fn tick_free(&mut self, position: DVec3, width: f32, can_update: bool, speed: f32, can_move_directly: impl Fn(DVec3) -> bool) -> Option<(DVec3, f64)> {
+        self.tick += 1;
+        if self.is_done() {
+            return None;
+        }
+        if can_update {
+            self.follow_path(position, position, width, &can_move_directly);
+            self.detect_stuck(position, speed);
+        } else if self.entity_pos(self.nodes[self.next], width).floor() == position.floor() {
+            self.next += 1;
+        }
+        if self.is_done() {
+            return None;
+        }
+        Some((self.entity_pos(self.nodes[self.next], width), self.speed_modifier))
+    }
 }

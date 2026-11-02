@@ -109,6 +109,13 @@ impl Level<'_> {
                 self.unsupported.push("experience orbs".to_owned());
             }
         }
+        self.infested_after_break(state, pos);
+    }
+
+    pub(super) fn infested_after_break(&mut self, state: BlockStateId, pos: BlockPos) {
+        if self.block_drops && self.is_a(state, "InfestedBlock") {
+            self.infestations.push(pos);
+        }
     }
 
     /// `shouldChangedStateKeepBlockEntity`: copper chests and copper golem

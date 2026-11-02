@@ -226,6 +226,7 @@ pub struct Level<'a> {
     pub random_sequences: minecraftoss_core::loot::RandomSequences,
     blocks_fluid_flow_tag: minecraftoss_core::tags::TagId,
     pub destroyed: Option<Vec<(BlockPos, BlockStateId)>>,
+    pub infestations: Vec<BlockPos>,
 }
 
 impl<'a> Level<'a> {
@@ -325,6 +326,7 @@ impl<'a> Level<'a> {
             random_sequences: minecraftoss_core::loot::RandomSequences::new(0),
             blocks_fluid_flow_tag: lib.registries.block_tags.require("minecraft:blocks_fluid_flow").expect("tag exists"),
             destroyed: None,
+            infestations: Vec::new(),
         }
     }
 

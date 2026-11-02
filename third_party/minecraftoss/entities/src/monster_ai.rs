@@ -794,7 +794,7 @@ impl MonsterGoalContext {
     pub(crate) fn profile(&self) -> WalkProfile {
         let mut profile = self.walk.clone();
         if self.follow_range != self.walk.follow_range as f64 {
-            profile.max_path_length = Some(self.follow_range as f32);
+            profile.max_path_length = Some((self.follow_range as f32).max(self.walk.max_path_length.unwrap_or(0.0)));
         }
         let allowed = match (self.kind, self.target().is_some()) {
             (_, false) => 0.0,

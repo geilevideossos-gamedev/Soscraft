@@ -1,6 +1,6 @@
 # Track D0 log: the shared mob registry
 
-Branch `track-d0`, worktree `C:\Dev\mc-wt\track-d0`, target dir `D:\iw4l-wt\track-d0`. Brief: `docs/round10/track-d0.md`. Mob list: `docs/round10/mobs.md`.
+Branch `track-d0`, worktree `C:\Dev\Soscraft\mc-wt\track-d0` (`C:\Dev\mc-wt\track-d0` until the move), target dir `D:\iw4l-wt\track-d0`. Brief: `docs/round10/track-d0.md`. Mob list: `docs/round10/mobs.md`.
 
 A commit can't name its own hash, so each entry names the commit before it. Its own hash is in `git log` under its subject.
 
@@ -8,8 +8,8 @@ A commit can't name its own hash, so each entry names the commit before it. Its 
 
 Files under `third_party/minecraftoss` this track patched or added (round 8 counted 73 patched and 37 added).
 
-- Patched (15): `entities/src/world.rs`, `entities/src/world/combat.rs`, `entities/src/world/witches.rs`, `entities/src/world/pushing.rs`, `entities/src/world/fireballs.rs`, `entities/src/world/riding.rs`, `entities/src/world/villagers.rs`, `entities/src/world/leashes.rs`, `entities/src/monster_ai.rs`, `entities/src/bin/check_zombie_player_hits.rs`, `entities/src/world/emissions.rs`, `entities/src/walk_path.rs`, `entities/src/stroll.rs`, `world/src/natural_spawner.rs`, `world/src/natural_spawner/spawning.rs`.
-- Added (22): `entities/src/world/families.rs`, `entities/src/world/families/{pests,trial,deep_dark,land,water,night,bosses}.rs`, `entities/src/world/families/goals.rs`, `entities/src/world/families/pests/{silverfish,endermites}.rs`, `entities/src/world/families/pests/probe.rs` (test only), `entities/src/world/families/tests.rs` (test only), `world/src/natural_spawner/families.rs`, `world/src/natural_spawner/families/{pests,trial,deep_dark,land,water,night,bosses}.rs`, `world/src/natural_spawner/families/tests.rs` (test only).
+- Patched (20): `entities/src/world.rs`, `entities/src/world/combat.rs`, `entities/src/world/witches.rs`, `entities/src/world/pushing.rs`, `entities/src/world/fireballs.rs`, `entities/src/world/riding.rs`, `entities/src/world/villagers.rs`, `entities/src/world/leashes.rs`, `entities/src/monster_ai.rs`, `entities/src/bin/check_zombie_player_hits.rs`, `entities/src/world/emissions.rs`, `entities/src/walk_path.rs`, `entities/src/stroll.rs`, `world/src/natural_spawner.rs`, `world/src/natural_spawner/spawning.rs`, and with segment d0b `world/src/level/mod.rs`, `world/src/level/drops.rs`, `world/src/level/explosion.rs`, `entities/src/navigation.rs`, `entities/src/lib.rs`. Segment d0b also changed the added `entities/src/world/families/pests/{silverfish,endermites}.rs` and the already counted `entities/src/walk_path.rs`, `entities/src/stroll.rs` and `entities/src/monster_ai.rs`.
+- Added (23): `entities/src/world/families.rs`, `entities/src/world/families/{pests,trial,deep_dark,land,water,night,bosses}.rs`, `entities/src/world/families/goals.rs`, `entities/src/world/families/pests/{silverfish,endermites}.rs`, `entities/src/world/families/pests/probe.rs` (test only), `entities/src/world/families/tests.rs` (test only), `world/src/natural_spawner/families.rs`, `world/src/natural_spawner/families/{pests,trial,deep_dark,land,water,night,bosses}.rs`, `world/src/natural_spawner/families/tests.rs` (test only), and with segment d0b `entities/src/flying.rs`.
 
 ## Protocol
 
@@ -17,7 +17,9 @@ Files under `third_party/minecraftoss` this track patched or added (round 8 coun
   - `MobShow` is part of every `ServerMob` that the state lane carries (`StateFrame.mobs`, postcard). A host and a friend on builds from before and after this commit misread each other's mob states.
   - Postcard writes one byte for `None`, so every other mob costs one byte more per tick.
   - No `ToClient`/`ToServer` variant and no codec function changed.
-- `minecraft_net::PROTOCOL` stays 6 on this track (`docs/round10/decisions.md`, "PROTOCOL is bumped only at release time"). The next release build bumps it once, because of this commit.
+- **"Minecraft silverfish hide in stone and wake their friends"** (group silverfish-behaviour, commit 1, after 6efedf5f) adds `PuffKind::Poof` after `PuffKind::Smoke` (`crates/minecraft_terrain/src/mob_particles.rs`). `MobPuff` travels in the entity snapshot a host sends its friends, so a friend on an older build cannot read a poof. No `ToClient`/`ToServer` variant and no codec function changed.
+- **"Minecraft mobs can fly with vanilla flying navigation"** (group flying-navigation, after 45de7c5d) changes no message, codec or serialized struct. `WalkProfile.flying`, `GroundNavigation.fly_random` and `flying.rs` live only in the host's entity world.
+- `minecraft_net::PROTOCOL` is never bumped on this track (`docs/round10/decisions.md`, "PROTOCOL is bumped only at release time"). It was 6 when segment d0a ran; the releases since then raised it to 10 (release 5, e7c9a1c8), which already covers `MobShow.family`. Segment d0b leaves it at 10, so the next release build bumps it once more for `PuffKind::Poof`.
 
 ## Group registry-core
 
@@ -593,4 +595,303 @@ Commit: "Track D0 log records the final test run and the combined kit", after 1b
 
 ```
 IW4L_MINECRAFT_KIT=minecraft:silverfish_spawn_egg*16,minecraft:endermite_spawn_egg*8,minecraft:spawner*3,minecraft:stone_bricks*64,minecraft:stone_bricks*64,minecraft:andesite*64,minecraft:andesite*64,minecraft:torch*64,minecraft:zombie_spawn_egg*4,minecraft:creeper_spawn_egg*2,minecraft:cow_spawn_egg*4,minecraft:villager_spawn_egg*2,minecraft:pillager_spawn_egg*2,minecraft:enderman_spawn_egg*2,minecraft:iron_golem_spawn_egg*2,minecraft:wheat*8,minecraft:lead*2,minecraft:bow,minecraft:arrow*64,minecraft:spectral_arrow*16,minecraft:iron_sword,minecraft:shield,minecraft:tnt*8,minecraft:flint_and_steel,minecraft:splash_potion@harming,minecraft:white_bed,minecraft:cooked_beef*32
+```
+
+## Group silverfish-behaviour
+
+Segment d0b. `track-d0` was fast-forwarded to `minecraft-survival` (6efedf5f) before it started.
+
+### 1. Minecraft silverfish hide in stone and wake their friends
+
+After 6efedf5f.
+
+- **Changed (vendored world crate):**
+  - `level/mod.rs`: `Level.infestations: Vec<BlockPos>`, the infested blocks broken with drops whose silverfish the terrain lets out (vanilla `InfestedBlock.spawnInfestation`).
+  - `level/drops.rs`: `infested_after_break(state, pos)` records the block when `block_drops` holds and the block is an `InfestedBlock` (the catalog's class list, so infested deepslate's `InfestedRotatedPillarBlock` counts too). `spawn_after_break` calls it, so every `destroy_block_drops(pos, true)` lets one out: a silverfish waking its friends with `mob_griefing` (through `MobWorld::destroy_block`), a wither, `/setblock .. destroy`.
+  - `level/explosion.rs`: `on_explosion_hit` calls it before the loot, as vanilla's `onExplosionHit` calls `spawnAfterBreak` before `getDrops`. TNT, creepers, fireballs, wither skulls, beds, respawn anchors and MW2 blasts (`weapon_blast`) all go through it; a `Keep` blast breaks nothing and lets nothing out.
+- **Changed (vendored entities crate, `world/families/pests/silverfish.rs`):**
+  - `INFESTED` (the seven infested blocks beside `HOSTS`), `infested_of` and `host_of` (vanilla `infestedStateByHost` and `hostStateByInfested`, which copy the block state's properties, so deepslate keeps its axis).
+  - `SilverfishWakeUpFriendsGoal`: when its clock reaches 0 it searches y 0, 1, -1, 2, -2 .. 5, -5 and x and z 0, 1, -1 .. 10, -10 around the silverfish's block in vanilla's order. Each infested block it finds goes into `SilverfishExtra.woken` (to break with `mob_griefing`, else to turn back into its host block), and the search stops on the first `nextBoolean` that is true.
+  - `SilverfishMergeWithStoneGoal`: with no target and its path done, `mob_griefing` and `nextInt(reducedTickDelay(10)) == 0` pick a direction (`Direction.getRandom`: `nextInt(6)` over down, up, north, south, west, east) from `BlockPos.containing(x, y + 0.5, z)`. A host block there makes the goal start, and its start puts the block and its infested form into `SilverfishExtra.merge`. Otherwise it is the stroll as before.
+  - The family tick applies both right after the goal step (`apply_blocks`), because goals only see `&dyn World`: a woken block is destroyed with drops (`World::destroy_block`) or set to its host block, and a merge sets the infested block, sets `core.removed` (no death, loot or experience) and pushes entity event 20 (vanilla `spawnAnim`).
+- **Changed (`minecraft_terrain`):**
+  - New `infested.rs` (`pub mod infested;` after `families` in `lib.rs`):
+    - `player_broke(level, at, old, broken)` records each infested block a player broke that was not `SilkTouched`, when `block_drops` holds.
+    - `release(level, mobs, tags, puffs)` takes the level's `infestations` and lets a silverfish out of each. Its tag is `{id, Pos: the block's bottom centre, Rotation: 0 0, UUID from the level}`, spawned through `spawn_saved_all` like a loaded mob, so its random comes from its UUID, it is saved with its tag and friends get it. A `TRIGGERED` spawn has no finalize. Each one gets its spawn poof (`mob_puffs` with entity event 20).
+  - `server.rs`: `player_mines` calls `player_broke` once, right after the blocks are removed (before W's game events). `tick_mobs_with` ends with one `release` call, after the creepers, fireballs, withers and blasts of that tick.
+  - `mob_particles.rs` (E1's table): `PuffKind::Poof` and the row `(_, SPAWN_ANIM) => (Poof, 20, 0.0)` first in `puff_for`, because vanilla `Mob.handleEntityEvent(20)` poofs every mob, villagers and ocelots too.
+- **Changed (`minecraft_survival`, `entity_view.rs`):** the client's `mob_puffs` draws `PuffKind::Poof` as `POOF` particles, each starting ten steps of its own drift back (vanilla `makePoofParticles`: `getRandomX(1.0) - xa * 10`).
+- **Tests added:**
+  - `world::families::pests::silverfish::tests`:
+    - `infested_blocks_and_their_hosts_turn_into_each_other`: all seven pairs both ways, deepslate's axis kept, andesite and plain stone have no counterpart, and the search offsets go 0, 1, -1, 2, -2.
+    - `a_hurt_silverfish_wakes_infested_blocks_nearby`: a silverfish in an andesite hole, a wall of infested stone bricks three blocks off and infested deepslate under it. A player's hit wakes them 16 to 24 ticks later. The woken blocks are a non-empty prefix of vanilla's search order and not all of them. With `mob_griefing` they are destroyed through `destroy_block`; without it they become stone bricks again and nothing is destroyed. The clock is back at 0.
+    - `an_idle_silverfish_merges_into_stone`: alone in a ring of stone bricks with `mob_griefing`, it goes into one of the four wall blocks beside it, which becomes infested stone bricks. It leaves `order` with no death and pushes event 20 once. Without `mob_griefing` it is still there after 2400 ticks and nothing changed.
+  - `infested::tests::a_released_silverfish_stands_in_the_middle_of_its_block_facing_south`: the tag's id, position, rotation and UUID, and it loads as a silverfish there.
+  - `mob_particles::tests::a_spawn_animation_is_twenty_poofs_on_any_mob`.
+  - `server::tests` (with the 26.3 data):
+    - `breaking_infested_stone_without_silk_touch_releases_a_silverfish`: mined infested stone lets one out at the block's bottom centre with a 20-particle poof at tracking range 8, and its tag is kept. Silk Touch, plain stone and `block_drops` off let none out. A `Blasted` block and mined infested deepslate do.
+    - `a_blast_on_infested_stone_releases_a_silverfish`: an MW2 blast (`weapon_blast`) beside four infested stone bricks lets one out of each block it broke, and none with `block_drops` off.
+    - `destroying_infested_stone_with_drops_releases_a_silverfish`: `MobWorld::destroy_block` (a waking silverfish's path) and `command_destroy` each let one out, and no item drops.
+    - `a_hurt_silverfish_lets_its_friends_out_of_the_wall`: a summoned silverfish in an andesite pen hurt by magic breaks the one infested stone block in the wall within 30 ticks, and a second silverfish stands in that block.
+  - `entity_view::tests::a_spawn_poof_draws_twenty_poofs_set_back_against_their_drift` (survival).
+  - Changed: the silverfish tests' `Field` floor is dirt instead of stone, because stone is a host block now and idle silverfish would merge into the floor.
+- **javap this round (26.3):**
+  - `InfestedBlock`: `spawnAfterBreak` calls `spawnInfestation` when `block_drops` holds and the tool has no `#prevents_infested_spawns` enchantment. `spawnInfestation` creates a silverfish with `EntitySpawnReason.TRIGGERED`, `snapTo(x + 0.5, y, z + 0.5, 0, 0)`, `addFreshEntity`, then `spawnAnim`. The constructor halves the host's destroy time and sets explosion resistance 0.75. There is no `wasExploded` override.
+  - `Blocks`: the infested blocks only set a map colour, so they need no tool (no `requiresCorrectToolForDrops`).
+  - `BlockBehaviour.onExplosionHit`: `spawnAfterBreak(level, pos, ItemStack.EMPTY, isPlayer)`, then `getDrops`, unless the blast only triggers blocks.
+  - `Silverfish$SilverfishWakeUpFriendsGoal.tick` and `Silverfish$SilverfishMergeWithStoneGoal` (`canUse`, `canContinueToUse` false after a merge, `start`) as above. `Direction.getRandom` is `Util.getRandom(VALUES, random)`, one `nextInt(6)`.
+  - `Mob.spawnAnim`: entity event 20 on the server. `LivingEntity.makePoofParticles`: 20 `POOF` particles, the three motion gaussians times 0.02 drawn first, at `getRandomX(1.0)`, `getRandomY()` and `getRandomZ(1.0)` less ten times the motion.
+  - Data: `#prevents_infested_spawns` holds only `minecraft:silk_touch`. The infested blocks' loot drops their host block with Silk Touch only (`infested_stone` drops stone).
+- **Decisions:**
+  - **Silk Touch and creative** come from survival's `HowBroken`: `SilkTouched` covers a Silk Touch tool (the only member of `#prevents_infested_spawns`) and every creative break (vanilla's creative breaks never call `playerDestroy`).
+  - **Blasted blocks** (an MW2 blast breaking blocks on the voxel side) let silverfish out like any explosion. The server's own `weapon_blast` runs first in the frame, so a block it already broke is air when `player_mines` sees it, and no block lets two out.
+  - **One release a tick.** The level only records infested breaks; the terrain lets them out at the end of `tick_mobs_with`. A block broken by a blast or a mob in that tick lets its silverfish out the same tick, as vanilla does. A block a player mines between ticks lets its silverfish out at the end of the next mob tick, so it first moves one tick later than in vanilla.
+  - **The poof** is E1's entity-event route with one generic row for event 20, so later spawner and family code can push event 20 for any mob.
+  - **No poof yet when a silverfish merges.** The family pushes event 20, but the terrain resolves entity events after the tick, when the merged silverfish has already left, so `mob_puffs` finds no body. The block change shows at once.
+  - **The silverfish keeps its own block list.** The wake goal records what it found and the family tick applies it in the same AI step, so the blocks change in the tick vanilla changes them.
+  - The Infested effect's silverfish (optional in the brief) are not done.
+- **Left for later:**
+  - The puff when a silverfish merges into stone: the registry root needs a record of a removed mob's body that `mob_puffs` can fall back to.
+  - `InfestedMobEffect.onMobHurt` (the `infested` potion lets silverfish out of a hurt mob or player).
+- **Protocol:** `PuffKind::Poof` (see "## Protocol").
+- **Runs:** `test -p minecraftoss-entities -p minecraftoss-world --locked --lib` (entities 558 passed, world 135), `test -p minecraft_terrain --locked --lib` (1702 passed, 3 ignored), `test -p minecraft_survival --locked` (818 + 1 passed), `check -p launcher --locked` (green; only the old render_frame and skate warnings). The new `infested.rs` passes `rustfmt --check --edition 2021` with empty output on its staged content, and so do the changed `silverfish.rs` and `mob_particles.rs`.
+- **Test steps.** Release build, survival, Normal, by day, flat open ground in the Overworld, `mob_griefing` on (the default). Step 7 needs two windows (`scripts\mp-local.ps1`). Name each screenshot by its label, `D0-14-1.png`, and for both windows `D0-14-7-host.png` and `D0-14-7-friend.png`.
+  1. Build a wall 5 wide and 3 high, half infested stone bricks and half infested stone, and stand 4 blocks in front of it. Use a silverfish egg on the ground at the foot of the wall and hit the silverfish once with your fist without killing it. Within about a second some of the wall's blocks break with the stone break sound and particles, and a silverfish crawls out of each with a small white puff. **Screenshot D0-14-1** with the gap in the wall and the silverfish.
+  2. Mine an infested stone block with the plain diamond pickaxe: it breaks almost at once and a silverfish pops out of it with a puff. Mine an infested stone brick block with the Silk Touch pickaxe: no silverfish, and it drops stone bricks. `/gamemode creative`, break an infested block: no silverfish. `/gamemode survival`.
+  3. `/gamerule mob_griefing false`. Build a row of three infested stone bricks, hatch a silverfish beside it and hit it once. Nothing breaks and no silverfish come out. Kill it, then mine the three blocks with the plain pickaxe: at least one of them lets no silverfish out (it turned back into plain stone bricks). `/gamerule mob_griefing true`.
+  4. Build a pen of stone bricks, 4 x 4 inside and 2 high, on a grass floor. Use a silverfish egg inside, step 6 blocks back and `/gamemode creative`. Within about a minute the silverfish dives into one of the pen's blocks and is gone (no puff yet). **Screenshot D0-14-4** of the empty pen. `/gamemode survival` and mine the pen's blocks with the plain pickaxe: one of them lets the silverfish out again.
+  5. Build three infested stone blocks in a row with a TNT block beside them, light it and step back: the blast breaks the blocks and a silverfish comes out of each one that broke. `/gamerule block_drops false`, mine an infested block: no silverfish. `/gamerule block_drops true`.
+  6. Build a wall of infested stone bricks, use a creeper egg 3 blocks from it and stand right beside the wall until the creeper blows up there: silverfish come out of the blown blocks.
+  7. Two windows: the friend mines an infested stone block with the pickaxe. In both windows a silverfish comes out of it with a puff, and it bites the friend. **Screenshots D0-14-7-host and D0-14-7-friend.**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:silverfish_spawn_egg*8,minecraft:infested_stone*32,minecraft:infested_stone_bricks*32,minecraft:infested_deepslate*16,minecraft:stone_bricks*64,minecraft:diamond_pickaxe,minecraft:diamond_pickaxe+silk_touch,minecraft:tnt*8,minecraft:flint_and_steel,minecraft:creeper_spawn_egg*2,minecraft:iron_sword,minecraft:shield,minecraft:cooked_beef*32,minecraft:torch*64
+```
+
+### 2. Endermites come from ender pearls
+
+After 85917c3c.
+
+- **Changed (vendored entities crate, `world/families/pests/endermites.rs`):** `PEARL_CHANCE` (0.05) and `player_rotation(world, player)`, the player's head yaw and pitch from the views the endermen read (0 and 0 for a player with no view).
+- **Changed (`minecraft_terrain`):**
+  - `families/pests/endermites.rs` (the family's own glue):
+    - `pearl_leaves_one(random)` first draws the 32 portal specks' values from the pearl's own random (`thrown::pearl_portal`: a double and two gaussians each), because vanilla's server evaluates `addParticle`'s arguments before the roll, then rolls `nextFloat() < 0.05`.
+    - `from_pearls(level, mobs, tags, throwers, players)` does nothing in peaceful or without `spawn_mobs` and `spawn_monsters` (`ServerLevel.isSpawningMonsters`). Otherwise, for each thrower still alive, it spawns an endermite from the tag `{id, Pos: the thrower's feet, Rotation: its yaw and pitch, UUID from the level}` through `spawn_saved_all` and keeps the tag. It is a `TRIGGERED` spawn: no finalize and no poof.
+  - `families.rs` and `families/pests.rs`: the `pests` and `endermites` modules are `pub(crate)`, so the server reaches the glue.
+  - `server.rs` `tick_thrown`: a `mites` list beside the other per-tick lists; the `EnderPearl` landing arm reports the landing as before and then rolls with the pearl's random; one `from_pearls` call right after the thrown loop.
+- **Tests added:**
+  - `families::pests::endermites::tests::a_landing_pearl_draws_its_portal_specks_then_rolls_one_in_twenty`: for 20000 seeds the answer equals a replay of 32 times a double and two gaussians and then a float below 0.05, the random ends in the same state, and 900 to 1100 seeds leave an endermite.
+  - `families::pests::endermites::tests::a_pearl_endermite_takes_its_thrower_s_place_and_turn`: the tag loads as an endermite at the thrower's feet with its yaw, life 0 and not persistent.
+  - `server::tests::about_one_pearl_in_twenty_leaves_an_endermite_where_its_thrower_stood`: 400 seeded pearls all still teleport their thrower, and 8 to 35 endermites stand at the thrower's feet with its yaw of 135, each with its tag kept. None come in peaceful, and none with `spawn_monsters` off.
+- **javap this round (26.3):**
+  - `ThrownEnderpearl.onHit`: 32 `PORTAL` particles from the pearl's random. On the server, with an owner allowed to teleport: for a `ServerPlayer` whose connection accepts messages, `random.nextFloat() < 0.05`, then `isSpawningMonsters` and not peaceful, then an endermite from `EntityTypes.ENDERMITE.create(level, TRIGGERED)` with `snapTo(owner x, y, z, yRot, xRot)` and `addFreshEntity`. The portal cooldown and the teleport come after it.
+  - `ServerLevel.isSpawningMonsters`: the `spawn_mobs` and `spawn_monsters` game rules.
+- **Decisions:**
+  - **Where the thrower stood.** The endermite takes the thrower's feet at the landing tick. Survival applies the teleport afterwards (`take_pearl_teleports`), so this is the spot before the teleport, as in vanilla.
+  - **Its turn** comes from the views each player sends for the endermen's stares (`PlayerView.head_yaw` and `pitch`). The fork has no other server-side record of a player's yaw.
+  - **The pearl's random.** The roll uses the pearl's own random, after the draws for its 32 portal specks, which the client still makes with its own random. Vanilla's pearl random is unseeded, so only the order of the draws can match.
+  - **Who gets one.** Only a pearl that lands rolls (a pearl through an end gateway never lands, as in vanilla). Pearls only have player throwers (dispensers do not throw pearls, `thrown.rs`), and a thrower who died before the landing gets none: vanilla needs a connected owner.
+- **Protocol:** no message or codec change.
+- **Runs:** `test -p minecraftoss-entities -p minecraft_terrain --locked --lib` (entities 558 passed, terrain 1705 passed, 3 ignored), `check -p launcher --locked` (green; only the old render_frame and skate warnings). The changed `families/pests/endermites.rs` (terrain) and `world/families/pests/endermites.rs` (entities) pass `rustfmt --check --edition 2021` with empty output on their staged content.
+- **Test steps.** Release build, survival, Normal, by day, flat open ground in the Overworld. Step 4 needs two windows (`scripts\mp-local.ps1`). Name each screenshot by its label, `D0-15-1.png`, and for both windows `D0-15-4-host.png` and `D0-15-4-friend.png`.
+  1. Stand still and throw ender pearls one at a time at the ground 10 blocks away. On average one pearl in twenty leaves a small purple endermite with purple sparkles where you stood when it landed; keep throwing until one appears. It comes after you and bites for a heart. **Screenshot D0-15-1** with the endermite.
+  2. Leave it alone (step away from it and wait about two minutes, 2400 ticks from the landing): it vanishes without dying.
+  3. `/difficulty peaceful`: any endermite vanishes. Throw 40 more pearls: none leaves an endermite. `/difficulty normal`. `/gamerule spawn_monsters false` and throw 40 more: none. `/gamerule spawn_monsters true`.
+  4. Two windows: the friend throws pearls until an endermite appears where the friend stood. The host sees it at the same spot, and both see it bite the friend. **Screenshots D0-15-4-host and D0-15-4-friend.**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:ender_pearl*16,minecraft:ender_pearl*16,minecraft:ender_pearl*16,minecraft:ender_pearl*16,minecraft:ender_pearl*16,minecraft:ender_pearl*16,minecraft:iron_sword,minecraft:shield,minecraft:cooked_beef*32
+```
+
+### The owner's steps for silverfish and endermites (D0-10)
+
+All of track D0's silverfish and endermite steps in one run, from the brief's D0-10, as they stand after segment d0b. Setup: release build, survival, **Normal** difficulty, by day, flat open ground in the Overworld, `/gamerule mob_griefing true` (the default). The kit below goes in the `.env`; the class loadout's M4A1 is used. Steps R-14 to R-17 need two windows (`scripts\mp-local.ps1`). Name each screenshot by its label, `R1.png`; for both windows `R14-host.png` and `R14-friend.png`.
+
+Silverfish and endermites:
+- **R-1.** Use a silverfish egg three times on the ground 6 blocks away. Three small grey segmented silverfish wiggle towards you and bite (half a heart). **Screenshot R1.**
+- **R-2.** Punch one once without killing it: it flashes red and is knocked back, and the other two also turn on you. Kill one with the sword: it leaves experience. Shoot one with the bow and one with the M4A1: both flash and die.
+- **R-3.** Use an endermite egg: a small purple mite with purple sparkles around it comes at you (a heart a bite). Use an enderman egg 5 blocks away: the enderman goes for the endermite and kills it. **Screenshot R3.**
+- **R-4.** Use an endermite egg in a cobblestone pen and wait two minutes without touching it: it vanishes.
+- **R-5.** Stand still and throw ender pearls one by one at the ground 10 blocks away. On average one pearl in twenty leaves an endermite where you stood before the teleport; keep throwing until one appears. **Screenshot R5.** `/difficulty peaceful`: no endermite, and the silverfish and endermites vanish. `/difficulty normal`.
+- **R-6.** Build a wall of infested stone bricks and infested stone 3 high and 5 wide. Hatch a silverfish beside it and hit it once without killing it: within a second some of the wall's blocks crack and more silverfish crawl out, each with a small white puff. **Screenshot R6.** Mine an infested stone block with the pickaxe: a silverfish pops out.
+- **R-7.** Build a pen of stone bricks 4 x 4 x 2 with a silverfish inside, step back and `/gamemode creative`. Within about a minute the silverfish dives into a wall block and is gone, with a small white puff where it stood. `/gamemode survival`, mine the blocks of that wall: one of them releases it again, with a puff.
+- **R-8.** Pour lava beside two silverfish: they burn, flash and die. Light TNT among three silverfish: the blast throws and kills them. Dig a hole 1 wide and 2 deep, hatch a silverfish in it, pour water in and put a block on top: after about 15 seconds it flashes red every second and drowns.
+- **R-9.** Throw a splash potion of harming on a silverfish: it dies. Throw the poison splash on another: green swirls, it drops to half a heart and keeps biting.
+- **R-10.** Use an iron golem egg near three silverfish: the golem walks to them and kills them.
+- **R-11.** Place a spawner and use a silverfish egg on it: a tiny silverfish turns in the cage, and silverfish spawn around it. **Screenshot R11.** Break the spawner.
+- **R-12.** Leave two silverfish and one endermite alive, save and quit, load the world: they are still there and move. The endermite still vanishes two minutes after it hatched.
+- **R-13 (optional).** `/locate structure minecraft:stronghold`, `/tp` there and dig down to the portal room: silverfish come out of its spawner. **Screenshot R13.**
+
+Friend (two windows):
+- **R-14.** The host hatches two silverfish and an endermite. The friend sees them in the same places with the same wiggle and the endermite's sparkles. The friend shoots one with the M4A1 and hits another with the sword: both windows show the red flash and the kills. **Screenshots R14-host and R14-friend.**
+- **R-15.** The friend throws pearls until an endermite appears where the friend stood; the host sees it too. The friend mines infested stone: a silverfish comes out in both windows, with its puff.
+
+Existing mobs still work (regression, two windows):
+- **R-16.** Hatch a zombie, a creeper, a cow and a villager. The zombie comes at you and burns in daylight, the creeper hisses and blows up, the cow wanders, and the villager walks about. Shoot the zombie and the cow with the M4A1 and the bow, and light TNT near the others: they all flash, are pushed and die like before. **Screenshot R16.**
+- **R-17.** Save and quit with a zombie and a cow alive, load: both are there, and the friend sees them and can hit them.
+
+Snowballs, eggs and tridents hit silverfish and endermites too, since E2's group `ti1` is merged.
+
+```
+IW4L_MINECRAFT_KIT=minecraft:silverfish_spawn_egg*16,minecraft:endermite_spawn_egg*16,minecraft:infested_stone*32,minecraft:infested_stone_bricks*32,minecraft:infested_deepslate*16,minecraft:stone_bricks*64,minecraft:spawner*2,minecraft:ender_pearl*16,minecraft:enderman_spawn_egg*2,minecraft:iron_golem_spawn_egg*2,minecraft:villager_spawn_egg*2,minecraft:zombie_spawn_egg*4,minecraft:cow_spawn_egg*4,minecraft:creeper_spawn_egg*2,minecraft:iron_sword,minecraft:bow,minecraft:arrow*64,minecraft:diamond_pickaxe,minecraft:tnt*8,minecraft:flint_and_steel,minecraft:lava_bucket,minecraft:water_bucket,minecraft:splash_potion@harming,minecraft:splash_potion@poison,minecraft:shield,minecraft:cooked_beef*32,minecraft:torch*64
+```
+
+27 stacks, the brief's D0-10 kit. R-15's friend needs the same kit (it reads the `.env` on join).
+
+## Group flying-navigation
+
+Segment d0b, brief D0-6.2 (P3).
+
+### 1. Minecraft mobs can fly with vanilla flying navigation
+
+After 45de7c5d.
+
+- **Changed (vendored entities crate):**
+  - New `flying.rs` (`pub mod flying;` after `fluid` in `lib.rs`), the public part:
+    - `FlyingMoveControl { max_turn, hovers_in_place }` (`FlyingMoveControl(mob, maxTurn, hoversInPlace)`). Its `tick` works on the mob's own `MoveControl` state (wanted spot, speed modifier, operation) and a `FlyingMove { yaw, pitch, speed, forward, vertical, no_gravity }`. On `MOVE_TO` it sets the operation to `WAIT` and gravity off. Within 0.0005 of the wanted spot it zeroes both inputs. Otherwise it turns the yaw at most 90 degrees. It sets the speed to the modifier times the flying speed in the air (the movement speed on the ground) and `forward` to the same (`Mob.setSpeed` sets `zza`). Unless the spot is level and straight above or below, it turns the pitch at most `max_turn` and sets `vertical` to plus or minus the speed. Without `MOVE_TO` it zeroes both inputs and gives gravity back unless the mob hovers in place.
+    - `Flight { stable, blocked_by_fluids }`, a family's `FlyingPathNavigation` settings: `Stable::StandOn` (the block at the spot can be stood on, `entityCanStandOn`, from its collision shape's top face) or `Stable::NotAboveAir` (the bee's), and whether fluids block a direct move (`isClearForMovementBetween(.., true)`, the default; the ghastling's `false`).
+    - `fly(profile, flight)` sets `WalkProfile.flying`. `require_path_length(profile, 48.0)` is `setRequiredPathLength`: the longest path becomes `max(FOLLOW_RANGE, 48)` and the node budget `floor(that * 16)`.
+    - `plan_path` is `FlyingPathNavigation.createPath`: the target block itself (no ground search), the current path kept while it still goes to one of the targets, a new path recorded in the navigation with its stuck timeout reset.
+    - `tick_path` is `FlyingPathNavigation.tick`. It follows the path as `followThePath` does, with the raw position as the mob's position (`getTempMobPos`), the stuck check (`doStuckDetection`), and the direct move by a collider ray from the feet to the next node's middle height (`canMoveDirectly`). As a passenger out of liquid (`canUpdatePath` false) it only steps on when the mob is in the next node's block. It returns the next node's spot and speed for `MoveControl.set_wanted_position`, with no ground height (`getGroundY` is not used).
+    - `can_update_path`, `is_clear_for_movement_between` (fluid boxes `0..height` from the level and the block above, as `FlowingFluid.getShape`, on the same block walk as `BlockGetter.clip`).
+  - `walk_path.rs`: the search mode for `FlyNodeEvaluator`. `WalkProfile.flying: Option<Flight>` (`None` for every existing mob) and an evaluator field `fly`. `find_fly_path_to_any` runs the same A* as `find_walk_path_to_any` (both now call `find_path_to_any`) with:
+    - `getStart`: `floor(y + 0.5)`, or from the feet up through water blocks for a floater in water. If that block's malus is negative, a small mob (box size under 1) tries 10 random blocks of its box grown to 1.1, and a big one the four corners at its feet's height.
+    - `getNeighbors`: the 26 neighbours in vanilla's order. The six sides only need to be open. An edge needs both sides it touches, and a corner its three sides and three edges, to have a node with a malus of at least 0.
+    - `findAcceptedNode`: a node only for a malus of at least 0, plus 1 for `WALKABLE`.
+    - `getPathType`: open air over fire or lava is `FIRE`, over a damaging block `DAMAGING`, over cocoa `COCOA`, over a fence `FENCE` (not the mob's own block). Over air, water or a walkable block it is `OPEN`, otherwise `WALKABLE`. Then the neighbours are checked for open and walkable spots. `getPathTypeOfMob` and the mob-box types are the walk evaluator's, as in vanilla.
+  - `navigation.rs`: `plan_walk_path` and `plan_walk_path_to_any` hand a flying profile to `flying::plan_path`. `GroundNavigation.fly_random` is the random for the start candidates. `tick_free` is the shared path follower for the flying tick, and `adopt_path` records a new path.
+  - `stroll.rs`: `GoalUtils.isNotStable` (`unstable_or_outside`) asks a flying profile's `Flight` instead of the solid-render block below, as vanilla asks the mob's navigation.
+  - `monster_ai.rs`: `MonsterGoalContext::profile` keeps a required path length when a spawn bonus changes the follow range (`getMaxPathLength` is the larger of the two). No profile had one before, so nothing changes for existing mobs.
+- **How a family uses it (the M briefs' question):** the flying navigation **plugs into `MonsterGoalContext.navigation` and the brain's `MoveSink`.** It does not stay a `GoalExtra` piece.
+  - A family puts `fly(&mut walk, ..)` (and its float, doors, maluses and `require_path_length`) in its `MonsterSpec.walk` or brain profile. Then every `plan_walk_path` and `plan_walk_path_to_any` plans a flying path into the same `GroundNavigation`: `navigate_walk_to`, `navigate_walk_to_entity`, every shared goal (stroll, melee, tempt, panic, follow) and `MoveSink`. `GoalExtra` is not needed for the navigation.
+  - The tick is the family's own. It must not call `family_goal_step`, whose `monster_ai_step` runs the ground move control and gravity. It calls `family_goal_step_with` with its own AI step, as rabbits do. That step runs `ai.tick_goals`, then `flying::tick_path` and `ai.move_control.set_wanted_position`, then `FlyingMoveControl::tick` (keep the `FlyingMove` in the family state and map `no_gravity` to `body.gravity`), then the look control and the family's own travel. That travel is `travel_air_flying` with gravity off for `Animal` flyers such as parrots and bees, or `Body::travel_flying` for allays and ghasts. It returns `None` (no fall damage).
+  - A brain family (allays, ghastlings) builds its `brain_behaviors::Walker` with the flying profile. `MoveSink` then plans flying paths (its `default_random_position_towards` fallback uses the flying stability too), and the brain step ticks the navigation with `flying::tick_path`. **M3 does not need its own `FlyingMoveSink`.**
+  - Per family, with no edit to `flying.rs`:
+    - Parrot: `Flight::default()`, `can_float = true`, `FlyingMoveControl::new(10, false)`.
+    - Bee: `Flight { stable: Stable::NotAboveAir, ..Flight::default() }`, `can_float = false`, `require_path_length(48.0)`, `FlyingMoveControl::new(20, true)`. While pollinating it skips `tick_path`.
+    - Allay: `Flight::default()`, `can_float = true`, `require_path_length(48.0)`, `FlyingMoveControl::new(20, true)`.
+    - Ghastling: `Flight { blocked_by_fluids: false, ..Flight::default() }`, `can_float = true`, `require_path_length(48.0)`, `FlyingMoveControl::new(180, true)`.
+    - No doors: `WalkProfile::animal` already has `can_open_doors` false, as `setCanOpenDoors(false)` and vanilla's default.
+- **Tests added** (`flying::tests`):
+  - `a_flying_path_goes_over_a_wall_and_through_a_gap_in_three_dimensions`:
+    - Over a stone floor, a 3 high wall is crossed at y 67 with steps that change height and place at once.
+    - A sealed wall under a ceiling is crossed through its one-block gap.
+    - Every step is one of the 26 neighbours, and the ground planner refuses the same airborne mob.
+  - `a_flying_path_prefers_the_air_to_the_ground_and_keeps_off_fire`: the flying path types over the ground, over fire and beside fire, and a path that rises off the ground and keeps clear of the fire.
+  - `a_flying_path_ends_on_a_stable_spot`:
+    - Stand-on: stone, a top slab and upside-down stairs, but not air, a bottom slab, a chest or bottom stairs.
+    - The bee's rule: not above air.
+    - `default_random_position` with the bee's rule picks only the layer above the floor. With stand-on it picks nothing over open ground, as vanilla (solid spots have a malus).
+  - `flying_move_control_turns_and_climbs_like_vanilla`:
+    - The yaw turns 90 at most, and the pitch 10 for a parrot or 20 for a bee.
+    - A level flyer that climbs snaps its pitch to 90, as `Entity.setXRot` clamps rotlerp's wrapped -5 (355).
+    - The speed comes from the flying speed in the air and the movement speed on the ground, `vertical` is plus or minus the speed, and the wanted spot sets the operation to `WAIT`.
+    - Gravity comes back on `WAIT` unless the mob hovers.
+    - Near the wanted spot both inputs are zero and the yaw stays.
+  - `a_flying_path_gives_up_when_stuck`: still for 100 ticks, the path is dropped on tick 101 and the navigation is stuck. Moving 0.05 a tick, it keeps going. A passenger only steps past the node it is in.
+  - `a_spawn_bonus_keeps_a_flyer_s_required_path_length`.
+  - `a_flyer_moves_straight_only_through_clear_air`: water blocks the default direct move but not the ghastling's, and stone blocks both.
+  - `a_flyer_follows_its_path_through_a_gap_in_a_wall`, the whole loop: plan through `navigate_walk_to`, then `tick_path`, `FlyingMoveControl(20, true)` and `travel_flying`. The flyer passes the gap and arrives without getting stuck.
+  - `the_brain_move_sink_flies_a_flyer_to_its_walk_target`: `MoveSink::try_start` with a flying profile plans over the wall.
+  - The wither tests pass unchanged (the wither keeps its own flight).
+- **javap this round (26.3):**
+  - `FlyingMoveControl`: the constructor and `tick` as above. The near limit is `2.500000277905201E-7` squared distance and the level limit `1.0E-5F`.
+  - `FlyingPathNavigation`:
+    - `createPathFinder`: a `FlyNodeEvaluator`.
+    - `canMoveDirectly`: `isClearForMovementBetween(mob, from, to, true)`.
+    - `canUpdatePath`: `canFloat && isInLiquid`, or not a passenger.
+    - `getTempMobPos`: the position. `createPath(Entity, reach)`: `createPath(blockPosition, reach)`.
+    - `tick` as above. `isStableDestination`: `entityCanStandOn` at the spot. `canNavigateGround`: false.
+  - `PathNavigation`:
+    - `createPath(Set, regionOffset, offsetUpward, reach, maxPathLength)`, `moveTo`, `recomputePath`.
+    - `followThePath` (`maxDistanceToWaypoint` from the width, a vertical distance of 1, and `canCutCorner` false for `FIRE_IN_NEIGHBOR`, `DAMAGING_IN_NEIGHBOR` and `WALKABLE_DOOR`), `shouldTargetNextNodeInDirection`, `doStuckDetection`.
+    - `isClearForMovementBetween`: a `COLLIDER` clip to `to + height / 2`, with fluids `ANY` or `NONE`.
+    - `getMaxPathLength` is `max(FOLLOW_RANGE, requiredPathLength)`, which defaults to 16. `setRequiredPathLength` recounts the node budget.
+  - `FlyNodeEvaluator`: `prepare`, `getStart`, `canStartAt`, `getTarget`, `getNeighbors`, `hasMalus`, `isOpen`, `findAcceptedNode`, `getCachedPathType` and `getPathType` as above. The start candidates have `SMALL_MOB_SIZE` 1, an inflated box of 1.1 and 10 candidates.
+  - `WalkNodeEvaluator.getPathTypeOfMob` and `getPathTypeWithinMobBB` call `getPathType` virtually, so the flying types reach the mob-box rules. `BlockPos.randomBetweenClosed` (`BlockPos$2.computeNext`): x, y, then z, one `nextInt` each, lazily per candidate.
+  - `Bee$1`: `isStableDestination` is the block below not being air, and `tick` returns early while pollinating. `Allay.createNavigation`: a plain `FlyingPathNavigation`, no doors, can float, required length 48. `HappyGhast$BabyFlyingPathNavigation`: the same, plus `canMoveDirectly(.., false)`.
+  - `Mob.setSpeed` also sets `zza`. `Entity.setXRot` is `clamp(x % 360, -90, 90)`. `MoveControl.rotlerp` wraps the result into 0..360.
+- **Decisions:**
+  - **One A*.** `FlyNodeEvaluator` is a search mode of `walk_path.rs`'s evaluator: its start, neighbours and path type are at the end of that file. The A*, the node cache, the collision cache and the mob-box path types there are private and shared, and walk paths are built exactly as before. `path_search.rs` is the older measured cow search over `Cell` terrains and refuses unclassified blocks, so it is not used. `flying.rs` holds everything a family calls.
+  - **The start candidates' random.** Vanilla draws them from the mob's random. `plan_walk_path` has no random, so the navigation keeps its own (`fly_random`, seed 0, which a family may reseed). They are only drawn when the mob's own block cannot start a path.
+  - **Passengers plan.** `plan_path` does not know whether the mob rides, so it plans as vanilla does for a mob that is not a passenger. `tick_path` takes `passenger` and follows the passenger rule.
+  - **Corners.** The navigation keeps no node types, so a flying path cuts corners at `FIRE_IN_NEIGHBOR` and `DAMAGING_IN_NEIGHBOR` nodes too, as the ground navigation already does at every node. Without doors no `WALKABLE_DOOR` node appears.
+  - **The first stuck check** after `moveTo` measures from `floor(y + 0.5)` (the shared `move_to`, the ground mob position) instead of the flyer's raw height, a difference under half a block, once.
+  - **Stability** lives in `WalkProfile.flying`, because `stroll.rs` takes the profile, not the navigation. A stand-on flyer finds no `DefaultRandomPos` spot over open ground (a solid spot has a malus), while `LandRandomPos` moves its solid spot up into the air above, as in vanilla. Flyers stroll with `hover_random_position` and `air_and_water_random_position`, which do not ask.
+  - **Pitch** follows `setXRot`'s clamp, so a flyer that starts climbing level snaps its pitch to 90 first, as vanilla does.
+  - **Allays** fly with fluids blocking a direct move. javap shows a plain `FlyingPathNavigation` for the allay; only the ghastling's navigation lets fluids through, though the d0b spec grouped allays with it.
+  - **Node budget.** A flyer with follow range 16 and no required length (a parrot) has 256 nodes, as vanilla. A 3 high, 19 wide wall 5 blocks away is out of its reach, so the over-the-wall test uses the bee's 48.
+- **Left for later:** the optional commit 2, "Minecraft withers fly around walls" (see "Left for later" below).
+- **Protocol:** no message or codec change (see "## Protocol").
+- **Runs:**
+  - `test -p minecraftoss-entities --locked`: 567 lib tests passed, every bin builds.
+  - `clippy -p minecraftoss-entities --locked --all-targets -- -A clippy::approx_constant`: no warning.
+  - `check -p launcher --locked`: green, only the old render_frame and skate warnings.
+  - The new `flying.rs` passes `rustfmt --check --edition 2021` with empty output on its staged content, and no added line holds a comment.
+- **What changes in the game:** nothing yet. No mob uses the flying navigation until M1's parrots and bees and M3's allays and ghastlings. The wither keeps its own flight. Ground mobs plan as before: the flying branches only run for a profile with `flying` set, and the shared A* is unchanged.
+- **Test steps** (regression of ground paths). Release build, survival, Normal, by day, flat open ground in the Overworld. Name each screenshot by its label, `D0-16-1.png`.
+  1. Build a stone wall 7 wide and 3 high. Stand behind its middle and use a zombie egg 6 blocks in front of it. The zombie walks round one end of the wall and comes at you. **Screenshot D0-16-1** as it rounds the corner.
+  2. Use two cow eggs and two rabbit eggs on open grass and watch for a minute. They wander about as before, and the rabbits hop.
+
+```
+IW4L_MINECRAFT_KIT=minecraft:zombie_spawn_egg*4,minecraft:cow_spawn_egg*4,minecraft:rabbit_spawn_egg*4,minecraft:stone*64,minecraft:iron_sword,minecraft:shield,minecraft:cooked_beef*32
+```
+
+## Review (segment d0b)
+
+The adversarial review of segment d0b (r10-d0b-base to 73bacd48). Each fix is its own commit.
+
+### 1. Minecraft silverfish leave a puff when they merge into stone
+
+After 73bacd48.
+
+- **Defect:** a silverfish that merged into stone (85917c3c) pushed entity event 20, but the generic death retain took the merged mob out of the entity world at the end of the same tick, and the terrain resolves entity events after the tick (`mob_puffs` asks `entity_type` and `body_of`). So the event was always dropped and no poof was drawn, for the host or a friend. Vanilla `SilverfishMergeWithStoneGoal.start` calls `spawnAnim` (entity event 20, sent before the `discard`), so every client draws 20 `POOF` particles where the silverfish stood. The brief (D0-7.3) asks for that poof through E1's entity-event particles once E1 lands, and E1 had landed.
+- **Changed (vendored entities crate, `world.rs`, the registry root):** `EntityWorld.departed`, the registered mobs that left by `core.removed` in the last tick, each with its kind and body. The families' retain at the end of the tick fills it (and clears the previous tick's), and `departed(id)` reads it. A mob that dies is not in it, and nothing else reads it.
+- **Changed (`minecraft_terrain`, `mob_particles.rs`):** `mob_puffs` falls back to `departed` for the kind and the body when the mob has already left, so a removed mob's event in its last tick still draws its puff. The endermite's 2400-tick discard pushes no event and stays without one, as in vanilla.
+- **Tests added:**
+  - `world::families::pests::silverfish::tests::a_merged_silverfish_leaves_its_body_for_its_poof`: the merged silverfish's kind, size and body (where it stood) are in `departed` after the tick it left, no other id is, and the next tick clears it.
+  - `mob_particles::tests::a_silverfish_that_merged_into_stone_still_poofs`: a silverfish in a ring of stone bricks with `mob_griefing` merges, and `mob_puffs` of that tick's events gives exactly one 20-particle `Poof` on its last body at tracking range 8.
+- **Protocol:** no message or codec change (the `Poof` puff is the one 85917c3c added).
+- **Runs:** `test -p minecraftoss-entities --locked --lib` (568 passed), `test -p minecraft_terrain --locked --lib` (1706 passed, 3 ignored, with the 26.3 data), `check -p launcher --locked` (green; only the old render_frame and skate warnings). The changed `mob_particles.rs` and `silverfish.rs` still pass `rustfmt --check --edition 2021` with empty output, and no added line holds a comment.
+- **Test steps.** Release build, survival, Normal, by day, flat open ground in the Overworld, `mob_griefing` on (the default). Step 2 needs two windows (`scripts\mp-local.ps1`). Name each screenshot by its label, `D0-17-1.png`, and for both windows `D0-17-2-host.png` and `D0-17-2-friend.png`.
+  1. Build a pen of stone bricks, 4 x 4 inside and 2 high, on a grass floor. Use a silverfish egg inside, step 6 blocks back and `/gamemode creative`. Within about a minute the silverfish dives into one of the pen's blocks: a small white puff appears where it stood as it vanishes. **Screenshot D0-17-1** of the puff (hatch a few more and keep watching if the first one is missed). `/gamemode survival` and mine the pen's blocks with the pickaxe: one of them lets a silverfish out again, with its puff.
+  2. Two windows: the host builds the same pen with a silverfish in it, and the friend stands 6 blocks away in creative. When the silverfish dives into a wall block, both windows show the puff. **Screenshots D0-17-2-host and D0-17-2-friend.**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:silverfish_spawn_egg*8,minecraft:stone_bricks*64,minecraft:diamond_pickaxe,minecraft:cooked_beef*32
+```
+
+## Left for later
+
+Everything track D0 leaves open after segment d0b, gathered from the entries above.
+
+- **Flying (this group):**
+  - The optional commit "Minecraft withers fly around walls". The wither still flies straight at one block with `wither_ai::FlightPath` and `wither::fly`. Moving it means a flying `WalkProfile` in its `MonsterGoalContext`, its goals calling `navigate_walk_to`, and `flying::tick_path` with `FlyingMoveControl::new(10, false)` in place of `FlightPath::tick` and `wither::fly`.
+  - Node types in the navigation, for `canCutCorner`, and `recompute` for flyers. Only villagers recompute a path when blocks change, and that path uses the ground rule.
+  - A shared flying AI step: each flying family writes its own (see "How a family uses it"). M1's `omnidirectionalAirMover` drag (0.91 vertically) is M1's.
+- **Spawning (registry-spawning):**
+  - Chunk-generation spawns have no `SpawnContext`, so a family creature row uses the animal rules at world generation. The first track with a creature that needs its own rule there (M1's goats, M2's frogs) adds that hook.
+  - `check_spawn_obstruction` refuses liquids for every row but striders and drowned. M2 adds the `WaterAnimal` exception for its water rows.
+- **Terrain-side tests no D0 family exercises (D0-9.4):** `show_on` with family values, `families::interact`, `is_vehicle` in `carries`, the mount inventory, and `FamilyDraw.held`. Silverfish and endermites use none of them, so the first track whose family uses one adds that test in its own files.
+- **Silverfish and endermites:**
+  - `InfestedMobEffect.onMobHurt` (the infested potion lets silverfish out of a hurt mob or player).
+- **Optional:** moving the bat to `BatAnimation` (a round 9 leftover).
+
+## Final test run (segment d0b)
+
+Commit: "Track D0 log records the final test run of segment d0b", after 4238dec8. Log only.
+
+- **Touched crates** (`git diff --stat r10-d0b-base..HEAD`): `minecraftoss-entities`, `minecraftoss-world`, `minecraft_terrain`, `minecraft_survival`.
+- **Clippy:** `clippy -p minecraftoss-entities -p minecraftoss-world -p minecraft_terrain -p minecraft_survival --locked --all-targets -- -A clippy::approx_constant` exits 0. No warning points at a line the segment added: the only warnings in its touched files are three in `minecraft_terrain`'s `server.rs` (lines 692, 3906 and 14979), and `git blame` gives older commits for all three. The two vendored crates show none.
+- **Tests** on the code of 4238dec8, `test -p <crate> --locked` for each touched crate, all passed: `minecraftoss-entities` 568 (every `check_*` bin builds), `minecraftoss-world` 135, `minecraft_terrain` 1706 (3 ignored, with the 26.3 data), `minecraft_survival` 818 + 1.
+- **Checks:** the files the segment added (`infested.rs`, `flying.rs`) and the changed terrain `families/pests/endermites.rs` pass `rustfmt --check --edition 2021` with empty output on their committed content, and no added line holds a comment.
+- **Fixes:** none needed.
+- **Owner's test steps:** none new; the steps of 85917c3c (D0-14), 45de7c5d (D0-15), 73bacd48 (D0-16) and 4238dec8 (D0-17) stand, with the combined kit below.
+
+## Combined kit (segment d0b)
+
+24 stacks. It holds what the steps of segment d0b need: D0-14 (85917c3c, silverfish in stone), D0-15 (45de7c5d, endermites from pearls, 96 pearls in six stacks), D0-16 (73bacd48, ground paths) and D0-17 (the review's merge puff). The whole silverfish and endermite run is the D0-10 kit above. The class loadout's M4A1 is used as well.
+
+```
+IW4L_MINECRAFT_KIT=minecraft:silverfish_spawn_egg*8,minecraft:infested_stone*32,minecraft:infested_stone_bricks*32,minecraft:infested_deepslate*16,minecraft:stone_bricks*64,minecraft:diamond_pickaxe,minecraft:diamond_pickaxe+silk_touch,minecraft:tnt*8,minecraft:flint_and_steel,minecraft:creeper_spawn_egg*2,minecraft:ender_pearl*16,minecraft:ender_pearl*16,minecraft:ender_pearl*16,minecraft:ender_pearl*16,minecraft:ender_pearl*16,minecraft:ender_pearl*16,minecraft:zombie_spawn_egg*4,minecraft:cow_spawn_egg*4,minecraft:rabbit_spawn_egg*4,minecraft:stone*64,minecraft:iron_sword,minecraft:shield,minecraft:cooked_beef*32,minecraft:torch*64
 ```
