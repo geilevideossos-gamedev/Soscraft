@@ -195,6 +195,12 @@ pub trait World {
     fn rain_at(&self, _pos: Pos) -> bool {
         false
     }
+    fn raining(&self) -> bool {
+        false
+    }
+    fn thundering(&self) -> bool {
+        false
+    }
     fn snow_golem_melts(&self, _pos: Pos) -> bool {
         false
     }
