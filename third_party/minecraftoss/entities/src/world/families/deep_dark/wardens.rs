@@ -489,7 +489,7 @@ fn touch(world: &mut EntityWorld, id: u64, players: &[PlayerCandidate]) {
         return;
     };
     let core = &mob.core;
-    if core.no_ai || !core.alive() || core.removed || mob.state.pose.buried() {
+    if core.no_ai || !core.alive() || core.removed {
         return;
     }
     if mob.state.brain.memories.touch_cooldown.present() {

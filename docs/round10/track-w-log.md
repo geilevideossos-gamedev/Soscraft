@@ -748,6 +748,24 @@ Kit (W6's kit, 22 stacks; it also serves w11 to w17):
 IW4L_MINECRAFT_KIT=minecraft:warden_spawn_egg*4,minecraft:cow_spawn_egg*8,minecraft:zombie_spawn_egg*4,minecraft:snowball*16,minecraft:white_wool*64,minecraft:torch*64,minecraft:diamond_sword+sharpness=5,minecraft:shield,minecraft:bow+power=5,minecraft:arrow*64,minecraft:milk_bucket,minecraft:cooked_beef*32,minecraft:diamond_chestplate+protection=4,minecraft:diamond_helmet,minecraft:diamond_leggings,minecraft:diamond_boots,minecraft:totem_of_undying,minecraft:golden_apple*8,minecraft:deepslate*64,minecraft:cobblestone*64,minecraft:ender_pearl*16,minecraft:spawner
 ```
 
+## Review of segment w2
+
+### 1. A Minecraft warden climbing out or digging in still feels what bumps into it
+
+After fe743cdc ("Minecraft wardens' hearts beat and their digging throws up the ground").
+
+- **Cause:** the warden's touch (`touch` in vendored `entities/src/world/families/deep_dark/wardens.rs`, group warden-live, commit 1) returned at once while the warden was buried (emerging or digging), so a player or mob standing against a warden that climbs out of the ground neither angered it nor drew it there. The log of that commit gave no reason for it.
+- **Vanilla (javap on the 26.3 jar):** `LivingEntity.aiStep` calls `pushEntities` with no condition (after the travel), and it calls `doPush` for every pushable entity in the warden's box. `Warden.doPush` checks only `isNoAi` and `TOUCH_COOLDOWN`, then sets the cooldown (20), `increaseAngerAt(entity)` (35, with the listening sound) and `WardenAi.setDisturbanceLocation`. Neither tests `isDiggingOrEmerging`, and the 1-high box it has then is the one that is searched. `isDiggingOrEmerging` only keeps the warden itself from being pushed (`isPushable`), hurt (`isInvulnerableTo`), blown about (`ignoreExplosion`), heard ambient (`getAmbientSound`), hurt into anger (`hurtServer`) and hearing (`canReceiveVibration`).
+- **Changed:** `touch` no longer skips a buried warden. While it climbs out it keeps its EMERGE activity, so the anger and the disturbance count once it stands; while it digs in it keeps digging (DIG has no dig cooldown to refresh) and only the listening sound is heard, as in vanilla.
+- **Tests:** vendored entities `wardens::tests::a_cow_bumping_into_it_while_it_climbs_out_angers_it_too` (an emerging warden with a cow against it: still emerging, 35 anger at the cow, the touch cooldown, the disturbance at the cow's block, the listening sound); the old early return leaves the anger at 0, so it cannot pass without the fix.
+- **Checked and found right:** the other buried checks (`warden_can_hear`, `Family::hurt`, `pushable`, the quiet ambient sound) match vanilla's `isDiggingOrEmerging` uses; `SonicBoom.tick` has no line-of-sight test (javap: its filters are `canTargetEntity` and `closerThan(15, 20)`); `PartDefinition.retainExactParts` empties every part below a kept one, so the spots model draws only the body and legs; `AngerManagement.getActiveEntity` filters its suspects with `canTargetEntity`.
+- **Test steps (survival, Normal; at midnight on open ground with no torches or lava within 16 blocks; W7's summoning shrieker):**
+  1. `/setblock ~ ~-1 ~3 minecraft:sculk_shrieker[can_summon=true]` and warn yourself four times (10 s apart). On the fourth, walk into the spot where the ground cracks and keep walking into the warden while it climbs out: its listening growl sounds about once a second (each touch angers it by 35), and when it stands it roars at you at once and fights. Before this fix it took no notice of you until it stood. Raise the shield or throw a pearl to get away. **w28_warden_emerging_touch**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:shield,minecraft:diamond_chestplate+protection=4,minecraft:ender_pearl*16,minecraft:golden_apple*8,minecraft:cooked_beef*16
+```
+
 ## Combined kit
 
 One kit for the track's main steps (27 stacks): darkness (w01, w03; step 2 needs a cave or torches), sensors (w04 to w06), block, player and gun vibrations (w07 to w10), amethyst (w08), shriekers (w23, w26; the summoning shrieker comes from `/setblock`), catalysts (w25) and the friend leaving with a chest open (w27). The steps that need other items (lava and powder snow in darkness step 5, the trident, trapdoors, gates, plates, the bell, candles, pistons, sheep, shears, horses, the totem) use their commit's own kit line above. The warden steps (w11 to w22) use W6's kit line (group warden-render, commit 2).
@@ -795,6 +813,8 @@ Group warden-fight, commit 2: `EntitySnapshot` (sent to friends inside `ToClient
 Group warden-render, commit 1: no message or codec change. The warden's `FamilyShow` (which friends already decode) is laid out anew: the pose moves into the flags (bits 8 to 10), flag bits 0 to 6 say which of the seven animation clocks run, value 0 holds the client anger and values 1 to 7 the ticks since each clock started. A friend on an older build would read the new values wrongly, so it rides in the protocol bump group warden-fight already needs at the next release.
 
 Group warden-render, commit 2: no message or codec change (the heartbeat and the bits of ground are each viewer's own, from commit 1's `FamilyShow`).
+
+Review of segment w2: no message or codec change.
 
 ## State doc changes
 

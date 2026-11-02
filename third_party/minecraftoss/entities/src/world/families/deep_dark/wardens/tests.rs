@@ -444,6 +444,24 @@ fn a_cow_bumping_into_it_angers_it_and_draws_it_there() {
 }
 
 #[test]
+fn a_cow_bumping_into_it_while_it_climbs_out_angers_it_too() {
+    let mut world = EntityWorld::default();
+    let id = world.spawn_emerging_warden(at(0.5, 0.5), 0.0);
+    let cow = world.spawn_cow(Cow::new(at(0.9, 0.5)), true);
+    world.tick_with_players(&mut Cave, &[]);
+    let heard = sounds_of(&mut world);
+    let state = &warden_of(&world, id).state;
+    assert_eq!(state.pose, Pose::Emerging, "it keeps climbing out");
+    assert_eq!(state.anger.anger_of(Target::Mob(cow)), 35);
+    assert!(state.memories().touch_cooldown.present());
+    assert_eq!(
+        state.memories().disturbance_location.get(),
+        Some(&(0, 64, 0))
+    );
+    assert!(heard.contains(&"entity.warden.listening".to_owned()));
+}
+
+#[test]
 fn a_silverfish_and_a_warden_post_their_steps_and_swims() {
     use crate::world::families::pests::silverfish;
     let mut world = EntityWorld::default();
