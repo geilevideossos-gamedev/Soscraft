@@ -415,6 +415,7 @@ impl Level<'_> {
         }
         let tnt = self.is_a(state, "TntBlock");
         if !tnt {
+            self.infested_after_break(state, pos);
             let params = LootParams {
                 origin: Some([f64::from(pos.x) + 0.5, f64::from(pos.y) + 0.5, f64::from(pos.z) + 0.5]),
                 tool: Some(Stack::empty()),

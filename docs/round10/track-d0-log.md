@@ -8,7 +8,7 @@ A commit can't name its own hash, so each entry names the commit before it. Its 
 
 Files under `third_party/minecraftoss` this track patched or added (round 8 counted 73 patched and 37 added).
 
-- Patched (15): `entities/src/world.rs`, `entities/src/world/combat.rs`, `entities/src/world/witches.rs`, `entities/src/world/pushing.rs`, `entities/src/world/fireballs.rs`, `entities/src/world/riding.rs`, `entities/src/world/villagers.rs`, `entities/src/world/leashes.rs`, `entities/src/monster_ai.rs`, `entities/src/bin/check_zombie_player_hits.rs`, `entities/src/world/emissions.rs`, `entities/src/walk_path.rs`, `entities/src/stroll.rs`, `world/src/natural_spawner.rs`, `world/src/natural_spawner/spawning.rs`.
+- Patched (18): `entities/src/world.rs`, `entities/src/world/combat.rs`, `entities/src/world/witches.rs`, `entities/src/world/pushing.rs`, `entities/src/world/fireballs.rs`, `entities/src/world/riding.rs`, `entities/src/world/villagers.rs`, `entities/src/world/leashes.rs`, `entities/src/monster_ai.rs`, `entities/src/bin/check_zombie_player_hits.rs`, `entities/src/world/emissions.rs`, `entities/src/walk_path.rs`, `entities/src/stroll.rs`, `world/src/natural_spawner.rs`, `world/src/natural_spawner/spawning.rs`, and with segment d0b `world/src/level/mod.rs`, `world/src/level/drops.rs`, `world/src/level/explosion.rs`.
 - Added (22): `entities/src/world/families.rs`, `entities/src/world/families/{pests,trial,deep_dark,land,water,night,bosses}.rs`, `entities/src/world/families/goals.rs`, `entities/src/world/families/pests/{silverfish,endermites}.rs`, `entities/src/world/families/pests/probe.rs` (test only), `entities/src/world/families/tests.rs` (test only), `world/src/natural_spawner/families.rs`, `world/src/natural_spawner/families/{pests,trial,deep_dark,land,water,night,bosses}.rs`, `world/src/natural_spawner/families/tests.rs` (test only).
 
 ## Protocol
@@ -17,6 +17,7 @@ Files under `third_party/minecraftoss` this track patched or added (round 8 coun
   - `MobShow` is part of every `ServerMob` that the state lane carries (`StateFrame.mobs`, postcard). A host and a friend on builds from before and after this commit misread each other's mob states.
   - Postcard writes one byte for `None`, so every other mob costs one byte more per tick.
   - No `ToClient`/`ToServer` variant and no codec function changed.
+- **"Minecraft silverfish hide in stone and wake their friends"** (group silverfish-behaviour, commit 1, after 6efedf5f) adds `PuffKind::Poof` after `PuffKind::Smoke` (`crates/minecraft_terrain/src/mob_particles.rs`). `MobPuff` travels in the entity snapshot a host sends its friends, so a friend on an older build cannot read a poof. No `ToClient`/`ToServer` variant and no codec function changed.
 - `minecraft_net::PROTOCOL` stays 6 on this track (`docs/round10/decisions.md`, "PROTOCOL is bumped only at release time"). The next release build bumps it once, because of this commit.
 
 ## Group registry-core
@@ -593,4 +594,75 @@ Commit: "Track D0 log records the final test run and the combined kit", after 1b
 
 ```
 IW4L_MINECRAFT_KIT=minecraft:silverfish_spawn_egg*16,minecraft:endermite_spawn_egg*8,minecraft:spawner*3,minecraft:stone_bricks*64,minecraft:stone_bricks*64,minecraft:andesite*64,minecraft:andesite*64,minecraft:torch*64,minecraft:zombie_spawn_egg*4,minecraft:creeper_spawn_egg*2,minecraft:cow_spawn_egg*4,minecraft:villager_spawn_egg*2,minecraft:pillager_spawn_egg*2,minecraft:enderman_spawn_egg*2,minecraft:iron_golem_spawn_egg*2,minecraft:wheat*8,minecraft:lead*2,minecraft:bow,minecraft:arrow*64,minecraft:spectral_arrow*16,minecraft:iron_sword,minecraft:shield,minecraft:tnt*8,minecraft:flint_and_steel,minecraft:splash_potion@harming,minecraft:white_bed,minecraft:cooked_beef*32
+```
+
+## Group silverfish-behaviour
+
+Segment d0b. `track-d0` was fast-forwarded to `minecraft-survival` (6efedf5f) before it started.
+
+### 1. Minecraft silverfish hide in stone and wake their friends
+
+After 6efedf5f.
+
+- **Changed (vendored world crate):**
+  - `level/mod.rs`: `Level.infestations: Vec<BlockPos>`, the infested blocks broken with drops whose silverfish the terrain lets out (vanilla `InfestedBlock.spawnInfestation`).
+  - `level/drops.rs`: `infested_after_break(state, pos)` records the block when `block_drops` holds and the block is an `InfestedBlock` (the catalog's class list, so infested deepslate's `InfestedRotatedPillarBlock` counts too). `spawn_after_break` calls it, so every `destroy_block_drops(pos, true)` lets one out: a silverfish waking its friends with `mob_griefing` (through `MobWorld::destroy_block`), a wither, `/setblock .. destroy`.
+  - `level/explosion.rs`: `on_explosion_hit` calls it before the loot, as vanilla's `onExplosionHit` calls `spawnAfterBreak` before `getDrops`. TNT, creepers, fireballs, wither skulls, beds, respawn anchors and MW2 blasts (`weapon_blast`) all go through it; a `Keep` blast breaks nothing and lets nothing out.
+- **Changed (vendored entities crate, `world/families/pests/silverfish.rs`):**
+  - `INFESTED` (the seven infested blocks beside `HOSTS`), `infested_of` and `host_of` (vanilla `infestedStateByHost` and `hostStateByInfested`, which copy the block state's properties, so deepslate keeps its axis).
+  - `SilverfishWakeUpFriendsGoal`: when its clock reaches 0 it searches y 0, 1, -1, 2, -2 .. 5, -5 and x and z 0, 1, -1 .. 10, -10 around the silverfish's block in vanilla's order. Each infested block it finds goes into `SilverfishExtra.woken` (to break with `mob_griefing`, else to turn back into its host block), and the search stops on the first `nextBoolean` that is true.
+  - `SilverfishMergeWithStoneGoal`: with no target and its path done, `mob_griefing` and `nextInt(reducedTickDelay(10)) == 0` pick a direction (`Direction.getRandom`: `nextInt(6)` over down, up, north, south, west, east) from `BlockPos.containing(x, y + 0.5, z)`. A host block there makes the goal start, and its start puts the block and its infested form into `SilverfishExtra.merge`. Otherwise it is the stroll as before.
+  - The family tick applies both right after the goal step (`apply_blocks`), because goals only see `&dyn World`: a woken block is destroyed with drops (`World::destroy_block`) or set to its host block, and a merge sets the infested block, sets `core.removed` (no death, loot or experience) and pushes entity event 20 (vanilla `spawnAnim`).
+- **Changed (`minecraft_terrain`):**
+  - New `infested.rs` (`pub mod infested;` after `families` in `lib.rs`):
+    - `player_broke(level, at, old, broken)` records each infested block a player broke that was not `SilkTouched`, when `block_drops` holds.
+    - `release(level, mobs, tags, puffs)` takes the level's `infestations` and lets a silverfish out of each. Its tag is `{id, Pos: the block's bottom centre, Rotation: 0 0, UUID from the level}`, spawned through `spawn_saved_all` like a loaded mob, so its random comes from its UUID, it is saved with its tag and friends get it. A `TRIGGERED` spawn has no finalize. Each one gets its spawn poof (`mob_puffs` with entity event 20).
+  - `server.rs`: `player_mines` calls `player_broke` once, right after the blocks are removed (before W's game events). `tick_mobs_with` ends with one `release` call, after the creepers, fireballs, withers and blasts of that tick.
+  - `mob_particles.rs` (E1's table): `PuffKind::Poof` and the row `(_, SPAWN_ANIM) => (Poof, 20, 0.0)` first in `puff_for`, because vanilla `Mob.handleEntityEvent(20)` poofs every mob, villagers and ocelots too.
+- **Changed (`minecraft_survival`, `entity_view.rs`):** the client's `mob_puffs` draws `PuffKind::Poof` as `POOF` particles, each starting ten steps of its own drift back (vanilla `makePoofParticles`: `getRandomX(1.0) - xa * 10`).
+- **Tests added:**
+  - `world::families::pests::silverfish::tests`:
+    - `infested_blocks_and_their_hosts_turn_into_each_other`: all seven pairs both ways, deepslate's axis kept, andesite and plain stone have no counterpart, and the search offsets go 0, 1, -1, 2, -2.
+    - `a_hurt_silverfish_wakes_infested_blocks_nearby`: a silverfish in an andesite hole, a wall of infested stone bricks three blocks off and infested deepslate under it. A player's hit wakes them 16 to 24 ticks later. The woken blocks are a non-empty prefix of vanilla's search order and not all of them. With `mob_griefing` they are destroyed through `destroy_block`; without it they become stone bricks again and nothing is destroyed. The clock is back at 0.
+    - `an_idle_silverfish_merges_into_stone`: alone in a ring of stone bricks with `mob_griefing`, it goes into one of the four wall blocks beside it, which becomes infested stone bricks. It leaves `order` with no death and pushes event 20 once. Without `mob_griefing` it is still there after 2400 ticks and nothing changed.
+  - `infested::tests::a_released_silverfish_stands_in_the_middle_of_its_block_facing_south`: the tag's id, position, rotation and UUID, and it loads as a silverfish there.
+  - `mob_particles::tests::a_spawn_animation_is_twenty_poofs_on_any_mob`.
+  - `server::tests` (with the 26.3 data):
+    - `breaking_infested_stone_without_silk_touch_releases_a_silverfish`: mined infested stone lets one out at the block's bottom centre with a 20-particle poof at tracking range 8, and its tag is kept. Silk Touch, plain stone and `block_drops` off let none out. A `Blasted` block and mined infested deepslate do.
+    - `a_blast_on_infested_stone_releases_a_silverfish`: an MW2 blast (`weapon_blast`) beside four infested stone bricks lets one out of each block it broke, and none with `block_drops` off.
+    - `destroying_infested_stone_with_drops_releases_a_silverfish`: `MobWorld::destroy_block` (a waking silverfish's path) and `command_destroy` each let one out, and no item drops.
+    - `a_hurt_silverfish_lets_its_friends_out_of_the_wall`: a summoned silverfish in an andesite pen hurt by magic breaks the one infested stone block in the wall within 30 ticks, and a second silverfish stands in that block.
+  - `entity_view::tests::a_spawn_poof_draws_twenty_poofs_set_back_against_their_drift` (survival).
+  - Changed: the silverfish tests' `Field` floor is dirt instead of stone, because stone is a host block now and idle silverfish would merge into the floor.
+- **javap this round (26.3):**
+  - `InfestedBlock`: `spawnAfterBreak` calls `spawnInfestation` when `block_drops` holds and the tool has no `#prevents_infested_spawns` enchantment. `spawnInfestation` creates a silverfish with `EntitySpawnReason.TRIGGERED`, `snapTo(x + 0.5, y, z + 0.5, 0, 0)`, `addFreshEntity`, then `spawnAnim`. The constructor halves the host's destroy time and sets explosion resistance 0.75. There is no `wasExploded` override.
+  - `Blocks`: the infested blocks only set a map colour, so they need no tool (no `requiresCorrectToolForDrops`).
+  - `BlockBehaviour.onExplosionHit`: `spawnAfterBreak(level, pos, ItemStack.EMPTY, isPlayer)`, then `getDrops`, unless the blast only triggers blocks.
+  - `Silverfish$SilverfishWakeUpFriendsGoal.tick` and `Silverfish$SilverfishMergeWithStoneGoal` (`canUse`, `canContinueToUse` false after a merge, `start`) as above. `Direction.getRandom` is `Util.getRandom(VALUES, random)`, one `nextInt(6)`.
+  - `Mob.spawnAnim`: entity event 20 on the server. `LivingEntity.makePoofParticles`: 20 `POOF` particles, the three motion gaussians times 0.02 drawn first, at `getRandomX(1.0)`, `getRandomY()` and `getRandomZ(1.0)` less ten times the motion.
+  - Data: `#prevents_infested_spawns` holds only `minecraft:silk_touch`. The infested blocks' loot drops their host block with Silk Touch only (`infested_stone` drops stone).
+- **Decisions:**
+  - **Silk Touch and creative** come from survival's `HowBroken`: `SilkTouched` covers a Silk Touch tool (the only member of `#prevents_infested_spawns`) and every creative break (vanilla's creative breaks never call `playerDestroy`).
+  - **Blasted blocks** (an MW2 blast breaking blocks on the voxel side) let silverfish out like any explosion. The server's own `weapon_blast` runs first in the frame, so a block it already broke is air when `player_mines` sees it, and no block lets two out.
+  - **One release a tick.** The level only records infested breaks; the terrain lets them out at the end of `tick_mobs_with`. A block broken by a blast or a mob in that tick lets its silverfish out the same tick, as vanilla does. A block a player mines between ticks lets its silverfish out at the end of the next mob tick, so it first moves one tick later than in vanilla.
+  - **The poof** is E1's entity-event route with one generic row for event 20, so later spawner and family code can push event 20 for any mob.
+  - **No poof yet when a silverfish merges.** The family pushes event 20, but the terrain resolves entity events after the tick, when the merged silverfish has already left, so `mob_puffs` finds no body. The block change shows at once.
+  - **The silverfish keeps its own block list.** The wake goal records what it found and the family tick applies it in the same AI step, so the blocks change in the tick vanilla changes them.
+  - The Infested effect's silverfish (optional in the brief) are not done.
+- **Left for later:**
+  - The puff when a silverfish merges into stone: the registry root needs a record of a removed mob's body that `mob_puffs` can fall back to.
+  - `InfestedMobEffect.onMobHurt` (the `infested` potion lets silverfish out of a hurt mob or player).
+- **Protocol:** `PuffKind::Poof` (see "## Protocol").
+- **Runs:** `test -p minecraftoss-entities -p minecraftoss-world --locked --lib` (entities 558 passed, world 135), `test -p minecraft_terrain --locked --lib` (1702 passed, 3 ignored), `test -p minecraft_survival --locked` (818 + 1 passed), `check -p launcher --locked` (green; only the old render_frame and skate warnings). The new `infested.rs` passes `rustfmt --check --edition 2021` with empty output on its staged content, and so do the changed `silverfish.rs` and `mob_particles.rs`.
+- **Test steps.** Release build, survival, Normal, by day, flat open ground in the Overworld, `mob_griefing` on (the default). Step 7 needs two windows (`scripts\mp-local.ps1`). Name each screenshot by its label, `D0-14-1.png`, and for both windows `D0-14-7-host.png` and `D0-14-7-friend.png`.
+  1. Build a wall 5 wide and 3 high, half infested stone bricks and half infested stone, and stand 4 blocks in front of it. Use a silverfish egg on the ground at the foot of the wall and hit the silverfish once with your fist without killing it. Within about a second some of the wall's blocks break with the stone break sound and particles, and a silverfish crawls out of each with a small white puff. **Screenshot D0-14-1** with the gap in the wall and the silverfish.
+  2. Mine an infested stone block with the plain diamond pickaxe: it breaks almost at once and a silverfish pops out of it with a puff. Mine an infested stone brick block with the Silk Touch pickaxe: no silverfish, and it drops stone bricks. `/gamemode creative`, break an infested block: no silverfish. `/gamemode survival`.
+  3. `/gamerule mob_griefing false`. Build a row of three infested stone bricks, hatch a silverfish beside it and hit it once. Nothing breaks and no silverfish come out. Kill it, then mine the three blocks with the plain pickaxe: at least one of them lets no silverfish out (it turned back into plain stone bricks). `/gamerule mob_griefing true`.
+  4. Build a pen of stone bricks, 4 x 4 inside and 2 high, on a grass floor. Use a silverfish egg inside, step 6 blocks back and `/gamemode creative`. Within about a minute the silverfish dives into one of the pen's blocks and is gone (no puff yet). **Screenshot D0-14-4** of the empty pen. `/gamemode survival` and mine the pen's blocks with the plain pickaxe: one of them lets the silverfish out again.
+  5. Build three infested stone blocks in a row with a TNT block beside them, light it and step back: the blast breaks the blocks and a silverfish comes out of each one that broke. `/gamerule block_drops false`, mine an infested block: no silverfish. `/gamerule block_drops true`.
+  6. Build a wall of infested stone bricks, use a creeper egg 3 blocks from it and stand right beside the wall until the creeper blows up there: silverfish come out of the blown blocks.
+  7. Two windows: the friend mines an infested stone block with the pickaxe. In both windows a silverfish comes out of it with a puff, and it bites the friend. **Screenshots D0-14-7-host and D0-14-7-friend.**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:silverfish_spawn_egg*8,minecraft:infested_stone*32,minecraft:infested_stone_bricks*32,minecraft:infested_deepslate*16,minecraft:stone_bricks*64,minecraft:diamond_pickaxe,minecraft:diamond_pickaxe+silk_touch,minecraft:tnt*8,minecraft:flint_and_steel,minecraft:creeper_spawn_egg*2,minecraft:iron_sword,minecraft:shield,minecraft:cooked_beef*32,minecraft:torch*64
 ```

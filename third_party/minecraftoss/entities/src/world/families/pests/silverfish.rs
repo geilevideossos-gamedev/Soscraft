@@ -6,11 +6,13 @@ use crate::monster_ai::{
 };
 use crate::tempt::PlayerCandidate;
 use crate::walk_path::{WalkProfile, WalkTarget};
-use crate::world::families::goals::{ClimbOnTopOfPowderSnowGoal, RandomStrollGoal};
+use crate::world::families::goals::{
+    ClimbOnTopOfPowderSnowGoal, RandomStrollGoal, reduced_tick_delay,
+};
 use crate::world::families::{Family, FamilyMob, Hurt, MobCore, MonsterSpec};
 use crate::world::{EntityWorld, PlayerHitKind};
 use glam::DVec3;
-use minecraftoss_player::World;
+use minecraftoss_player::{Block, Pos, World};
 
 pub const KIND: &str = "minecraft:silverfish";
 pub const WIDTH: f32 = 0.4;
@@ -33,6 +35,55 @@ pub const HOSTS: [&str; 7] = [
     "minecraft:chiseled_stone_bricks",
     "minecraft:deepslate",
 ];
+pub const INFESTED: [&str; 7] = [
+    "minecraft:infested_stone",
+    "minecraft:infested_cobblestone",
+    "minecraft:infested_stone_bricks",
+    "minecraft:infested_mossy_stone_bricks",
+    "minecraft:infested_cracked_stone_bricks",
+    "minecraft:infested_chiseled_stone_bricks",
+    "minecraft:infested_deepslate",
+];
+pub const WAKE_HEIGHT: i32 = 5;
+pub const WAKE_REACH: i32 = 10;
+pub const MERGE_INTERVAL: u32 = 10;
+pub const SPAWN_ANIM: u8 = 20;
+const DIRECTIONS: [Pos; 6] = [
+    (0, -1, 0),
+    (0, 1, 0),
+    (0, 0, -1),
+    (0, 0, 1),
+    (-1, 0, 0),
+    (1, 0, 0),
+];
+
+pub fn infested_of(host: &Block) -> Option<Block> {
+    let index = HOSTS.iter().position(|id| *id == host.id)?;
+    Some(Block {
+        id: INFESTED[index].to_owned(),
+        properties: host.properties.clone(),
+    })
+}
+
+pub fn host_of(infested: &Block) -> Option<Block> {
+    let index = INFESTED.iter().position(|id| *id == infested.id)?;
+    Some(Block {
+        id: HOSTS[index].to_owned(),
+        properties: infested.properties.clone(),
+    })
+}
+
+fn offsets(reach: i32) -> impl Iterator<Item = i32> {
+    (0..=2 * reach).map(|i| if i % 2 == 1 { (i + 1) / 2 } else { -(i / 2) })
+}
+
+fn block_of(position: DVec3) -> Pos {
+    (
+        position.x.floor() as i32,
+        position.y.floor() as i32,
+        position.z.floor() as i32,
+    )
+}
 
 pub const GOAL_NAMES: [&str; 5] = [
     "FloatGoal",
@@ -72,6 +123,7 @@ fn goals() -> GoalSelector<MonsterGoalContext> {
         5,
         MergeWithStoneGoal {
             stroll: RandomStrollGoal::new(1.0, STROLL_INTERVAL),
+            selected: None,
         },
     );
     selector
@@ -96,9 +148,11 @@ fn walk(walk: &mut WalkProfile) {
     walk.walk_target = WalkTarget::MonsterOver(&HOSTS);
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SilverfishExtra {
     pub look_for_friends: i32,
+    pub woken: Vec<(Pos, Option<Block>)>,
+    pub merge: Option<(Pos, Block)>,
 }
 
 impl SilverfishExtra {
@@ -123,9 +177,29 @@ impl Goal<MonsterGoalContext> for WakeUpFriendsGoal {
             .is_some_and(|extra| extra.look_for_friends > 0)
     }
 
-    fn tick(&mut self, ctx: &mut MonsterGoalContext) {
-        if let Some(extra) = ctx.extra.get_mut::<SilverfishExtra>() {
-            extra.look_for_friends -= 1;
+    fn tick_world(&mut self, ctx: &mut MonsterGoalContext, world: &dyn World) {
+        let Some(extra) = ctx.extra.get_mut::<SilverfishExtra>() else {
+            return;
+        };
+        extra.look_for_friends -= 1;
+        if extra.look_for_friends > 0 {
+            return;
+        }
+        let origin = block_of(ctx.body.position);
+        let griefing = ctx.mob_griefing;
+        'search: for y in offsets(WAKE_HEIGHT) {
+            for x in offsets(WAKE_REACH) {
+                for z in offsets(WAKE_REACH) {
+                    let pos = (origin.0 + x, origin.1 + y, origin.2 + z);
+                    let Some(host) = world.block(pos).and_then(|block| host_of(&block)) else {
+                        continue;
+                    };
+                    extra.woken.push((pos, (!griefing).then_some(host)));
+                    if ctx.random.next_boolean() {
+                        break 'search;
+                    }
+                }
+            }
         }
     }
 }
@@ -133,6 +207,7 @@ impl Goal<MonsterGoalContext> for WakeUpFriendsGoal {
 #[derive(Clone)]
 struct MergeWithStoneGoal {
     stroll: RandomStrollGoal,
+    selected: Option<Pos>,
 }
 
 impl Goal<MonsterGoalContext> for MergeWithStoneGoal {
@@ -144,15 +219,37 @@ impl Goal<MonsterGoalContext> for MergeWithStoneGoal {
         if ctx.target().is_some() || !ctx.navigation.is_done() {
             return false;
         }
+        self.selected = None;
+        if ctx.mob_griefing && ctx.random.next_int(reduced_tick_delay(MERGE_INTERVAL)) == 0 {
+            let (dx, dy, dz) = DIRECTIONS[ctx.random.next_int(6) as usize];
+            let cell = block_of(ctx.body.position + DVec3::new(0.0, 0.5, 0.0));
+            let pos = (cell.0 + dx, cell.1 + dy, cell.2 + dz);
+            if world
+                .block(pos)
+                .is_some_and(|block| infested_of(&block).is_some())
+            {
+                self.selected = Some(pos);
+                return true;
+            }
+        }
         self.stroll.can_start(ctx, world)
     }
 
     fn can_continue(&mut self, ctx: &mut MonsterGoalContext, world: &dyn World) -> bool {
-        self.stroll.can_continue(ctx, world)
+        self.selected.is_none() && self.stroll.can_continue(ctx, world)
     }
 
     fn start_world(&mut self, ctx: &mut MonsterGoalContext, world: &dyn World) {
-        self.stroll.start_world(ctx, world);
+        let Some(pos) = self.selected else {
+            self.stroll.start_world(ctx, world);
+            return;
+        };
+        let Some(infested) = world.block(pos).and_then(|block| infested_of(&block)) else {
+            return;
+        };
+        if let Some(extra) = ctx.extra.get_mut::<SilverfishExtra>() {
+            extra.merge = Some((pos, infested));
+        }
     }
 
     fn stop(&mut self, ctx: &mut MonsterGoalContext) {
@@ -171,7 +268,7 @@ impl Silverfish {
             .state
             .extra
             .get::<SilverfishExtra>()
-            .copied()
+            .cloned()
             .unwrap_or_default()
     }
 }
@@ -206,6 +303,7 @@ impl Family for Silverfish {
             }
             let strike =
                 world.family_goal_step::<Self, W>(id, level, players, SPEED, |fish| &mut *fish.ai);
+            apply_blocks(world, id, level);
             let alert = world
                 .family_mob_mut::<Self>(id)
                 .and_then(|mob| mob.state.ai.state.alert.take());
@@ -253,6 +351,29 @@ impl Family for Silverfish {
     }
 }
 
+fn apply_blocks<W: World>(world: &mut EntityWorld, id: u64, level: &mut W) {
+    let Some(mob) = world.family_mob_mut::<Silverfish>(id) else {
+        return;
+    };
+    let Some(extra) = mob.state.ai.state.extra.get_mut::<SilverfishExtra>() else {
+        return;
+    };
+    let (woken, merge) = (std::mem::take(&mut extra.woken), extra.merge.take());
+    for (pos, host) in woken {
+        match host {
+            Some(host) => level.set_block(pos, Some(host)),
+            None => {
+                level.destroy_block(pos);
+            }
+        }
+    }
+    if let Some((pos, infested)) = merge {
+        level.set_block(pos, Some(infested));
+        mob.core.removed = true;
+        world.entity_events.push((id, SPAWN_ANIM));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -265,7 +386,7 @@ mod tests {
 
     impl World for Field {
         fn block(&self, pos: Pos) -> Option<Block> {
-            (pos.1 < 64).then(|| Block::new("minecraft:stone"))
+            (pos.1 < 64).then(|| Block::new("minecraft:dirt"))
         }
 
         fn set_block(&mut self, _: Pos, _: Option<Block>) {}
@@ -455,5 +576,190 @@ mod tests {
         }
         assert_eq!(clock(&world, hurt), 0);
         assert_eq!(clock(&world, poisoned), 0);
+    }
+
+    #[derive(Default)]
+    struct Yard {
+        blocks: std::collections::HashMap<Pos, Option<Block>>,
+        destroyed: Vec<Pos>,
+    }
+
+    impl World for Yard {
+        fn block(&self, pos: Pos) -> Option<Block> {
+            match self.blocks.get(&pos) {
+                Some(block) => block.clone(),
+                None => (pos.1 < 64).then(|| Block::new("minecraft:dirt")),
+            }
+        }
+
+        fn set_block(&mut self, pos: Pos, block: Option<Block>) {
+            self.blocks.insert(pos, block);
+        }
+
+        fn destroy_block(&mut self, pos: Pos) -> bool {
+            self.destroyed.push(pos);
+            self.blocks.insert(pos, None);
+            true
+        }
+    }
+
+    impl Yard {
+        fn put(&mut self, pos: Pos, block: Block) {
+            self.blocks.insert(pos, Some(block));
+        }
+
+        fn ring(&mut self, id: &str) {
+            for (x, z) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+                for y in [64, 65] {
+                    self.put((x, y, z), Block::new(id));
+                }
+            }
+        }
+
+        fn found(&self, id: &str) -> Vec<Pos> {
+            let mut found: Vec<Pos> = self
+                .blocks
+                .iter()
+                .filter(|(_, block)| block.as_ref().is_some_and(|block| block.id == id))
+                .map(|(pos, _)| *pos)
+                .collect();
+            found.sort_unstable();
+            found
+        }
+    }
+
+    #[test]
+    fn infested_blocks_and_their_hosts_turn_into_each_other() {
+        for (host, infested) in HOSTS.iter().zip(INFESTED) {
+            assert_eq!(infested_of(&Block::new(*host)), Some(Block::new(infested)));
+            assert_eq!(host_of(&Block::new(infested)), Some(Block::new(*host)));
+        }
+        let pillar = Block::new("minecraft:deepslate").with("axis", "x");
+        let infested = infested_of(&pillar).unwrap();
+        let expected = Block::new("minecraft:infested_deepslate").with("axis", "x");
+        assert_eq!(infested, expected, "the axis is kept");
+        assert_eq!(host_of(&infested), Some(pillar));
+        assert_eq!(infested_of(&Block::new("minecraft:andesite")), None);
+        assert_eq!(host_of(&Block::new("minecraft:stone")), None);
+        assert_eq!(offsets(2).collect::<Vec<_>>(), [0, 1, -1, 2, -2]);
+        assert_eq!(offsets(WAKE_HEIGHT).count(), 11);
+    }
+
+    const WAKE_ORDER: [Pos; 16] = [
+        (0, 64, 3),
+        (1, 64, 3),
+        (-1, 64, 3),
+        (2, 64, 3),
+        (-2, 64, 3),
+        (0, 65, 3),
+        (1, 65, 3),
+        (-1, 65, 3),
+        (2, 65, 3),
+        (-2, 65, 3),
+        (0, 63, 0),
+        (0, 66, 3),
+        (1, 66, 3),
+        (-1, 66, 3),
+        (2, 66, 3),
+        (-2, 66, 3),
+    ];
+
+    fn infested_yard() -> Yard {
+        let mut yard = Yard::default();
+        yard.ring("minecraft:andesite");
+        for &pos in WAKE_ORDER.iter().filter(|pos| pos.2 == 3) {
+            yard.put(pos, Block::new("minecraft:infested_stone_bricks"));
+        }
+        let pillar = Block::new("minecraft:infested_deepslate").with("axis", "x");
+        yard.put((0, 63, 0), pillar);
+        yard
+    }
+
+    #[test]
+    fn a_hurt_silverfish_wakes_infested_blocks_nearby() {
+        for griefing in [true, false] {
+            let mut world = EntityWorld::default();
+            world.set_mob_griefing(griefing);
+            let mut yard = infested_yard();
+            let id = fish_at(&mut world, 0.5, 0.5);
+            let players = [player_at(1, DVec3::new(0.5, 64.0, -6.5))];
+            world.tick_with_players(&mut yard, &players);
+            let hit = attack(1, players[0].position, 1.0);
+            assert!(world.player_attack(&hit, id).hurt);
+            let untouched = yard.blocks.clone();
+            let mut waited = 0;
+            while yard.blocks == untouched && waited < 60 {
+                world.tick_with_players(&mut yard, &players);
+                waited += 1;
+            }
+            assert!((16..=24).contains(&waited), "about a second: {waited}");
+            let woken: Vec<Pos> = WAKE_ORDER
+                .iter()
+                .copied()
+                .filter(|pos| yard.blocks[pos] != untouched[pos])
+                .collect();
+            assert!(!woken.is_empty() && woken.len() < WAKE_ORDER.len());
+            assert_eq!(woken, WAKE_ORDER[..woken.len()], "vanilla's search order");
+            for pos in &woken {
+                let now = yard.block(*pos);
+                if griefing {
+                    assert_eq!(now, None, "broken: {pos:?}");
+                } else if *pos == (0, 63, 0) {
+                    let host = Block::new("minecraft:deepslate").with("axis", "x");
+                    assert_eq!(now, Some(host));
+                } else {
+                    assert_eq!(now, Some(Block::new("minecraft:stone_bricks")), "{pos:?}");
+                }
+            }
+            let expected = if griefing { woken.clone() } else { Vec::new() };
+            assert_eq!(yard.destroyed, expected);
+            assert_eq!(fish(&world, id).state.extra().look_for_friends, 0);
+            let left = yard.found("minecraft:infested_stone_bricks").len();
+            assert_eq!(left, 15 - woken.iter().filter(|pos| pos.2 == 3).count());
+        }
+    }
+
+    #[test]
+    fn an_idle_silverfish_merges_into_stone() {
+        for griefing in [true, false] {
+            let mut world = EntityWorld::default();
+            world.set_mob_griefing(griefing);
+            let mut yard = Yard::default();
+            yard.ring("minecraft:stone_bricks");
+            let id = fish_at(&mut world, 0.5, 0.5);
+            let mut events = Vec::new();
+            for _ in 0..2400 {
+                world.tick_with_players(&mut yard, &[]);
+                events.extend(world.take_entity_events());
+                if world.entity_type(id).is_none() {
+                    break;
+                }
+            }
+            let merged = yard.found("minecraft:infested_stone_bricks");
+            if !griefing {
+                assert_eq!(
+                    world.entity_type(id),
+                    Some(KIND),
+                    "no merging without griefing"
+                );
+                assert!(merged.is_empty());
+                continue;
+            }
+            assert_eq!(world.entity_type(id), None, "it went into the wall");
+            assert!(!world.mob_ids().any(|other| other == id));
+            assert_eq!(merged.len(), 1, "{merged:?}");
+            let sides = [(1, 64, 0), (-1, 64, 0), (0, 64, 1), (0, 64, -1)];
+            assert!(
+                sides.contains(&merged[0]),
+                "a wall block beside it: {merged:?}"
+            );
+            assert_eq!(yard.found("minecraft:stone_bricks").len(), 7);
+            assert!(yard.destroyed.is_empty());
+            assert!(
+                world.take_deaths().is_empty(),
+                "no death, loot or experience"
+            );
+            assert_eq!(events, vec![(id, SPAWN_ANIM)], "its poof");
+        }
     }
 }

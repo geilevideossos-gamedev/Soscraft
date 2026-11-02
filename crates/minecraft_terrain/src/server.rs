@@ -1395,6 +1395,7 @@ impl ServerSim {
             self.explode_blasts(players);
         }
         self.sound_potion_breaks();
+        crate::infested::release(&mut self.level, &mut self.mobs, &mut self.mob_tags, &mut self.mob_puffs);
     }
 
     fn throw_mob_tridents(&mut self) {
@@ -2712,6 +2713,7 @@ impl ServerSim {
         let at: Vec<_> = broken.iter().map(|(p, _)| minecraftoss_core::BlockPos::new(p.0, p.1, p.2)).collect();
         let old: Vec<_> = at.iter().map(|&pos| self.level.block(pos)).collect();
         self.level.remove_blocks(&at, BlockStateId::AIR);
+        crate::infested::player_broke(&mut self.level, &at, &old, broken);
         let mut destroyed: Vec<_> = at
             .into_iter()
             .zip(old)
@@ -7878,6 +7880,119 @@ mod tests {
         assert_eq!(changes.get(&(8, 199, 8)), Some(&None));
         assert_eq!(changes.get(&(8, 200, 8)), Some(&None));
         assert!(server.items().is_empty());
+    }
+
+    fn silverfish_feet(server: &ServerSim) -> Vec<[f64; 3]> {
+        use minecraftoss_entities::world::families::pests::silverfish::Silverfish;
+        let mut feet: Vec<[f64; 3]> = server.mobs.family::<Silverfish>().iter().map(|mob| mob.core.body.position.to_array()).collect();
+        feet.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        feet
+    }
+
+    #[test]
+    fn breaking_infested_stone_without_silk_touch_releases_a_silverfish() {
+        use crate::mob_particles::PuffKind;
+        let Some((mut server, mut scene)) = door_world() else { return };
+        server.mobs.set_mob_griefing(false);
+        for x in [8, 10, 12, 14] {
+            place(&mut server, &mut scene, (x, 200, 8), Block::new("minecraft:infested_stone"));
+        }
+        place(&mut server, &mut scene, (16, 200, 8), Block::new("minecraft:infested_deepslate").with("axis", "x"));
+        place(&mut server, &mut scene, (6, 200, 8), Block::new("minecraft:stone"));
+        let changes = mined_to(&mut server, &[((8, 200, 8), HowBroken::Mined), ((10, 200, 8), HowBroken::SilkTouched), ((6, 200, 8), HowBroken::Mined)]);
+        assert_eq!(changes.get(&(8, 200, 8)), Some(&None));
+        server.mob_puffs.clear();
+        server.tick_mobs(&[], false);
+        assert_eq!(silverfish_feet(&server), vec![[8.5, 200.0, 8.5]], "only the infested stone mined without Silk Touch");
+        let puffs: Vec<_> = std::mem::take(&mut server.mob_puffs).into_iter().map(|puff| (puff.kind, puff.count, puff.feet.to_array(), puff.range)).collect();
+        assert_eq!(puffs, vec![(PuffKind::Poof, 20, [8.5, 200.0, 8.5], 8)], "with its spawn poof");
+        let id = server.mobs.mob_ids().find(|id| server.mobs.entity_type(*id) == Some("minecraft:silverfish")).unwrap();
+        assert!(server.mob_tags.contains_key(&id), "saved like any loaded mob");
+        server.level.block_drops = false;
+        mined_to(&mut server, &[((12, 200, 8), HowBroken::Mined)]);
+        server.tick_mobs(&[], false);
+        assert_eq!(silverfish_feet(&server).len(), 1, "none with block_drops off");
+        server.level.block_drops = true;
+        mined_to(&mut server, &[((14, 200, 8), HowBroken::Blasted), ((16, 200, 8), HowBroken::Mined)]);
+        server.tick_mobs(&[], false);
+        assert_eq!(silverfish_feet(&server).len(), 3, "a weapon's blast and infested deepslate let one out too");
+    }
+
+    #[test]
+    fn a_blast_on_infested_stone_releases_a_silverfish() {
+        let cells = [(8, 200, 9), (9, 200, 8), (7, 200, 8), (8, 200, 7)];
+        for drops in [true, false] {
+            let Some((mut server, mut scene)) = door_world() else { return };
+            server.mobs.set_mob_griefing(false);
+            server.level.block_drops = drops;
+            for pos in cells {
+                place(&mut server, &mut scene, pos, Block::new("minecraft:infested_stone_bricks"));
+            }
+            server.take_changes();
+            server.weapon_blast([8.5, 200.5, 8.5], 3.0);
+            server.tick_mobs(&[], false);
+            let mut blown: Vec<[f64; 3]> = server.take_changes().into_iter().filter(|(pos, block)| block.is_none() && cells.contains(pos)).map(|((x, y, z), _)| [f64::from(x) + 0.5, f64::from(y), f64::from(z) + 0.5]).collect();
+            blown.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            assert!(!blown.is_empty());
+            let expected = if drops { blown } else { Vec::new() };
+            assert_eq!(silverfish_feet(&server), expected, "block_drops {drops}");
+        }
+    }
+
+    #[test]
+    fn destroying_infested_stone_with_drops_releases_a_silverfish() {
+        let Some((mut server, mut scene)) = door_world() else { return };
+        server.mobs.set_mob_griefing(false);
+        place(&mut server, &mut scene, (8, 200, 8), Block::new("minecraft:infested_cobblestone"));
+        place(&mut server, &mut scene, (10, 200, 8), Block::new("minecraft:infested_mossy_stone_bricks"));
+        {
+            let ServerSim { level, states, mob_tables, .. } = &mut server;
+            let mut world = crate::server_mobs::MobWorld { level: std::cell::RefCell::new(level), states, tables: mob_tables };
+            assert!(minecraftoss_player::World::destroy_block(&mut world, (8, 200, 8)), "a silverfish waking it with mob_griefing");
+        }
+        assert!(server.command_destroy((10, 200, 8)), "/setblock .. destroy");
+        server.tick_mobs(&[], false);
+        assert_eq!(silverfish_feet(&server), vec![[8.5, 200.0, 8.5], [10.5, 200.0, 8.5]]);
+        assert!(server.items().is_empty(), "no item without Silk Touch");
+    }
+
+    #[test]
+    fn a_hurt_silverfish_lets_its_friends_out_of_the_wall() {
+        use minecraftoss_entities::world::families::Hurt;
+        use minecraftoss_entities::world::DamageSourceKind;
+        let Some((mut server, mut scene)) = door_world() else { return };
+        for x in 5..=11 {
+            for z in 5..=11 {
+                place(&mut server, &mut scene, (x, 199, z), Block::new("minecraft:andesite"));
+                if x == 5 || x == 11 || z == 5 || z == 11 {
+                    for y in 200..=201 {
+                        let wall = if (x, y, z) == (8, 200, 11) { "minecraft:infested_stone" } else { "minecraft:andesite" };
+                        place(&mut server, &mut scene, (x, y, z), Block::new(wall));
+                    }
+                }
+            }
+        }
+        server.summon("minecraft:silverfish", [8.5, 200.0, 8.5], None, 0.0).unwrap();
+        server.take_spawned();
+        let first = server.mobs.mob_ids().find(|id| server.mobs.entity_type(*id) == Some("minecraft:silverfish")).expect("a silverfish");
+        server.take_changes();
+        let magic = Hurt::new(1.0, "minecraft:magic", DamageSourceKind::Magic);
+        assert!(server.mobs.hurt_family(first, &magic).unwrap().applied);
+        let mut woke = None;
+        for tick in 0..40 {
+            server.set_players(&[[8.5, 200.0, 30.5]], 2);
+            server.set_simulation_area((0, 0), 4);
+            server.tick();
+            server.tick_mobs(&[], false);
+            if server.take_changes().iter().any(|(pos, block)| *pos == (8, 200, 11) && block.is_none()) {
+                woke = Some(tick);
+                break;
+            }
+        }
+        assert!(woke.is_some_and(|tick| tick < 30), "within about a second: {woke:?}");
+        let feet = silverfish_feet(&server);
+        assert_eq!(feet.len(), 2, "{feet:?}");
+        assert!(feet.contains(&[8.5, 200.0, 11.5]), "out of the broken block: {feet:?}");
     }
 
     #[test]

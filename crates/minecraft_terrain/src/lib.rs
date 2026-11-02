@@ -74,6 +74,7 @@ pub mod audio;
 pub mod server;
 pub mod server_mobs;
 pub mod families;
+pub mod infested;
 pub mod mob_actions;
 pub mod mob_particles;
 pub mod walk_animation;

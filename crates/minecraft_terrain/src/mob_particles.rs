@@ -7,6 +7,8 @@ const OCELOT: &str = "minecraft:ocelot";
 const TAMED: u8 = 7;
 const NOT_TAMED: u8 = 6;
 const IN_LOVE: u8 = 18;
+pub const SPAWN_ANIM: u8 = 20;
+const POOF_PARTICLES: u8 = 20;
 const VILLAGER_HEARTS: u8 = 12;
 const VILLAGER_ANGRY: u8 = 13;
 const VILLAGER_HAPPY: u8 = 14;
@@ -20,6 +22,7 @@ const VILLAGER_LIFT: f64 = 1.0;
 pub enum PuffKind {
     Heart,
     Smoke,
+    Poof,
     AngryVillager,
     HappyVillager,
     Splash,
@@ -40,6 +43,7 @@ pub fn puff_for(entity_type: &str, event: u8) -> Option<(PuffKind, u8, f64)> {
     let villager = |kind| Some((kind, VILLAGER_PARTICLES, VILLAGER_LIFT));
     let animal = |kind| Some((kind, ANIMAL_PARTICLES, ANIMAL_LIFT));
     match (entity_type, event) {
+        (_, SPAWN_ANIM) => Some((PuffKind::Poof, POOF_PARTICLES, 0.0)),
         (VILLAGER, VILLAGER_HEARTS) => villager(PuffKind::Heart),
         (VILLAGER, VILLAGER_ANGRY) => villager(PuffKind::AngryVillager),
         (VILLAGER, VILLAGER_HAPPY) => villager(PuffKind::HappyVillager),
@@ -142,6 +146,22 @@ mod tests {
         assert_eq!(puff_for("minecraft:villager", 7), None);
         assert_eq!(puff_for("minecraft:ravager", 39), None);
         assert_eq!(puff_for("minecraft:ravager", 69), None);
+    }
+
+    #[test]
+    fn a_spawn_animation_is_twenty_poofs_on_any_mob() {
+        for mob in [
+            "minecraft:silverfish",
+            "minecraft:villager",
+            "minecraft:ocelot",
+            "minecraft:zombie",
+        ] {
+            assert_eq!(
+                puff_for(mob, SPAWN_ANIM),
+                Some((PuffKind::Poof, 20, 0.0)),
+                "{mob}"
+            );
+        }
     }
 
     #[test]
