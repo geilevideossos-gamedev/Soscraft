@@ -1065,7 +1065,7 @@ mod tests {
             level.view.banners.posed(&level.terrain.scene, camera).iter().map(|banner| (banner.cell, banner.model.elements.len(), banner.tints.len())).collect()
         };
         let apart = |friend: &mut RemoteWorld| {
-            friend.level.as_mut().map(|level| level.view.banners.take_apart_changes(&level.terrain.scene)).unwrap_or_default()
+            friend.level.as_mut().map_or_else(Vec::new, |level| level.view.banners.take_apart_changes(&level.terrain.scene))
         };
         let at: BlockPos = (3, -60, 4);
         let Ok(mut chunk) = Arc::try_unwrap(stone_chunk(&registries, 0, 0, -64, 384)) else {

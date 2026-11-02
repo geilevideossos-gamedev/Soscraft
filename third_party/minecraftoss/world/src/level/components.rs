@@ -29,7 +29,7 @@ pub fn implicit(kind: &str) -> &'static [(&'static str, &'static str)] {
 }
 
 pub fn kind(entity: &Tag) -> &str {
-    entity.get("id").and_then(Tag::as_str).unwrap_or_default()
+    entity.get("id").and_then(Tag::as_str).unwrap_or("")
 }
 
 pub fn applied(entity: &Tag, components: &Tag) -> Option<Tag> {
@@ -61,8 +61,7 @@ pub fn collected(entity: &Tag) -> BTreeMap<String, Tag> {
     let mut collected = entity
         .get("components")
         .and_then(Tag::as_compound)
-        .cloned()
-        .unwrap_or_default();
+        .map_or_else(BTreeMap::new, Clone::clone);
     for (component, field) in implicit(kind(entity)) {
         if let Some(value) = entity.get(field) {
             collected.insert((*component).to_owned(), value.clone());

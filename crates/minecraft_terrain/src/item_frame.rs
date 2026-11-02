@@ -376,8 +376,7 @@ impl ItemFrame {
             look: self
                 .item
                 .as_ref()
-                .map(|stack| crate::item_look::ItemLook::of(stack.components.as_ref(), None).suffix())
-                .unwrap_or_default(),
+                .map_or_else(String::new, |stack| crate::item_look::ItemLook::of(stack.components.as_ref(), None).suffix()),
             glint: self.item.as_ref().is_some_and(crate::glint::has_glint),
             rotation: self.rotation,
             invisible: self.invisible,
