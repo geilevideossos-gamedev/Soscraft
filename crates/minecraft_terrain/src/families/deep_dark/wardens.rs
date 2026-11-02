@@ -1,8 +1,10 @@
 use super::warden_render;
+use crate::block_particles::BlockDust;
 use crate::client_mobs::ClientMobs;
-use crate::families::{FamilyDraw, FamilyShow, TerrainFamily};
+use crate::families::{ClientFx, FamilyDraw, FamilyShow, TerrainFamily};
 use crate::lighting::SkyLight;
 use crate::mesh::Atlas;
+use glam::DVec3;
 use minecraftoss_core::nbt::Tag;
 use minecraftoss_entities::gossip::{uuid_from_ints, uuid_to_ints};
 use minecraftoss_entities::look::BodyRotation;
@@ -10,9 +12,15 @@ use minecraftoss_entities::villager_brain::Slot;
 use minecraftoss_entities::world::families::FamilyMob;
 pub use minecraftoss_entities::world::families::deep_dark::wardens::Warden;
 use minecraftoss_entities::world::families::deep_dark::wardens::{self, Anger, Memories, Pose};
+use minecraftoss_player::rng::LegacyRandom;
 use std::collections::BTreeMap;
 
 pub const TRACKING_RANGE: i32 = 16;
+pub const HEARTBEAT_SOUND: &str = "minecraft:entity.warden.heartbeat";
+pub const HEARTBEAT_VOLUME: f32 = 5.0;
+pub const DIGGING_PARTICLES: u32 = 30;
+pub const DIGGING_PARTICLES_MILLIS: f32 = 4500.0;
+pub const DIGGING_PARTICLES_OFFSET: f32 = 0.7;
 pub const ANGER: &str = "anger";
 pub const SUSPECTS: &str = "suspects";
 pub const BRAIN: &str = "Brain";
@@ -103,6 +111,17 @@ fn read_memories(tag: &Tag, memories: &mut Memories) {
     }
 }
 
+fn throws_up_ground(mob: &FamilyMob<Warden>) -> bool {
+    let start = match mob.state.pose {
+        Pose::Emerging => mob.state.animations.emerge,
+        Pose::Digging => mob.state.animations.dig,
+        _ => None,
+    };
+    start.is_some_and(|start| {
+        ((mob.core.tick_count - start) as f32 * 50.0) < DIGGING_PARTICLES_MILLIS
+    })
+}
+
 fn brain_tag(memories: &Memories) -> Tag {
     let mut memories = memories.clone();
     let mut saved = BTreeMap::new();
@@ -177,6 +196,41 @@ impl TerrainFamily for Warden {
         let shown = mobs.iter().filter(|mob| !mob.core.removed);
         let clips = warden_render::Clips::shared();
         warden_render::append_wardens(out, shown, poses, atlas, light, partial, &clips);
+    }
+
+    fn client_effects(mobs: &[FamilyMob<Self>], poses: &ClientMobs, fx: &mut ClientFx<'_>) {
+        for mob in mobs.iter().filter(|mob| !mob.core.removed) {
+            let Some(shown) = poses.get(mob.core.id) else {
+                continue;
+            };
+            if wardens::heart_beats(shown.tick_count, mob.state.client_anger) {
+                let pitch = (fx.random.next_float() - fx.random.next_float()) * 0.2 + 1.0;
+                let sound = HEARTBEAT_SOUND.to_owned();
+                fx.sounds
+                    .push((sound, shown.position, HEARTBEAT_VOLUME, pitch));
+            }
+        }
+    }
+
+    fn block_dust(mobs: &[FamilyMob<Self>], poses: &ClientMobs, out: &mut Vec<BlockDust>) {
+        for mob in mobs
+            .iter()
+            .filter(|mob| !mob.core.removed && throws_up_ground(mob))
+        {
+            let Some(shown) = poses.get(mob.core.id) else {
+                continue;
+            };
+            let feet = shown.position;
+            let seed = mob.core.id.wrapping_mul(0x9e37_79b9_7f4a_7c15) ^ shown.tick_count as u64;
+            let mut random = LegacyRandom::new(seed);
+            let spread = DIGGING_PARTICLES_OFFSET;
+            for _ in 0..DIGGING_PARTICLES {
+                let x = random.next_float() * (spread - -spread) + -spread;
+                let z = random.next_float() * (spread - -spread) + -spread;
+                let at = feet + DVec3::new(f64::from(x), 0.0, f64::from(z));
+                out.push(BlockDust::of(feet, at, 1));
+            }
+        }
     }
 }
 
@@ -377,6 +431,121 @@ mod tests {
             .chain(&translucent.vertices)
             .map(|v| (v.position, v.color))
             .collect()
+    }
+
+    fn effects(
+        world: &EntityWorld,
+        poses: &ClientMobs,
+        random: &mut LegacyRandom,
+    ) -> Vec<(String, DVec3, f32, f32)> {
+        use crate::ambient_particles::AmbientParticles;
+        use crate::families::ClientFx;
+        use crate::poof_particles::PoofParticles;
+        use crate::portal_particles::PortalParticles;
+        use crate::spell_particles::SpellParticles;
+        let mut ambient = AmbientParticles::new(1);
+        let mut spell = SpellParticles::new(1);
+        let mut portal = PortalParticles::default();
+        let mut poof = PoofParticles::default();
+        let mut sounds = Vec::new();
+        let mut seen = HashMap::new();
+        let mut fx = ClientFx {
+            ambient: &mut ambient,
+            spell: &mut spell,
+            portal: &mut portal,
+            poof: &mut poof,
+            sounds: &mut sounds,
+            random,
+            seen: &mut seen,
+        };
+        crate::families::client_effects(world, poses, &mut fx);
+        sounds
+    }
+
+    #[test]
+    fn its_heart_beats_with_the_shown_anger_for_every_viewer() {
+        let tag = parse("{id:\"minecraft:warden\",Pos:[0.5d,64.0d,0.5d],NoAI:1b}");
+        let mut world = EntityWorld::default();
+        let id = spawn_saved(&mut world, &tag).unwrap();
+        let mut poses = ClientMobs::default();
+        poses.spawn_missing(&crate::client_mobs::server_mobs(&world));
+        let mut random = LegacyRandom::new(5);
+        let mut beats = Vec::new();
+        for tick in 1..=200 {
+            poses.tick();
+            if tick == 121 {
+                world.warden_mut(id).unwrap().state.client_anger = 80;
+            }
+            for (event, at, volume, pitch) in effects(&world, &poses, &mut random) {
+                assert_eq!(event, HEARTBEAT_SOUND);
+                assert_eq!((at, volume), (DVec3::new(0.5, 64.0, 0.5), 5.0));
+                assert!((0.8..=1.2).contains(&pitch), "{pitch}");
+                beats.push(tick);
+            }
+        }
+        assert_eq!(beats, [40, 80, 120, 130, 140, 150, 160, 170, 180, 190, 200]);
+        world.warden_mut(id).unwrap().core.removed = true;
+        for _ in 0..40 {
+            poses.tick();
+            assert!(effects(&world, &poses, &mut random).is_empty());
+        }
+        assert!(effects(&world, &ClientMobs::default(), &mut random).is_empty());
+    }
+
+    #[test]
+    fn digging_and_emerging_throw_up_thirty_bits_of_ground_a_tick_for_four_and_a_half_seconds() {
+        let feet = DVec3::new(2.5, 64.0, -1.5);
+        let mut world = EntityWorld::default();
+        let id = world.spawn_family_kind(wardens::KIND, feet).unwrap();
+        let mut poses = ClientMobs::default();
+        poses.spawn_missing(&crate::client_mobs::server_mobs(&world));
+        let dust = |world: &EntityWorld, poses: &ClientMobs| {
+            let mut out = Vec::new();
+            crate::families::block_dust(world, poses, &mut out);
+            out
+        };
+        assert!(
+            dust(&world, &poses).is_empty(),
+            "standing, it throws nothing"
+        );
+        for pose in [Pose::Emerging, Pose::Digging] {
+            let mob = world.warden_mut(id).unwrap();
+            wardens::set_pose(mob, Pose::Standing);
+            mob.core.tick_count = 1000;
+            wardens::set_pose(mob, pose);
+            for (since, thrown) in [(0, true), (1, true), (89, true), (90, false), (300, false)] {
+                world.warden_mut(id).unwrap().core.tick_count = 1000 + since;
+                let out = dust(&world, &poses);
+                if !thrown {
+                    assert!(out.is_empty(), "{pose:?} {since}");
+                    continue;
+                }
+                assert_eq!(out.len(), 30, "{pose:?} {since}");
+                for bit in &out {
+                    assert_eq!(
+                        (bit.count, bit.inside, bit.below),
+                        (1, (2, 64, -2), (2, 63, -2))
+                    );
+                    assert_eq!(bit.at.y, 64.0);
+                    assert!((bit.at.x - 2.5).abs() <= 0.7 && (bit.at.z + 1.5).abs() <= 0.7);
+                }
+                assert!(
+                    out.windows(2).all(|pair| pair[0].at != pair[1].at),
+                    "each its own spot"
+                );
+            }
+        }
+        world.warden_mut(id).unwrap().core.tick_count = 1010;
+        let before = dust(&world, &poses);
+        poses.tick();
+        assert_ne!(dust(&world, &poses), before, "new spots every tick");
+        assert!(
+            dust(&world, &ClientMobs::default()).is_empty(),
+            "a warden the viewer has not seen"
+        );
+        let mob = world.warden_mut(id).unwrap();
+        mob.state.animations.dig = None;
+        assert!(dust(&world, &poses).is_empty(), "no dig clock, no ground");
     }
 
     #[test]

@@ -713,9 +713,44 @@ After beeb9a11 ("Minecraft wardens fire sonic booms and spread darkness").
 - **Vendored files:** patched (added in group warden-live) `entities/src/world/families/deep_dark/wardens.rs`, `wardens/brain.rs`, `wardens/tests.rs`.
 - **Test steps:** with commit 2.
 
+### 2. Minecraft wardens' hearts beat and their digging throws up the ground
+
+After 7f221998 ("Minecraft wardens are drawn like vanilla").
+
+- **Vanilla (javap on the 26.3 jar):**
+  - `Warden.tick` on the client, after `Monster.tick`: when `tickCount % getHeartBeatDelay() == 0` the heart is set to 10 and, unless the warden is silent, `level.playLocalSound(x, y, z, entity.warden.heartbeat, its sound source, 5.0, getVoicePitch(), false)`, so each client plays it for itself. Then, by pose: emerging runs `clientDiggingParticles(emergeAnimationState)`, digging `clientDiggingParticles(diggingAnimationState)`.
+  - `clientDiggingParticles(state)`: while `state.getTimeInMillis(tickCount) < 4500` (`DIGGING_PARTICLES_DURATION` 4.5 s) and the block it stands on (`getBlockStateOn`) does not render `INVISIBLE`, 30 (`DIGGING_PARTICLES_AMOUNT`) `block` particles of that block at `(x + Mth.randomBetween(random, -0.7, 0.7), y, z + Mth.randomBetween(random, -0.7, 0.7))` (`DIGGING_PARTICLES_OFFSET`) with zero speed.
+  - `entity.warden.tendril_clicks` (5, the voice pitch) is a server sound of `Warden$VibrationUser.onReceiveVibration`, made with entity event 61, which starts the tendrils on the clients.
+- **Changed:**
+  - Terrain `families/deep_dark/wardens.rs`: `client_effects` plays `entity.warden.heartbeat` at 5 with a voice pitch (`(a - b) × 0.2 + 1`) at the warden's client position on every beat of its client tick count and shown anger (`wardens::heart_beats`, the rule that lights the heart since commit 1), on the host and on every friend from their own view. `block_dust` (D's registry hook, as the breezes use it) gives 30 one-bit `BlockDust`s at ±0.7 around the feet each tick while the emerge or dig clock is under 4.5 s.
+  - The tendril clicks needed nothing new: the server's click and the tendril clock start in the same tick (`warden_hears`, W4 and commit 1); a test now checks it.
+- **Tests:**
+  - Vendored entities `wardens::tests::its_tendrils_click_in_the_tick_they_rise` (one click at 5 from the warden, pitch 0.8 to 1.2, the tendril clock started that tick).
+  - Terrain `families::deep_dark::wardens::tests`: `its_heart_beats_with_the_shown_anger_for_every_viewer` (beats at client ticks 40, 80 and 120, then every 10 ticks once the shown anger is 80; at 5 from the warden, pitch 0.8 to 1.2; none for a warden that left or one the viewer has not seen), `digging_and_emerging_throw_up_thirty_bits_of_ground_a_tick_for_four_and_a_half_seconds` (ticks 0 to 89 of each clock: 30 bits of the block under it, each its own spot within 0.7; none from tick 90, when standing or without the clock; new spots every tick).
+  - Runs: minecraftoss-entities 584 (all); minecraft_terrain's warden, registry and cage tests (71, filtered on `warden`, `families::` and `every_registered_kind`; the whole crate ran green at 1718 with commit 1, and this commit changes only the warden's two client hooks); `check -p launcher` green.
+- **Decisions:**
+  - The bits' offsets come from a random seeded by the warden's id and its client tick count: D's `block_dust` hook passes no random, and vanilla draws them from the client warden's own random.
+  - The block is the shared hook's: the block at its feet when that is not air (a snow layer, a carpet), else the one below; air, water, lava and moving pistons throw nothing (vanilla: the block it stands on, nothing for an invisible render shape).
+  - The clock is compared as vanilla compares it, `(tick count - start) × 50 < 4500`, so ticks 0 to 89 of the clock. The fork's clock starts at the server tick of the pose change and the hook runs from the next client tick; vanilla's client starts its clock when the pose arrives and throws from its next tick, which gives one tick less at the end (89 ticks against 90).
+  - The heartbeat follows each viewer's own client tick count of the warden, so the host and a friend hear it at their own moments, as two vanilla clients do. The fork's mobs have no silent flag, so it always plays.
+- **Vendored files:** patched (added in group warden-live) `entities/src/world/families/deep_dark/wardens/tests.rs`.
+- **Test steps (W6; survival, Normal, open ground at dusk or night so the glowing layers show; no night vision, see W0; these also show W4 and W5's steps w11 to w17, which wait for this group to be seen):**
+  1. Use a warden egg 8 blocks away: a dark blue-green giant, over 3 blocks tall with two horn-like tendrils, glowing cyan spots on its head, arms and legs, two sets of patches on its body and legs that slowly pulse in turn, and a heart in its chest that glows with each beat you hear, about every 2 s. **w18_warden_model**
+  2. Crouch and throw a snowball beside it: its tendrils click, twitch and glow for half a second. It walks there and sniffs with its head raised for about 4 s. **w19_warden_sniff**
+  3. Shoot it with an arrow: it rears up and roars for about 4 s, and its heartbeat quickens to one every half second while it is angry. Its swing is a fast two-arm slam; before a sonic boom it bends forward and its chest opens. **w20_warden_roar_pose**
+  4. Use another egg and leave that warden alone for a minute (more than 24 blocks away, making no noise near it): it sinks into the ground over 5 s, throwing up bits of the ground for the first 4.5 s. A warden summoned by a shrieker (W7's steps 1 to 4, at midnight) climbs out of the ground the same way over almost 7 s; wardens from eggs and `/summon` never climb out, as in vanilla. **w21_warden_emerge**
+  5. In creative (`/gamemode creative`), place the spawner and use a warden egg on it: a small warden turns in the cage with its glowing layers. `/gamemode survival` afterwards.
+  6. Friend window: the friend sees the same poses at the same moments (sniff, roar, swing, boom, digging in and climbing out), the same glow and the same bits of ground, and hears the heartbeat from the warden. **w22_friend_warden_render**
+
+Kit (W6's kit, 22 stacks; it also serves w11 to w17):
+
+```
+IW4L_MINECRAFT_KIT=minecraft:warden_spawn_egg*4,minecraft:cow_spawn_egg*8,minecraft:zombie_spawn_egg*4,minecraft:snowball*16,minecraft:white_wool*64,minecraft:torch*64,minecraft:diamond_sword+sharpness=5,minecraft:shield,minecraft:bow+power=5,minecraft:arrow*64,minecraft:milk_bucket,minecraft:cooked_beef*32,minecraft:diamond_chestplate+protection=4,minecraft:diamond_helmet,minecraft:diamond_leggings,minecraft:diamond_boots,minecraft:totem_of_undying,minecraft:golden_apple*8,minecraft:deepslate*64,minecraft:cobblestone*64,minecraft:ender_pearl*16,minecraft:spawner
+```
+
 ## Combined kit
 
-One kit for the track's main steps (27 stacks): darkness (w01, w03; step 2 needs a cave or torches), sensors (w04 to w06), block, player and gun vibrations (w07 to w10), amethyst (w08), shriekers (w23, w26; the summoning shrieker comes from `/setblock`), catalysts (w25) and the friend leaving with a chest open (w27). The steps that need other items (lava and powder snow in darkness step 5, the trident, trapdoors, gates, plates, the bell, candles, pistons, sheep, shears, horses, the totem) use their commit's own kit line above.
+One kit for the track's main steps (27 stacks): darkness (w01, w03; step 2 needs a cave or torches), sensors (w04 to w06), block, player and gun vibrations (w07 to w10), amethyst (w08), shriekers (w23, w26; the summoning shrieker comes from `/setblock`), catalysts (w25) and the friend leaving with a chest open (w27). The steps that need other items (lava and powder snow in darkness step 5, the trident, trapdoors, gates, plates, the bell, candles, pistons, sheep, shears, horses, the totem) use their commit's own kit line above. The warden steps (w11 to w22) use W6's kit line (group warden-render, commit 2).
 
 ```
 IW4L_MINECRAFT_KIT=minecraft:sculk_sensor*16,minecraft:calibrated_sculk_sensor*4,minecraft:sculk_shrieker*8,minecraft:sculk_catalyst*4,minecraft:amethyst_block*4,minecraft:comparator*4,minecraft:redstone*64,minecraft:redstone_lamp*4,minecraft:lever*4,minecraft:white_wool*64,minecraft:white_carpet*16,minecraft:oak_door*2,minecraft:oak_button*4,minecraft:chest*2,minecraft:water_bucket,minecraft:note_block*2,minecraft:snowball*16,minecraft:tnt*4,minecraft:flint_and_steel,minecraft:cow_spawn_egg*16,minecraft:chicken_spawn_egg*4,minecraft:apple*16,minecraft:milk_bucket,minecraft:diamond_helmet,minecraft:diamond_sword+sharpness=5,minecraft:experience_bottle*16,minecraft:cobblestone*64
@@ -759,6 +794,8 @@ Group warden-fight, commit 2: `EntitySnapshot` (sent to friends inside `ToClient
 
 Group warden-render, commit 1: no message or codec change. The warden's `FamilyShow` (which friends already decode) is laid out anew: the pose moves into the flags (bits 8 to 10), flag bits 0 to 6 say which of the seven animation clocks run, value 0 holds the client anger and values 1 to 7 the ticks since each clock started. A friend on an older build would read the new values wrongly, so it rides in the protocol bump group warden-fight already needs at the next release.
 
+Group warden-render, commit 2: no message or codec change (the heartbeat and the bits of ground are each viewer's own, from commit 1's `FamilyShow`).
+
 ## State doc changes
 
 - `docs/MULTIPLAYER.md`: a friend's `PlayerView` is also sent again when an effect is given again with a longer duration (`views::lengthened`), and the friend restarts its effect count-down for every view it receives, also one equal to the last (`RemoteWorld.player_views`).
@@ -773,3 +810,4 @@ Group warden-render, commit 1: no message or codec change. The warden's `FamilyS
 - `docs/MINECRAFT-SURVIVAL.md` (group warden-fight, commit 1): a warden angry at a player or a mob (80 or more) roars at it for about 4 s and then fights it: a swing of 30 (16 on Easy, 45 on Hard) with a heavy knockback that knocks a raised shield down for 5 s, one swing a second at most. Whatever hurts a warden makes it angry (100); a hit from within 5 blocks or a mob's bite makes it fight at once, an arrow or an MW2 bullet from farther makes it roar and come.
 - `docs/MINECRAFT-SURVIVAL.md` (group warden-fight, commit 2): a fighting warden fires a sonic boom at a target within 15 blocks across and 20 up or down, at most every 5 s (its first 10 s after it picks the target, and not within 2 s of a swing): it charges for about 1.7 s and a line of shock-wave rings hits the target through walls for 10 (6 on Easy, 15 on Hard) past armour, Protection and a raised shield, and throws it back. Every 6 s it gives players in survival or adventure within 20 blocks 13 s of darkness (renewed once less than 10 s is left), so its surroundings stay dark.
 - `docs/MINECRAFT-SURVIVAL.md` (group warden-render, commit 1): wardens are drawn like vanilla for the host, friends and in spawner cages: the model with its glowing layers (cyan spots on the head, arms and legs, slowly pulsing patches on the body and legs, the tendrils lighting up when they twitch, the heart glowing with each beat, faster when angry) and the six animations (climbing out, digging in, roaring, sniffing, the swing and the sonic boom), seen by friends at the same moments.
+- `docs/MINECRAFT-SURVIVAL.md` (group warden-render, commit 2): every player hears a warden's heartbeat (every 2 s, every half second when it is angry) and sees bits of the ground thrown up while it digs in or climbs out.

@@ -985,3 +985,31 @@ fn a_warden_starts_its_animations_with_its_poses_swings_booms_and_clicks() {
     copy.set_starts(swung.starts());
     assert_eq!(copy, swung);
 }
+
+#[test]
+fn its_tendrils_click_in_the_tick_they_rise() {
+    let mut world = EntityWorld::default();
+    let id = calm_at(&mut world, at(0.5, 0.5));
+    let players = [player_at(1, at(-6.5, 0.5))];
+    for _ in 0..5 {
+        world.tick_with_players(&mut Cave, &players);
+    }
+    world.take_sounds();
+    world.warden_hears(id, (-6, 64, 0), Some(Target::Player(1)), None, &players);
+    let mob = warden_of(&world, id);
+    let (now, position) = (mob.core.tick_count, mob.core.body.position);
+    assert_eq!(mob.state.animations.tendril, Some(now));
+    let clicks: Vec<_> = world
+        .take_sounds()
+        .into_iter()
+        .filter(|sound| sound.event == "entity.warden.tendril_clicks")
+        .collect();
+    assert_eq!(clicks.len(), 1);
+    assert_eq!((clicks[0].volume, clicks[0].position), (5.0, position));
+    assert!((0.8..=1.2).contains(&clicks[0].pitch));
+    assert_eq!(
+        tendril_animation(Some(0), 1.0),
+        1.0,
+        "fully up as the tick of the click ends"
+    );
+}
