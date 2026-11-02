@@ -844,6 +844,7 @@ pub struct MonsterAi {
     pub no_jump_delay: i32,
     /// `LivingEntity.jumping` as the jump control last set it.
     pub jumping: bool,
+    pub still: Option<fn(&MonsterGoalContext) -> bool>,
 }
 
 /// The creeper's AI (the name the creeper code and gates use).
@@ -1043,6 +1044,7 @@ impl MonsterAi {
             sideways: 0.0,
             no_jump_delay: 0,
             jumping: false,
+            still: None,
         }
     }
 

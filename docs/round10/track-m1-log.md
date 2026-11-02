@@ -25,6 +25,7 @@ Files under `third_party/minecraftoss` this track patched or added.
 - Added (pandas-live 1): `entities/src/world/families/land/pandas.rs`, `entities/src/world/families/land/pandas/ai.rs`, `entities/src/world/families/land/pandas/tests.rs` (test only). Changed again: `entities/src/world/families/land.rs` (registration).
 - Changed again (pandas-live 2): `world/src/natural_spawner/families/land.rs` (the panda row, `finalize_panda`, its test; the rows are named consts).
 - Changed again, no new file (pandas-drawn 1): `entities/src/world/families/land/pandas.rs` (`Amount`, the sit, back and roll amounts, `step_amounts`, `animate`), `entities/src/world/families/land/pandas/ai.rs` (the sneeze, eat and roll counters, `eating()` in place of the `eating` flag), `entities/src/world/families/land/pandas/tests.rs` (its test).
+- Patched (pandas-eating 1, hook H1): `entities/src/monster_ai.rs` (`MonsterAi.still` and its `None` in `of_kind`), `entities/src/world.rs` (the check in `monster_ai_step`), `entities/src/world/families/tests.rs` (its test).
 
 ## Hooks
 
@@ -39,6 +40,7 @@ Root hooks this track added (M10, "Hooks this track adds").
 - `World::biome_in_tag(pos, tag)` (rabbits-live 3): `player/src/lib.rs` after `biome`, false by default; the server's `MobWorld` answers it after its `biome` (`server_mobs.rs`) through `Level::biome_in_tag_at`. M2's tadpoles use it under this name.
 - **"The registry's texture test checks the pests' textures first, not the whole list"** (rabbits-drawn, before commit 1): not a hook, but a root-file change in its own commit. D0's `families::tests::a_registered_mob_is_tracked_textured_and_shadowed_through_its_family` (terrain root `families/tests.rs`) compared `textures()` with exactly the silverfish and endermite textures, so the first family with a texture of its own (the rabbit) fails it. It now compares `textures()[..2]`: `pests` comes first in the root's order, so the test still proves their two textures and lets every later family add its own. Every other round 10 track with a drawn family needs the same one-line change; whichever merges second keeps the identical line.
 - **"Registered Minecraft mobs can land their melee attacks their own way"** (polar-bears-live 1, `monster_ai.rs`): `type MeleeCheck = fn(&mut MonsterGoalContext, &dyn World, TargetInfo)`; `MeleeAttackGoal::tick_with(ctx, world, Option<MeleeCheck>)` is the old `tick_world` body, whose inline attack (cooldown, reach, sight, swing, `attack`, the iron golem's damage roll) runs only with `None`, and `tick_world` calls it with `None`; `MeleeAttackGoal::checked(self, check)` builds `CheckedMeleeAttackGoal { goal, check }`, which hands every `Goal` method to the goal and ticks through `tick_with(.., Some(check))`; `MeleeState` gains `pub(crate)` `ticks_until_attack()`, `reset_attack_cooldown()` (20, `adjustedTickDelay(20)` of an every-tick goal) and `is_time_to_attack()`. No field was added to `MeleeAttackGoal`, so every literal (the ten in the crate, the rabbit's and probe's, M2's dolphins) stays valid.
+- **H1 "Registered Minecraft mobs can hold still while their goals run"** (pandas-eating 1): `MonsterAi.still: Option<fn(&MonsterGoalContext) -> bool>` (`monster_ai.rs`, after `jumping`; `None` in `of_kind`, the struct's only literal). `monster_ai_step` (`world.rs`) asks it after `tick_goals`, the navigation and the input fade; when it answers true the move control does not tick, so the yaw, the speed and the fading inputs stay as they are and the move control keeps its operation (vanilla `PandaMoveControl.tick`: `if (canPerformAction()) super.tick()`). It is not a `MonsterSpec` field, so no other track's spec literal changes. A family sets it right after it builds its `MonsterAi`; pandas use it now, foxes (`FoxMoveControl`) later.
 
 ## Protocol
 
@@ -726,3 +728,20 @@ After 85551190.
 ```
 IW4L_MINECRAFT_KIT=minecraft:panda_spawn_egg*16,minecraft:bamboo*64,minecraft:iron_sword,minecraft:spawner,minecraft:cooked_beef*16
 ```
+
+### Group pandas-eating
+
+#### 1. Registered Minecraft mobs can hold still while their goals run
+
+After b6ec8731.
+
+- **javap this round:** `Panda$PandaMoveControl.tick` is `if (panda.canPerformAction()) super.tick();` and nothing else, so a panda that cannot act keeps its yaw, its speed and its inputs (which `LivingEntity` fades by 0.98 a tick), and its `MoveControl` keeps its operation and wanted position for when it can act again.
+- **Changed (vendored entities crate):**
+  - `monster_ai.rs`: `MonsterAi.still: Option<fn(&MonsterGoalContext) -> bool>` after `jumping`, `None` in `of_kind`.
+  - `world.rs` (`monster_ai_step`): after the goals, the navigation and the 0.98 fade, a mob whose `still` answers true gets a `MoveFrame` of its own yaw, speed and inputs instead of a `move_control.tick`. Every other mob runs exactly as before.
+- **Tests added:** `world::families::tests::a_registered_mob_held_still_keeps_its_heading_and_drifts_to_a_stop` (on the probe with its goals removed, a wanted position to the east and an input of 0.3: free, it turns to 270 and stops the next tick; held, it keeps yaw 0 for 300 ticks, its input fades by exactly 0.98 a tick, it moves only straight ahead, speeds up, then slows every tick to under 0.001 a tick, and its move control still holds `MoveTo`; let go, it turns east and walks at 0.3 at once).
+- **Decisions:** as M1-3 decision 1: the hook is a field on `MonsterAi` set by the family, checked after the goals, not a `MonsterSpec` field (which would break every other track's spec literal) and not a panda AI step of its own (which would copy `monster_ai_step` and D0's sync). The check sits after the input fade, as vanilla's `applyInput` fades the inputs whether or not the move control ticks.
+- **Runs:** `test -p minecraftoss-entities --locked --lib families::tests` (22 passed), `check -p launcher --locked` on this commit alone (green; only the old render_frame and skate warnings). The new test keeps the root test file's `rustfmt --check` output to the two diffs it already had.
+- **Test steps:** nothing new to see; no mob holds still until the pandas sit down (commit 3). The silverfish and endermite steps of rabbits-live 1 still hold.
+- **Kit:** none.
+
