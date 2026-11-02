@@ -594,7 +594,7 @@ After e3495a40 ("Minecraft wardens live in the entity world").
   8. Friend window: the friend sees the warden stand, walk and sniff in the same place (and climb out of the ground after a summon); the friend's steps make its tendrils click and it walks to the friend. **w13_friend_warden**
 
 ```
-IW4L_MINECRAFT_KIT=minecraft:warden_spawn_egg*4,minecraft:cow_spawn_egg*8,minecraft:zombie_spawn_egg*4,minecraft:snowball*16,minecraft:white_wool*64,minecraft:torch*64,minecraft:diamond_sword+sharpness=5,minecraft:shield,minecraft:bow+power=5,minecraft:arrow*64,minecraft:milk_bucket,minecraft:cooked_beef*32,minecraft:diamond_chestplate+protection=4,minecraft:diamond_helmet,minecraft:diamond_leggings,minecraft:diamond_boots,minecraft:totem_of_undying,minecraft:golden_apple*8,minecraft:deepslate*64,minecraft:cobblestone*64,minecraft:ender_pearl*16
+IW4L_MINECRAFT_KIT=minecraft:warden_spawn_egg*4,minecraft:cow_spawn_egg*8,minecraft:zombie_spawn_egg*4,minecraft:snowball*16,minecraft:white_wool*64,minecraft:torch*64,minecraft:diamond_sword+sharpness=5,minecraft:shield,minecraft:trident,minecraft:milk_bucket,minecraft:cooked_beef*32,minecraft:diamond_chestplate+protection=4,minecraft:diamond_helmet,minecraft:diamond_leggings,minecraft:diamond_boots,minecraft:totem_of_undying,minecraft:golden_apple*8,minecraft:deepslate*64,minecraft:cobblestone*64,minecraft:ender_pearl*16
 ```
 
 ## Group warden-fight
@@ -668,18 +668,18 @@ After 4f1e81de ("Minecraft wardens roar, sniff and hit hard enough to knock shie
   - The chest offset is 1.6 (vanilla's 1.6f is 1.600000024); the running boom (`boom_until`) is not saved, as vanilla saves no running behaviour, but its sound delay and cooldown are.
 - **Vendored files:** patched (added in group warden-live) `entities/src/world/families/deep_dark/wardens.rs`, `wardens/brain.rs`, `wardens/tests.rs`.
 - **Test steps (survival, Normal, flat open ground at dusk; full diamond armour with the Protection IV chestplate, the shield in the offhand, golden apples in the hotbar; the warden is drawn from W6 on, so run these with the segment's release; steps 1, 2 and 6 also test commit 1):**
-  1. Use a warden egg 12 blocks away and hit the warden with an arrow: it roars (a long, deep roar, about 4 s) and comes at you. **w14_warden_roar**
+  1. Use a warden egg 12 blocks away and shoot it once with the MW2 gun (the fork's players have no bow): it roars (a long, deep roar, about 4 s) and comes at you. **w14_warden_roar**
   2. Raise the shield as it swings: the hit lands on the shield and the shield goes down for 5 s. A hit without the shield takes about 6 of your 10 hearts even in diamond armour. One swing a second at most. **w15_warden_shield**
   3. Its first boom comes no sooner than 10 s after the roar, and 2 s after a swing (every swing sets the boom's wait to 2 s, also when more was left). Run 10 blocks away and hide behind a stone wall (a full wall too): it charges with a rising sound for about 1.7 s, then a line of shock-wave rings runs from its chest to your eyes and hits you through the wall: 5 hearts through armour and the raised shield, and you fly back. While it charges it does not swing. **w16_sonic_boom**
   4. Stay within 20 blocks of it: your view goes dark within 6 s and stays dark, pulsing (W1's darkness), while you stay near; walk 25 blocks away and it lasts up to 13 s more. In creative it never darkens you.
   5. Put the totem in the offhand and let a boom that would kill you land: the totem pops. Then take it out and die to a boom: the chat says "<you> was obliterated by a sonically-charged shriek".
-  6. Shoot it with an MW2 gun from 20 blocks: it roars and comes after you.
+  6. Away from the first warden, use another egg and throw the trident at the new one from 10 blocks: it roars first and then comes after you (a hit from farther than 5 blocks angers it without starting the fight at once). Shot with the MW2 gun from 20 blocks, a fresh warden does the same.
   7. Friend window: the friend sees the roar, the swings and the boom's rings, gets darkness when near it, and a boom aimed at the friend hurts and pushes the friend. **w17_friend_warden_fight**
 
-Kit (W4's kit, 21 stacks):
+Kit (W4's kit, 20 stacks):
 
 ```
-IW4L_MINECRAFT_KIT=minecraft:warden_spawn_egg*4,minecraft:cow_spawn_egg*8,minecraft:zombie_spawn_egg*4,minecraft:snowball*16,minecraft:white_wool*64,minecraft:torch*64,minecraft:diamond_sword+sharpness=5,minecraft:shield,minecraft:bow+power=5,minecraft:arrow*64,minecraft:milk_bucket,minecraft:cooked_beef*32,minecraft:diamond_chestplate+protection=4,minecraft:diamond_helmet,minecraft:diamond_leggings,minecraft:diamond_boots,minecraft:totem_of_undying,minecraft:golden_apple*8,minecraft:deepslate*64,minecraft:cobblestone*64,minecraft:ender_pearl*16
+IW4L_MINECRAFT_KIT=minecraft:warden_spawn_egg*4,minecraft:cow_spawn_egg*8,minecraft:zombie_spawn_egg*4,minecraft:snowball*16,minecraft:white_wool*64,minecraft:torch*64,minecraft:diamond_sword+sharpness=5,minecraft:shield,minecraft:trident,minecraft:milk_bucket,minecraft:cooked_beef*32,minecraft:diamond_chestplate+protection=4,minecraft:diamond_helmet,minecraft:diamond_leggings,minecraft:diamond_boots,minecraft:totem_of_undying,minecraft:golden_apple*8,minecraft:deepslate*64,minecraft:cobblestone*64,minecraft:ender_pearl*16
 ```
 
 ## Group warden-render
@@ -737,15 +737,15 @@ After 7f221998 ("Minecraft wardens are drawn like vanilla").
 - **Test steps (W6; survival, Normal, open ground at dusk or night so the glowing layers show; no night vision, see W0; these also show W4 and W5's steps w11 to w17, which wait for this group to be seen):**
   1. Use a warden egg 8 blocks away: a dark blue-green giant, over 3 blocks tall with two horn-like tendrils, glowing cyan spots on its head, arms and legs, two sets of patches on its body and legs that slowly pulse in turn, and a heart in its chest that glows with each beat you hear, about every 2 s. **w18_warden_model**
   2. Crouch and throw a snowball beside it: its tendrils click, twitch and glow for half a second. It walks there and sniffs with its head raised for about 4 s. **w19_warden_sniff**
-  3. Shoot it with an arrow: it rears up and roars for about 4 s, and its heartbeat quickens to one every half second while it is angry. Its swing is a fast two-arm slam; before a sonic boom it bends forward and its chest opens. **w20_warden_roar_pose**
+  3. Shoot it once with the MW2 gun: it rears up and roars for about 4 s, and its heartbeat quickens to one every half second while it is angry. Its swing is a fast two-arm slam; before a sonic boom it bends forward and its chest opens. **w20_warden_roar_pose**
   4. Use another egg and leave that warden alone for a minute (more than 24 blocks away, making no noise near it): it sinks into the ground over 5 s, throwing up bits of the ground for the first 4.5 s. A warden summoned by a shrieker (W7's steps 1 to 4, at midnight) climbs out of the ground the same way over almost 7 s; wardens from eggs and `/summon` never climb out, as in vanilla. **w21_warden_emerge**
   5. In creative (`/gamemode creative`), place the spawner and use a warden egg on it: a small warden turns in the cage with its glowing layers. `/gamemode survival` afterwards.
   6. Friend window: the friend sees the same poses at the same moments (sniff, roar, swing, boom, digging in and climbing out), the same glow and the same bits of ground, and hears the heartbeat from the warden. **w22_friend_warden_render**
 
-Kit (W6's kit, 22 stacks; it also serves w11 to w17):
+Kit (W6's kit, 21 stacks; it also serves w11 to w17):
 
 ```
-IW4L_MINECRAFT_KIT=minecraft:warden_spawn_egg*4,minecraft:cow_spawn_egg*8,minecraft:zombie_spawn_egg*4,minecraft:snowball*16,minecraft:white_wool*64,minecraft:torch*64,minecraft:diamond_sword+sharpness=5,minecraft:shield,minecraft:bow+power=5,minecraft:arrow*64,minecraft:milk_bucket,minecraft:cooked_beef*32,minecraft:diamond_chestplate+protection=4,minecraft:diamond_helmet,minecraft:diamond_leggings,minecraft:diamond_boots,minecraft:totem_of_undying,minecraft:golden_apple*8,minecraft:deepslate*64,minecraft:cobblestone*64,minecraft:ender_pearl*16,minecraft:spawner
+IW4L_MINECRAFT_KIT=minecraft:warden_spawn_egg*4,minecraft:cow_spawn_egg*8,minecraft:zombie_spawn_egg*4,minecraft:snowball*16,minecraft:white_wool*64,minecraft:torch*64,minecraft:diamond_sword+sharpness=5,minecraft:shield,minecraft:trident,minecraft:milk_bucket,minecraft:cooked_beef*32,minecraft:diamond_chestplate+protection=4,minecraft:diamond_helmet,minecraft:diamond_leggings,minecraft:diamond_boots,minecraft:totem_of_undying,minecraft:golden_apple*8,minecraft:deepslate*64,minecraft:cobblestone*64,minecraft:ender_pearl*16,minecraft:spawner
 ```
 
 ## Review of segment w2
@@ -777,12 +777,21 @@ After f1897b11 ("A Minecraft warden climbing out or digging in still feels what 
 - **Tests:** none added. minecraftoss-entities 585, minecraftoss-world 136, minecraft_terrain 1720 (3 ignored) and minecraft_survival 819 + 1 pass; `check -p launcher` is green. The segment's six new files pass `rustfmt --check` and its added lines hold no comments.
 - **Test steps:** none (no behaviour changed).
 
+### 2. Track W's warden test steps use the MW2 gun and a trident instead of a bow
+
+After 8da9f5c1 ("Track W's warden code passes clippy").
+
+- **Cause:** the owner's steps w14 (group warden-fight, commit 2, step 1) and w20 (group warden-render, commit 2, step 3) asked to hit the warden with an arrow, and three kit lines carried a bow with arrows, but the fork's players cannot shoot a bow (only mobs do; see group vibrations, commit 3).
+- **Changed (this log only):** w14 shoots the warden once with the MW2 gun from 12 blocks, w20 too; warden-fight's step 6 throws the trident from 10 blocks (a player's projectile from farther than 5 blocks angers it by 100 without starting the fight at once, `Hurt` with `DamageSourceKind::Projectile` from `player_projectile_hurt`) and keeps the MW2 shot from 20 blocks. The kit lines of warden-live commit 2, warden-fight commit 2 and warden-render commit 2 carry `minecraft:trident` in place of the bow and the arrows (20 and 21 stacks). The combined kit below is now segment w2's (the same as W6's line); segment w1's steps and kits are in `docs/round10/release-4-tests.md`.
+- **Tests:** none (no code changed).
+- **Test steps:** the corrected ones above (w14, w20 and warden-fight's step 6).
+
 ## Combined kit
 
-One kit for the track's main steps (27 stacks): darkness (w01, w03; step 2 needs a cave or torches), sensors (w04 to w06), block, player and gun vibrations (w07 to w10), amethyst (w08), shriekers (w23, w26; the summoning shrieker comes from `/setblock`), catalysts (w25) and the friend leaving with a chest open (w27). The steps that need other items (lava and powder snow in darkness step 5, the trident, trapdoors, gates, plates, the bell, candles, pistons, sheep, shears, horses, the totem) use their commit's own kit line above. The warden steps (w11 to w22) use W6's kit line (group warden-render, commit 2).
+One kit for segment w2's steps (21 stacks, the same as W6's kit line): the wardens from eggs, `/summon` and a summoning shrieker (w11 to w13, w24; the shrieker comes from `/setblock`), the fight (w14 to w17; the MW2 gun is the loadout's), the model and its animations (w18 to w22; the spawner in creative) and the touch while it climbs out (w28). Players in the fork have no bow, so the trident and the MW2 gun stand in for the arrows of vanilla's steps. Segment w1's steps (w01 to w10, w23, w25 to w27) went into release 4 with their kits (`docs/round10/release-4-tests.md`), and each of their commits keeps its own kit line above.
 
 ```
-IW4L_MINECRAFT_KIT=minecraft:sculk_sensor*16,minecraft:calibrated_sculk_sensor*4,minecraft:sculk_shrieker*8,minecraft:sculk_catalyst*4,minecraft:amethyst_block*4,minecraft:comparator*4,minecraft:redstone*64,minecraft:redstone_lamp*4,minecraft:lever*4,minecraft:white_wool*64,minecraft:white_carpet*16,minecraft:oak_door*2,minecraft:oak_button*4,minecraft:chest*2,minecraft:water_bucket,minecraft:note_block*2,minecraft:snowball*16,minecraft:tnt*4,minecraft:flint_and_steel,minecraft:cow_spawn_egg*16,minecraft:chicken_spawn_egg*4,minecraft:apple*16,minecraft:milk_bucket,minecraft:diamond_helmet,minecraft:diamond_sword+sharpness=5,minecraft:experience_bottle*16,minecraft:cobblestone*64
+IW4L_MINECRAFT_KIT=minecraft:warden_spawn_egg*4,minecraft:cow_spawn_egg*8,minecraft:zombie_spawn_egg*4,minecraft:snowball*16,minecraft:white_wool*64,minecraft:torch*64,minecraft:diamond_sword+sharpness=5,minecraft:shield,minecraft:trident,minecraft:milk_bucket,minecraft:cooked_beef*32,minecraft:diamond_chestplate+protection=4,minecraft:diamond_helmet,minecraft:diamond_leggings,minecraft:diamond_boots,minecraft:totem_of_undying,minecraft:golden_apple*8,minecraft:deepslate*64,minecraft:cobblestone*64,minecraft:ender_pearl*16,minecraft:spawner
 ```
 
 ## Protocol
