@@ -115,7 +115,7 @@ fn turn(
     let mut tag = turned_tag(&saved, into, held);
     if into == WITCH {
         let at = |tag: &Tag| {
-            let pos = tag.get("Pos").and_then(Tag::as_list).unwrap_or_default();
+            let pos = tag.get("Pos").and_then(Tag::as_list).unwrap_or(&[]);
             let axis = |i: usize| pos.get(i).and_then(Tag::as_f64).unwrap_or(0.0);
             format!("x={:.2}, y={:.2}, z={:.2}", axis(0), axis(1), axis(2))
         };

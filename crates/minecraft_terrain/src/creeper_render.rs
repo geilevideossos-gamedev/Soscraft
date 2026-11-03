@@ -127,7 +127,7 @@ pub fn append_creeper_power<'a>(
             cube_scaled(&mut shell, mob.feet, rotation, scale, [0.0, 0.0, 1.0, 1.0], 15.0, 15.0, from, to, uv, pivot, pose, [1.0; 3], [64., 32.], Some(size), false);
         }
         let offset = (mob.age_in_ticks * 0.01) % 1.0;
-        for quad in shell.vertices.chunks_exact(4) {
+        for quad in shell.vertices.as_chunks::<4>().0 {
             append_swirl_quad(mesh, quad, offset, region);
         }
     }
@@ -189,7 +189,9 @@ mod tests {
 
     fn quad_area(mesh: &ChunkMesh) -> f32 {
         mesh.vertices
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .map(|q| {
                 let [a, b, c, d] = [0, 1, 2, 3].map(|i| Vec3::from_array(q[i].position));
                 ((b - a).cross(c - a).length() + (c - a).cross(d - a).length()) * 0.5

@@ -501,6 +501,19 @@ After 6b7491c7 ("Minecraft phantoms flap and trail specks from their wings like 
 IW4L_MINECRAFT_KIT=minecraft:red_bed,minecraft:cobblestone*64,minecraft:diamond_sword+looting=3,minecraft:shield,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:golden_apple*8,minecraft:cooked_beef*32,minecraft:water_bucket
 ```
 
+### Final verification
+
+#### 1. Track M3's lightning and swirl code passes clippy
+
+After 740c204e ("Track M3's segment m3a log gets one combined kit line").
+
+- **Clippy** on the six crates the segment touched (`minecraft_survival`, `minecraft_terrain`, `render_anim`, `render_gpu`, `minecraftoss-entities`, `minecraftoss-world`, `--all-targets`, `-A clippy::approx_constant`): three warnings on the segment's own lines, all in terrain; every other warning is older.
+- **Changed (terrain):** `creeper_render.rs`: the swirl's quads (`append_creeper_power`) and the test helper `quad_area` walk `as_chunks::<4>()` instead of `chunks_exact(4)` (`clippy::chunks_exact_to_as_chunks`). `lightning.rs`: the villager line's `Pos` falls back to `unwrap_or(&[])` (`clippy.toml` disallows `unwrap_or_default`). Nothing a player sees changes.
+- **Tests added:** none; the swirl and lightning tests cover the lines.
+- **Runs:** clippy on `minecraft_terrain` again (none of the three left), `test -p minecraft_terrain -p minecraft_survival -p render_anim -p render_gpu -p minecraftoss-entities -p minecraftoss-world --locked --no-fail-fast` (terrain 1762 passed with 3 ignored, survival 837 and its `vanilla_world` 1, entities 585, world 143, render_anim 224, render_gpu 42; doc-tests empty), `check -p launcher --locked` (green; only the old render_frame and skate warnings).
+- **Test steps:** nothing new to see; the steps of lightning-glow 1 (m3-glow-1 to m3-glow-5) and lightning-turns 1 step 4 (m3-turn-4, the villager that becomes a witch, whose turn writes the line with `Pos`) cover these lines.
+- **Kit:** none new (the combined kit below).
+
 ## Combined kit
 
 The whole track's kit (all segments, mostly the mobs still to come) is in `docs/round10/track-m3.md` (M30, "Combined kit").
