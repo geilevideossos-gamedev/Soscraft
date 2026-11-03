@@ -21,6 +21,7 @@ const MAGIC_NUMBER: i32 = 289;
 pub struct SpawnPlayer {
     pub pos: [f64; 3],
     pub spectator: bool,
+    pub alive: bool,
 }
 
 /// An entity in the level, as `createState` counts it and spawning's
@@ -257,7 +258,7 @@ impl CreatureSpawns {
         for chunk in order {
             level.add_inhabited_time(chunk);
             if (input.entity_ticking_range)(chunk) && context.raining && context.thundering && level.random().next_i32_bound(100_000) == 0 {
-                level.note_unsupported("lightning from thunder");
+                self.strike_thunder(level, context, input, chunk);
             }
             if !categories.is_empty() && (context.can_spawn_in_chunk)(chunk) {
                 for &category in &categories {

@@ -16,6 +16,8 @@ Files under `third_party/minecraftoss` this track patched or added.
 - Patched (phantoms-live 1): `entities/src/world/families/night.rs` (`pub mod phantoms;` and the `family_group!` entry), `world/src/natural_spawner/families/night.rs` (the phantom row, its rule, its finalize and its test).
 - Changed again (phantoms-live 2): `entities/src/world/families/night/phantoms.rs`, `night/phantoms/goals.rs` and `night/phantoms/tests.rs` (burning, the cat search and their tests).
 - Changed again (phantoms-spawner 1): `world/src/natural_spawner/families/night.rs` (`CreatureSpawns::spawn_phantoms` and its test; the test level gains darkness, sky light, sea level and a block layer up high). Patched: `world/src/level/spawning.rs` (`Level::spawn_phantoms` after `spawn_patrol`).
+- Added (lightning-weather 1): `world/src/natural_spawner/thunder.rs`, `world/src/natural_spawner/thunder/tests.rs`.
+- Patched (lightning-weather 1): `world/src/natural_spawner.rs` (`mod thunder;`, `SpawnLevel::max_y` and the four lightning methods), `world/src/natural_spawner/tick.rs` (the roll strikes; `SpawnPlayer.alive`), `world/src/level/spawning.rs` (`thundering` from `is_thundering`, the `SpawnLevel` impls), `world/src/level/random_tick.rs` (`block_random_pos` is `pub(super)`). Changed again: `world/src/level/lightning.rs` (`Level::lightning_rod_near` and the storm test).
 
 ## Hooks
 
@@ -29,6 +31,7 @@ Root hooks this track added (M30, "M3's root hooks").
 
 - lightning-drawn 1 ("Minecraft lightning bolts flash and thunder for every player", after 82a5cd0b): `EntitySnapshot` gains `lightning: Vec<minecraft_terrain::lightning::BoltView>` after `crystals`, with `BoltView { id: i32, position: DVec3, seed: i64, life: i32 }`. It rides in `StateFrame.entities`, so old and new builds cannot read each other's entity snapshots.
 - phantoms-spawner 1: no message change. `TickInput.rest` is the host's own input to its server thread; friends' clocks stay on the host with their saved player.
+- lightning-weather 1: no message change. `SpawnPlayer.alive` is the world crate's spawning input on the host; natural bolts reach friends through `EntitySnapshot.lightning` (lightning-drawn).
 
 ## Cow-store one-liners outside D0-3's list
 
@@ -49,6 +52,10 @@ For the orchestrator to copy at the merge of segment m3a:
 - Under Mobs in `docs/MINECRAFT-SURVIVAL.md`, after the model line (phantoms-drawn 2): "Phantoms beat their wings with a soft flap sound every 2.4 seconds and trail small dark grey specks from both wingtips, for the host and every friend."
 - Under Mobs in `docs/MINECRAFT-SURVIVAL.md`, after the flap line (phantoms-spawner 1): "Phantoms come for players who have not slept: in the Overworld, while the `spawn_phantoms` rule and monster spawning are on, the game looks once when the world loads and then every one to two minutes. At night (sky darkness 5 or more) each player standing in the open sky at or above sea level, not spectating, may draw them: a roll against the local difficulty (about half the looks on Normal, three in four on Hard, none on Peaceful), then a roll against the ticks since that player last slept or died (never within 72000 ticks, three days; half the time after six days, and more the longer they stay awake). Then 1 to difficulty + 1 phantoms appear together 20 to 34 blocks above, up to 10 blocks to each side, in air. Each player's clock is their own `minecraft:time_since_rest` stat, friends' too."
 
+For the orchestrator to copy at the merge of segment m3b:
+
+- Under World simulation in `docs/MINECRAFT-SURVIVAL.md`, after the lightning-drawn line (lightning-weather 1): "Thunderstorms strike lightning like vanilla's: while it rains and thunders, each chunk inside the simulation distance near a player has a one in 100000 chance a tick. The bolt goes to the nearest lightning rod (of any copper age, waxed or not) within 128 blocks that is the top block of its column; without one, to a random living mob or player under open sky near the struck column (spectators too); otherwise to the ground. No bolt falls where it does not rain: deserts, snowy biomes and under glass. One strike in about 70 on Normal (more on Hard, never with `spawn_mobs` off or above a rod) is a skeleton trap: the bolt is only seen and a trap skeleton horse waits at its foot (dormant until skeleton horses are simulated). Storms now need rain as well as thunder, as in vanilla, which also corrects the darkness check for monster spawning in storms."
+
 ## Left for later
 
 - Advancements (`lightning_strike`, `channeled_lightning`): the fork has none.
@@ -65,6 +72,8 @@ For the orchestrator to copy at the merge of segment m3a:
 
 - Phantoms (phantoms-live 1): a dying phantom sinks with gravity through its death tip (D0's `family_base_tick` moves every dead family mob with the ground travel; vanilla's phantom keeps `travelFlying`). M2's `OWN_DYING_TRAVEL` hook, once merged, lets the phantom keep its own travel. The player scan ignores `getVisibilityPercent` (sneaking, invisibility and a worn mob head shorten vanilla's 64-block range), as the fork's `NearestTargetGoal` does: `PlayerCandidate` carries none of them. `Silent:1b` does not silence the bite (`MobCore` has no silent flag). The server's `minecraft:flap` game event every 25 ticks waits for W's per-entity game events (M3-2 plan step 7). Scoreboard teams (`isAlliedTo`) do not exist in the fork.
 - Phantom flaps (phantoms-drawn 2): the flap sound stays where the phantom flapped instead of following it (`EntityBoundSoundInstance`), and wing specks are not thinned by camera distance or a particle setting.
+
+- Natural lightning (lightning-weather 1): rods in unloaded chunks are not found (vanilla's POI storage reads unloaded sections from disk); a mob in its 20-tick death fall can still draw a bolt (the census carries no alive flag); ties between rods at the same distance, and the order of the living targets, follow the scan and the census, not vanilla's POI and entity section order. The trap horse stays dormant until `undead-horses-live` (m3d) and is sprung from `skeleton-trap` (also m3d). The rod's idle storm sparks (lightning-glow 2) are still left: this group adds the server's strikes only.
 
 ## Segment m3a
 
@@ -513,6 +522,54 @@ After 740c204e ("Track M3's segment m3a log gets one combined kit line").
 - **Runs:** clippy on `minecraft_terrain` again (none of the three left), `test -p minecraft_terrain -p minecraft_survival -p render_anim -p render_gpu -p minecraftoss-entities -p minecraftoss-world --locked --no-fail-fast` (terrain 1762 passed with 3 ignored, survival 837 and its `vanilla_world` 1, entities 585, world 143, render_anim 224, render_gpu 42; doc-tests empty), `check -p launcher --locked` (green; only the old render_frame and skate warnings).
 - **Test steps:** nothing new to see; the steps of lightning-glow 1 (m3-glow-1 to m3-glow-5) and lightning-turns 1 step 4 (m3-turn-4, the villager that becomes a witch, whose turn writes the line with `Pos`) cover these lines.
 - **Kit:** none new (the combined kit below).
+
+## Segment m3b
+
+### Group lightning-weather
+
+#### 1. Minecraft thunderstorms strike lightning, drawn to lightning rods
+
+After 519b8ddf ("Round 10 progress: M2's m2a and M3's m3a are merged, fish and creakings run").
+
+- **javap (26.3 `client.jar`):**
+  - `ServerLevel.tickThunder(chunk)`: `isRaining()`, `isThundering()` and `random.nextInt(100000) == 0`; then `findLightningTargetAround(getBlockRandomPos(minX, 0, minZ, 15))`; nothing more unless `isRainingAt(pos)`. `getCurrentDifficultyAt(pos)`, then the trap: the `spawn_mobs` rule, only then `random.nextDouble() < effective * 0.01d`, and the block below not in `#lightning_rods`. A trap makes `SKELETON_HORSE.create(level, EVENT)` with `setTrap(true)`, `setAge(0)` and `setPos(x, y, z)` (the block's integer corner, no finalize) and adds it; then `LIGHTNING_BOLT.create(EVENT)`, `snapTo(Vec3.atBottomCenterOf(pos))`, `setVisualOnly(trap)`, added.
+  - `findLightningTargetAround(p)`: `c = getHeightmapPos(MOTION_BLOCKING, p)`; `findLightningRod(c)` is `PoiManager.findClosest(LIGHTNING_ROD, pos.y == getHeight(WORLD_SURFACE, x, z) - 1, c, 128, ANY)` (the 3D distance within 128), mapped to `above(1)`; else `getEntitiesOfClass(LivingEntity, AABB.encapsulatingFullBlocks(c, c.atY(getMaxY() + 1)).inflate(3), isAlive && canSeeSky(blockPosition()))` and one of them by `random.nextInt(size)`, at its block; else `c`, raised by 2 when `c.y == getMinY() - 1`.
+  - `PoiTypes.LIGHTNING_ROD`: every state of the eight blocks of `Blocks.LIGHTNING_ROD` (plain, exposed, weathered, oxidized and their waxed forms), the same blocks as the 26.3 `#lightning_rods` tag.
+- **Changed:**
+  - World crate: `natural_spawner.rs`: `mod thunder;` after `pub mod tick;`; `SpawnLevel::max_y` after `min_y` (default `i32::MAX`) and four defaulted methods after `add_inhabited_time`: `block_random_pos`, `raining_at`, `lightning_rod_near` and `add_lightning` (the defaults never strike). New `natural_spawner/thunder.rs`: `CreatureSpawns::strike_thunder` (`tickThunder` after its roll), `lightning_target` (`findLightningTargetAround`), `living_under_sky` (the census and the players), `trap_horse` and `is_lightning_rod`; tests in `thunder/tests.rs`.
+  - `natural_spawner/tick.rs`: the roll calls `self.strike_thunder(level, context, input, chunk)` in place of the "lightning from thunder" unsupported note; `SpawnPlayer.alive`.
+  - `level/spawning.rs`: `SpawnInputs.thundering` is `self.is_thundering()` (M1's thunder × rain, `level/fire.rs`; it is merged, so it is called rather than written inline); the `SpawnLevel` impls of `max_y` after `min_y` and of the four after `add_inhabited_time`. `level/random_tick.rs`: `block_random_pos` is `pub(super)`. `level/lightning.rs`: `Level::lightning_rod_near(center)`.
+  - Terrain `server.rs`: `prepare_spawning` passes each player's `alive` into `SpawnPlayer`.
+- **Tests added:**
+  - World `natural_spawner::thunder::tests` (a real level of plains, rain and thunder at 1, the struck column aimed through `rand_value`):
+    - `a_strike_aims_at_the_nearest_surface_rod_within_128`: of a rod 57 blocks off and a weathered one 117 off, the near one; then the far one; with only a rod 137 blocks off and one 135 blocks straight up, the cow beside the column.
+    - `a_buried_rod_is_ignored`: a rod under stone and one under glass are skipped for a surface rod 97 off; with none left, the column's ground.
+    - `without_a_rod_it_picks_a_living_thing_under_open_sky`: over 40 strikes exactly the two cows in the open, the spectator and the player 135 blocks up; never the cow under a stone block, the cow 17 blocks off, the dead player or the player above the box's top; with nobody, the column.
+    - `no_bolt_in_a_desert_a_snowy_biome_or_under_a_roof`: no bolt and no horse in a desert or snowy plains; a cow under glass sees the sky, is picked and gets no bolt (it does not rain under glass).
+    - `a_trap_roll_leaves_a_visual_bolt_and_a_trap_horse_tag`: a seeded roll under 0.015 gives a visual bolt and a skeleton horse tag at the block's corner with `SkeletonTrap` 1, `Age` 0, a UUID and no persistence; a roll between 0.015 and 0.0225 misses on Normal and traps on Hard.
+    - `no_trap_without_spawn_mobs_or_above_a_rod`: without `spawn_mobs` the trap roll is not drawn; above a rod it is drawn and never traps.
+    - `a_long_storm_strikes_inside_the_spawning_chunks`: 100000 seeded spawning ticks over 5 x 5 ticking chunks with the 3 x 3 in simulation: every bolt falls on the ground of a simulated chunk, in more than one chunk.
+  - World `level::lightning::tests::thundering_needs_rain_too`: one spawning tick at clear, half rain under full thunder and full rain under 0.85 thunder draws the same randoms (no lightning roll, `is_thundering` false); a full storm rolls.
+- **Decisions:**
+  - Where the strike runs (M3-1 decision 1): inline at the roll in the world crate's spawning tick, through the defaulted `SpawnLevel` methods, so `randValue` and the level random are drawn in vanilla's order.
+  - The rod search (decision 2): `Level::lightning_rod_near` reads the `WORLD_SURFACE` top of every column of the loaded chunks around the struck column and keeps the nearest lightning rod (the redstone table's `LightningRodBlock`, all eight rods) within a 3D distance of 128, as `findClosest` does. A rod is a POI only where it stands, so the top of each column is the only place one can match. Ties go to the first column scanned; rods in unloaded chunks are not found (Left for later).
+  - The box's top needs `getMaxY()`, which `SpawnLevel` lacked: `max_y` is a fifth defaulted method, next to `min_y` rather than with the four.
+  - Living targets: the census (simulated and dormant mobs, riders too) and the players, alive, spectators included, with the standing 0.6 x 1.8 box; census first, then players. `SpawnPlayer` gained `alive` so a dead player waiting to respawn draws no bolt.
+  - The trap horse: the skeleton horse's default tag at the block's integer corner with yaw 0 (vanilla's constructor turns it 0 to 6.3 degrees by `Math.random`), `SkeletonTrap:1b` and `Age:0`, its UUID from the entity random, added through `add_entity`. It waits dormant (saved with its chunk, counted in the census) until `undead-horses-live` simulates skeleton horses.
+  - The `isThundering` fix (decision 6): yes, through M1's `Level::is_thundering`; it also corrects `dark_enough` during storms.
+  - Row 41 of `docs/round10/mobs.md` (skeleton horse) gains the trap tag and this commit; it stays `left`.
+- **Runs:** `test -p minecraftoss-world --locked --lib` (167 passed), `check -p launcher --locked` (green; only the old render_frame and skate warnings). Terrain's one-line change (`alive` into `SpawnPlayer`) is covered by its tests in the next commit's run.
+- **Test steps:** release build, survival, Normal, a wide flat plains (a superflat world works), by day, the kit below, the host is op. Natural bolts are rare: near one player about one every half minute in a storm. Name each screenshot by its label.
+  1. 10 blocks from where you stand, build a pillar of 4 stone bricks, then a weathered copper block, then a lightning rod on top. Put a redstone lamp against one side of the copper block and weathered copper on the other three sides. `/weather thunder`, then wait by the pillar for 3 minutes: nearly every bolt strikes the rod (only bolts falling more than 128 blocks from it land elsewhere); each time the lamp blinks, the copper turns orange again and sparks dart along the rod. **m3w-storm-1**
+  2. Break the lightning rod and use 6 cow eggs around you in the open. Wait 3 minutes: bolts now fall at random spots on the plains and now and then on a cow (it flashes red, burns and runs); the grass burns where they land. **m3w-storm-2**
+  3. `/weather rain` and wait 3 minutes: rain but no bolts. **m3w-storm-3**
+  4. `/locate biome minecraft:desert`, `/tp` into the middle of it, `/weather thunder` and wait 3 minutes: no bolts fall on the sand (it does not rain in deserts). **m3w-storm-4**
+  5. Friend, two windows (`scripts\mp-local.ps1`): both stand by a new pillar during `/weather thunder`; both see and hear the same bolts strike the rod. **m3w-storm-friend**
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:lightning_rod*4,minecraft:weathered_copper*16,minecraft:redstone_lamp*2,minecraft:stone_bricks*16,minecraft:cow_spawn_egg*8,minecraft:water_bucket,minecraft:cooked_beef*16
+```
 
 ## Combined kit
 

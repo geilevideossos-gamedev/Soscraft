@@ -1,9 +1,11 @@
 use super::burning;
 use super::entity::{Entity, EntityKind, LightningData};
 use super::physics::Aabb;
+use super::redstone::Kind;
 use super::{Level, update};
+use minecraftoss_core::chunk::HeightmapKind;
 use minecraftoss_core::random::RandomSource;
-use minecraftoss_core::{BlockPos, BlockStateId};
+use minecraftoss_core::{BlockPos, BlockStateId, ChunkPos};
 use minecraftoss_generator::feature::Ctx;
 use minecraftoss_generator::feature::update::base_fire_state;
 
@@ -13,6 +15,7 @@ pub const DAMAGE_TYPE: &str = "minecraft:lightning_bolt";
 const IGNITE_TICKS: i32 = 160;
 const REACH: f64 = 3.0;
 const HEIGHT: f64 = 6.0;
+const ROD_REACH: i32 = 128;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct LightningHit {
@@ -83,6 +86,32 @@ impl Level<'_> {
 
     pub fn take_lightning_hits(&mut self) -> Vec<LightningHit> {
         std::mem::take(&mut self.lightning_hits)
+    }
+
+    pub fn lightning_rod_near(&self, center: BlockPos) -> Option<BlockPos> {
+        let reach = i64::from(ROD_REACH) * i64::from(ROD_REACH);
+        let mut nearest: Option<(i64, BlockPos)> = None;
+        for cx in (center.x - ROD_REACH) >> 4..=(center.x + ROD_REACH) >> 4 {
+            for cz in (center.z - ROD_REACH) >> 4..=(center.z + ROD_REACH) >> 4 {
+                let Some(chunk) = self.chunk(ChunkPos::new(cx, cz)) else {
+                    continue;
+                };
+                for (lx, lz) in (0..16).flat_map(|lx| (0..16).map(move |lz| (lx, lz))) {
+                    let y = chunk.heightmaps.get(HeightmapKind::WorldSurface, lx, lz) - 1;
+                    let pos = BlockPos::new(cx * 16 + lx as i32, y, cz * 16 + lz as i32);
+                    let d = [pos.x - center.x, pos.y - center.y, pos.z - center.z].map(i64::from);
+                    let distance = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
+                    let closer =
+                        distance <= reach && nearest.is_none_or(|(best, _)| distance < best);
+                    let rod =
+                        self.redstone_kind(chunk.block(lx, y, lz)) == Some(Kind::LightningRod);
+                    if closer && rod {
+                        nearest = Some((distance, pos));
+                    }
+                }
+            }
+        }
+        nearest.map(|(_, pos)| pos)
     }
 
     pub(super) fn lightning_fire(&mut self, e: &Entity, tries: i32) {
@@ -391,6 +420,48 @@ mod tests {
             let name = named(&level, pos);
             assert!(!name.contains("weathered"), "{name}");
         }
+    }
+
+    fn spawning_draws(lib: &Library, rain: f32, thunder: f32) -> Option<(bool, i64)> {
+        let mut level = level(lib);
+        level.set_dimension("minecraft:overworld").ok()?;
+        let sky = level.sky.as_mut()?;
+        sky.weather.rain_level = rain;
+        sky.weather.thunder_level = thunder;
+        let spawns = crate::natural_spawner::CreatureSpawns::load(
+            lib.registries.clone(),
+            "minecraft:overworld",
+            false,
+        )
+        .ok()?;
+        let mut natural = super::super::spawning::NaturalSpawning::new(std::sync::Arc::new(spawns));
+        natural.spawn_mobs = false;
+        natural.set_players(&[crate::natural_spawner::tick::SpawnPlayer {
+            pos: SPOT,
+            spectator: false,
+            alive: true,
+        }]);
+        natural.simulation = level.chunks().map(|chunk| chunk.pos).collect();
+        level.natural_spawning = Some(natural);
+        level.tick_natural_spawning();
+        Some((level.is_thundering(), level.random.next_i64()))
+    }
+
+    #[test]
+    fn thundering_needs_rain_too() {
+        let Some(lib) = library() else { return };
+        let Some((false, clear)) = spawning_draws(&lib, 0.0, 0.0) else {
+            return;
+        };
+        assert_eq!(
+            spawning_draws(&lib, 0.5, 1.0),
+            Some((false, clear)),
+            "full thunder in half rain is no storm: no lightning roll"
+        );
+        assert_eq!(spawning_draws(&lib, 1.0, 0.85), Some((false, clear)));
+        let (thundering, storm) = spawning_draws(&lib, 1.0, 1.0).unwrap();
+        assert!(thundering);
+        assert_ne!(storm, clear, "a storm rolls in every spawning chunk");
     }
 
     #[test]

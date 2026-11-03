@@ -159,7 +159,7 @@ impl Level<'_> {
             overworld_time: self.sky.as_ref().and_then(|s| s.clocks.get("minecraft:overworld").copied()).unwrap_or(0),
             moon_brightness: MOON_BRIGHTNESS_PER_PHASE[self.moon_phase()],
             raining: self.is_raining(),
-            thundering: self.sky.as_ref().is_some_and(|s| s.can_have_weather && s.weather.thunder_level > 0.9),
+            thundering: self.is_thundering(),
             difficulty: self.difficulty,
             seed: self.random_sequences.world_seed,
         }
@@ -702,6 +702,10 @@ impl SpawnLevel for Level<'_> {
         Level::min_y(self)
     }
 
+    fn max_y(&self) -> i32 {
+        Level::max_y(self)
+    }
+
     fn random(&mut self) -> &mut dyn RandomSource {
         &mut self.random
     }
@@ -726,6 +730,22 @@ impl SpawnLevel for Level<'_> {
         if let Some(c) = self.chunks.get_mut(&chunk) {
             c.inhabited_time += 1;
         }
+    }
+
+    fn block_random_pos(&mut self, x: i32, y: i32, z: i32) -> BlockPos {
+        Level::block_random_pos(self, x, y, z)
+    }
+
+    fn raining_at(&mut self, pos: BlockPos) -> bool {
+        self.is_raining_at(pos)
+    }
+
+    fn lightning_rod_near(&self, center: BlockPos) -> Option<BlockPos> {
+        Level::lightning_rod_near(self, center)
+    }
+
+    fn add_lightning(&mut self, pos: [f64; 3], visual_only: bool) {
+        Level::add_lightning(self, pos, visual_only);
     }
 
     fn note_unsupported(&mut self, what: &str) {

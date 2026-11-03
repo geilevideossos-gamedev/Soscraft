@@ -13,6 +13,7 @@
 mod families;
 pub mod spawning;
 pub mod tick;
+mod thunder;
 
 use minecraftoss_core::block::flags;
 use minecraftoss_core::chunk::HeightmapKind;
@@ -49,6 +50,9 @@ pub trait SpawnLevel {
         63
     }
     fn min_y(&self) -> i32;
+    fn max_y(&self) -> i32 {
+        i32::MAX
+    }
     /// The level random (`getRandom`).
     fn random(&mut self) -> &mut dyn RandomSource;
     fn next_uuid(&mut self) -> [i32; 4];
@@ -60,6 +64,16 @@ pub trait SpawnLevel {
     }
     /// `incrementInhabitedTime`.
     fn add_inhabited_time(&mut self, _chunk: ChunkPos) {}
+    fn block_random_pos(&mut self, x: i32, y: i32, z: i32) -> BlockPos {
+        BlockPos::new(x, y, z)
+    }
+    fn raining_at(&mut self, _pos: BlockPos) -> bool {
+        false
+    }
+    fn lightning_rod_near(&self, _center: BlockPos) -> Option<BlockPos> {
+        None
+    }
+    fn add_lightning(&mut self, _pos: [f64; 3], _visual_only: bool) {}
     /// Types the rules here do not cover yet.
     fn note_unsupported(&mut self, _what: &str) {}
 }

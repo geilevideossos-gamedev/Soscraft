@@ -1327,7 +1327,7 @@ impl ServerSim {
     /// area.
     pub fn prepare_spawning(&mut self, players: &[minecraftoss_entities::tempt::PlayerCandidate]) {
         let Some(natural) = &mut self.level.natural_spawning else { return };
-        let spawn_players: Vec<SpawnPlayer> = players.iter().map(|p| SpawnPlayer { pos: p.position.to_array(), spectator: p.spectator }).collect();
+        let spawn_players: Vec<SpawnPlayer> = players.iter().map(|p| SpawnPlayer { pos: p.position.to_array(), spectator: p.spectator, alive: p.alive }).collect();
         natural.set_players(&spawn_players);
         let mut census: Vec<CensusMob> = self
             .mobs
