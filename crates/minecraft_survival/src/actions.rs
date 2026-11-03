@@ -1244,6 +1244,9 @@ pub fn act(
                     minecraft_terrain::bucket::Change::Server(pos, action) => {
                         entities.item_on_block(player_id, pos, action, sent)
                     }
+                    minecraft_terrain::bucket::Change::MobBucket(bucket) => {
+                        entities.empty_mob_bucket(player_id, bucket, sent, !game_mode.consumes_items())
+                    }
                     minecraft_terrain::bucket::Change::ThrowEye(throw) => {
                         entities.throw_eye(player_id, throw, sent)
                     }

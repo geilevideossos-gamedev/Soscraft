@@ -457,6 +457,13 @@ impl Despawn {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Breath {
+    Lungs { max: i32, refill: i32 },
+    Gills,
+    Own,
+}
+
 pub struct MonsterSpec {
     pub goal_names: &'static [&'static str],
     pub target_names: &'static [&'static str],
@@ -553,6 +560,7 @@ pub trait Family: Clone + Send + Sized + 'static {
     const KEY: u8;
     const KINDS: &'static [&'static str];
     const MOUNT: bool = false;
+    const OWN_DYING_TRAVEL: bool = false;
 
     fn spawn(kind: &'static str, position: DVec3) -> Option<FamilyMob<Self>>;
 
@@ -612,6 +620,13 @@ pub trait Family: Clone + Send + Sized + 'static {
 
     fn breathes_water(mob: &FamilyMob<Self>) -> bool {
         crate::wither::is_undead(mob.core.kind)
+    }
+
+    fn breath(_mob: &FamilyMob<Self>) -> Breath {
+        Breath::Lungs {
+            max: living::MAX_AIR,
+            refill: 4,
+        }
     }
 
     fn enemy(_kind: &str) -> bool {
@@ -678,6 +693,14 @@ pub trait Family: Clone + Send + Sized + 'static {
         true
     }
 
+    fn swim_sounds(_kind: &str) -> Option<(&'static str, &'static str)> {
+        None
+    }
+
+    fn quiet_steps(_kind: &str) -> bool {
+        false
+    }
+
     fn loot(_mob: &FamilyMob<Self>, _context: &mut EntityLootContext) {}
 
     fn panicking(_mob: &FamilyMob<Self>) -> bool {
@@ -734,6 +757,23 @@ fn movement_sounds<S: Family>(kind: &str) -> MovementSounds {
         MovementSounds::monster(step)
     } else {
         MovementSounds::creature(step)
+    };
+    let sounds = match S::swim_sounds(kind) {
+        Some((swim, splash)) => MovementSounds {
+            swim,
+            splash,
+            ..sounds
+        },
+        None => sounds,
+    };
+    let sounds = if S::quiet_steps(kind) {
+        MovementSounds {
+            step: Some(""),
+            ..sounds
+        }
+        .with_step_volume(0.0)
+    } else {
+        sounds
     };
     if S::emits_sounds(kind) {
         sounds
@@ -1396,9 +1436,17 @@ impl EntityWorld {
         let eye = mob.core.eye_height;
         hazards::suffocate(mob, level, eye, game_time);
         let breathes = S::breathes_water(mob) || mob.core.effects.has(MobEffect::WaterBreathing);
-        if mob.core.health > 0.0 && breathe(&mut mob.core.body, level, eye, breathes) {
-            let drown =
-                Hurt::new(2.0, "minecraft:drown", DamageSourceKind::Generic).bypassing_armor();
+        let drown = Hurt::new(2.0, "minecraft:drown", DamageSourceKind::Generic).bypassing_armor();
+        let breath = S::breath(mob);
+        let out_of_air = match breath {
+            Breath::Lungs { max, refill } => {
+                let body = &mut mob.core.body;
+                mob.core.health > 0.0
+                    && living::breathe_up_to(body, level, eye, breathes, max, refill)
+            }
+            Breath::Gills | Breath::Own => false,
+        };
+        if out_of_air {
             S::hurt(mob, &drown);
         }
         let removed = mob.core.damage.tick();
@@ -1434,11 +1482,16 @@ impl EntityWorld {
                 core.ambient_sound_time += 1;
             }
         }
+        let alive = core.health > 0.0;
+        if breath == Breath::Gills && living::breathe_with_gills(&mut core.body, alive) {
+            S::hurt(mob, &drown);
+        }
+        let core = &mut mob.core;
         if removed {
             return None;
         }
         let alive = core.health > 0.0;
-        if !alive && !core.no_ai {
+        if !alive && !core.no_ai && !S::OWN_DYING_TRAVEL {
             let _ = dying_travel(
                 &mut core.body,
                 level,

@@ -67,6 +67,7 @@ pub fn doused(scene: &HandcraftedScene, outcome: &ItemUse) -> Option<(BlockPos, 
     let pos = match &outcome.change {
         Change::Set(pos, block) if block.property("lit") == Some("false") => *pos,
         Change::Server(pos, ItemOnBlock::EmptyBucket { water: true })
+        | Change::MobBucket(crate::families::water::buckets::MobBucketUse { pos, .. })
             if outcome
                 .sounds
                 .iter()

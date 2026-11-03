@@ -11,6 +11,7 @@
 pub mod burning;
 pub mod container;
 pub mod dispenser;
+pub mod mob_bucket;
 pub mod drops;
 pub mod end_portal;
 pub mod entity;

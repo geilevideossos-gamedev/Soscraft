@@ -74,6 +74,9 @@ pub enum Kind {
     Flame,
     SmallFlame,
     SoulFireFlame,
+    SquidInk,
+    GlowSquidInk,
+    Glow,
     TrialSpawnerDetection,
     TrialSpawnerDetectionOminous,
     TrialOmen,
@@ -176,6 +179,42 @@ impl Particle {
         if kind == Kind::SmallFlame {
             particle.quad_size *= 0.5;
         }
+        particle
+    }
+
+    fn squid_ink(kind: Kind, at: DVec3, motion: DVec3, random: &mut LegacyRandom) -> Self {
+        let mut particle = Self::base(kind, at, DVec3::ZERO, random);
+        particle.velocity = motion;
+        particle.friction = 0.92;
+        particle.quad_size = 0.5;
+        particle.color = if kind == Kind::GlowSquidInk {
+            [0.2, 0.8, 0.6]
+        } else {
+            [0.0; 3]
+        };
+        let lifetime = particle.quad_size * 12.0 / (random.next_float() * 0.8 + 0.2);
+        particle.lifetime = lifetime as i32;
+        particle
+    }
+
+    fn glow_sparkle(at: DVec3, motion: DVec3, random: &mut LegacyRandom) -> Self {
+        let x = 0.5 - random.next_double();
+        let z = 0.5 - random.next_double();
+        let mut particle = Self::base(Kind::Glow, at, DVec3::new(x, motion.y, z), random);
+        particle.friction = 0.96;
+        particle.speed_up = true;
+        particle.quad_size *= 0.75;
+        particle.color = if random.next_boolean() {
+            [0.6, 1.0, 0.8]
+        } else {
+            [0.08, 0.4, 0.4]
+        };
+        particle.velocity.y *= f64::from(0.2_f32);
+        if motion.x == 0.0 && motion.z == 0.0 {
+            particle.velocity.x *= f64::from(0.1_f32);
+            particle.velocity.z *= f64::from(0.1_f32);
+        }
+        particle.lifetime = (8.0 / (random.next_double() * 0.8 + 0.2)) as i32;
         particle
     }
 
@@ -650,6 +689,8 @@ impl Particle {
             Kind::CosySmoke
                 | Kind::SignalSmoke
                 | Kind::Sneeze
+                | Kind::SquidInk
+                | Kind::GlowSquidInk
                 | Kind::EndRod
                 | Kind::Totem
                 | Kind::TrialOmen
@@ -684,6 +725,11 @@ impl Particle {
             Kind::Rain => format!("splash_{}", self.sprite),
             Kind::Flame | Kind::SmallFlame => "flame".to_owned(),
             Kind::SoulFireFlame => "soul_fire_flame".to_owned(),
+            Kind::SquidInk | Kind::GlowSquidInk => {
+                let step = self.age * (GENERIC_SPRITES - 1) / self.lifetime.max(1);
+                format!("generic_{}", GENERIC_SPRITES - 1 - step.clamp(0, GENERIC_SPRITES - 1))
+            }
+            Kind::Glow => "glow".to_owned(),
             Kind::TrialSpawnerDetection | Kind::TrialSpawnerDetectionOminous => {
                 let step = self.age * (TRIAL_DETECTION_SPRITES - 1) / self.lifetime.max(1);
                 let sheet = if self.kind == Kind::TrialSpawnerDetection {
@@ -745,6 +791,7 @@ impl Particle {
             Kind::Flame | Kind::SmallFlame | Kind::SoulFireFlame => {
                 self.quad_size * (1.0 - grown * grown * 0.5)
             }
+            Kind::SquidInk | Kind::GlowSquidInk | Kind::Glow => self.quad_size,
             Kind::CosySmoke
             | Kind::SignalSmoke
             | Kind::Poof
@@ -957,6 +1004,7 @@ pub fn textures() -> Vec<ResourceId> {
     ["lava", "glint", "flame", "soul_fire_flame", "critical_hit", "heart", "angry", "trial_omen", "ominous_spawning", "vault_connection"]
         .into_iter()
         .map(str::to_owned)
+        .chain(["glow".to_owned()])
         .chain(detection)
         .chain(big_smoke)
         .chain(explosion)
@@ -1356,6 +1404,8 @@ impl AmbientParticles {
             Kind::Flame | Kind::SmallFlame | Kind::SoulFireFlame => {
                 Particle::flame(kind, at, motion, random)
             }
+            Kind::SquidInk | Kind::GlowSquidInk => Particle::squid_ink(kind, at, motion, random),
+            Kind::Glow => Particle::glow_sparkle(at, motion, random),
             Kind::TrialSpawnerDetection | Kind::TrialSpawnerDetectionOminous => {
                 Particle::trial_detection(kind, at, motion, random)
             }
@@ -1411,6 +1461,24 @@ impl AmbientParticles {
             Kind::HappyVillager => particle.linger(),
             Kind::Rain => particle.drip(scene, &mut cache, random),
             Kind::Flame | Kind::SmallFlame | Kind::SoulFireFlame => particle.rise(),
+            Kind::SquidInk | Kind::GlowSquidInk => {
+                let alive = particle.coast();
+                particle.fade_after_half_life();
+                let cell = particle.position.floor();
+                let cell = (cell.x as i32, cell.y as i32, cell.z as i32);
+                if alive && is_air(scene.block(cell)) {
+                    particle.velocity.y -= f64::from(0.0074_f32);
+                }
+                alive
+            }
+            Kind::Glow => {
+                let alive = particle.coast();
+                if alive && particle.position.y == particle.previous.y {
+                    particle.velocity.x *= 1.1;
+                    particle.velocity.z *= 1.1;
+                }
+                alive
+            }
             Kind::Snowflake => {
                 let alive = particle.tick(scene, &mut cache);
                 let (side, down) = (f64::from(0.95_f32), f64::from(0.9_f32));
@@ -1479,6 +1547,8 @@ impl AmbientParticles {
                 Kind::Explosion | Kind::SonicBoom | Kind::EndRod | Kind::Totem => (FULL_BRIGHT, FULL_BRIGHT),
                 Kind::Lava | Kind::TrialSpawnerDetection | Kind::TrialSpawnerDetectionOminous | Kind::OminousSpawning | Kind::VaultConnection | Kind::SculkSoul | Kind::SculkCharge | Kind::SculkChargePop => (f32::from(light.get(cell)), FULL_BRIGHT),
                 Kind::Flame | Kind::SmallFlame | Kind::SoulFireFlame => (f32::from(light.get(cell)), particle.glow(f32::from(light.get_block(cell)), partial)),
+                Kind::SquidInk | Kind::GlowSquidInk => (FULL_BRIGHT, FULL_BRIGHT),
+                Kind::Glow => (f32::from(light.get(cell)), particle.glow(f32::from(light.get_block(cell)), partial)),
                 _ => (f32::from(light.get(cell)), f32::from(light.get_block(cell))),
             };
             let size = particle.size_at(partial);
@@ -1624,6 +1694,131 @@ mod tests {
             lived += 1;
         }
         assert_eq!(lived, lifetime + 1);
+    }
+
+    #[test]
+    fn squid_ink_is_black_glow_ink_teal_and_sinks_slowly_in_air() {
+        let start = DVec3::new(0.5, 64.5, 0.5);
+        let motion = DVec3::new(0.02, -0.1, 0.03);
+        for seed in 0..100 {
+            let mut particles = AmbientParticles::new(seed);
+            particles.add(Kind::SquidInk, start, motion);
+            particles.add(Kind::GlowSquidInk, start, motion);
+            let (ink, glow) = (&particles.particles[0], &particles.particles[1]);
+            assert_eq!((ink.color, glow.color), ([0.0; 3], [0.2, 0.8, 0.6]));
+            for particle in [ink, glow] {
+                assert_eq!((particle.position, particle.velocity), (start, motion));
+                assert_eq!((particle.quad_size, particle.friction, particle.gravity), (0.5, 0.92, 0.0));
+                assert!((6..=30).contains(&particle.lifetime), "{}", particle.lifetime);
+                assert!(particle.translucent());
+                assert_eq!(particle.size_at(0.7), 0.5);
+                assert_eq!(particle.sprite().unwrap().key(), "minecraft:particle/generic_7");
+            }
+        }
+        let air = open();
+        let water = Blocks(HashMap::from([((0, 64, 0), Block::new("minecraft:water"))]));
+        let drag = motion * f64::from(0.92_f32);
+        for (scene, sink) in [(&air, f64::from(0.0074_f32)), (&water, 0.0)] {
+            let mut particles = AmbientParticles::new(3);
+            particles.add(Kind::SquidInk, start, motion);
+            particles.tick(scene);
+            let ink = &particles.particles[0];
+            assert_eq!(ink.position, start + motion);
+            assert_eq!(ink.velocity, DVec3::new(drag.x, drag.y - sink, drag.z), "{sink}");
+        }
+        let mut particles = AmbientParticles::new(5);
+        particles.add(Kind::SquidInk, start, DVec3::ZERO);
+        particles.particles[0].lifetime = 20;
+        for _ in 0..10 {
+            particles.tick(&water);
+        }
+        assert_eq!(particles.particles[0].alpha, 1.0, "full until half its life");
+        for _ in 0..5 {
+            particles.tick(&water);
+        }
+        let ink = &particles.particles[0];
+        assert_eq!((ink.age, ink.alpha, ink.position), (15, 1.0 - 5.0 / 20.0, start));
+        assert_eq!(ink.sprite().unwrap().key(), "minecraft:particle/generic_2");
+        for _ in 0..6 {
+            particles.tick(&water);
+        }
+        assert!(particles.is_empty(), "gone after its twenty ticks");
+        let light = SkyLight::from_levels((0, 64, 0), (1, 1, 1), vec![4], vec![2]);
+        let sprites = vec![ResourceId::parse("minecraft:particle/generic_7").unwrap()];
+        let atlas = crate::mesh::make_atlas(&crate::pack::PackStack::open(Vec::new()).unwrap(), sprites).unwrap();
+        let mut particles = AmbientParticles::new(1);
+        particles.add(Kind::GlowSquidInk, start, DVec3::ZERO);
+        let mut opaque = ChunkMesh::default();
+        let mut translucent = ChunkMesh::default();
+        particles.append_mesh(&mut opaque, &mut translucent, &atlas, Vec3::Z, 0.0, &light);
+        assert!(opaque.vertices.is_empty());
+        assert_eq!(translucent.vertices.len(), 4);
+        assert!(translucent.vertices.iter().all(|v| v.sky_light == 15.0 && v.block_light == 15.0 && v.color == [0.2, 0.8, 0.6, 1.0]), "ink is drawn full bright");
+    }
+
+    #[test]
+    fn a_glow_sparkle_drifts_brightens_and_lives_eight_to_forty_ticks() {
+        let start = DVec3::new(0.5, 64.5, 0.5);
+        let (mut bright, mut dim) = (0, 0);
+        let (mut shortest, mut longest) = (i32::MAX, 0);
+        for seed in 0..400 {
+            let mut particles = AmbientParticles::new(seed);
+            particles.add(Kind::Glow, start, DVec3::ZERO);
+            let glow = particles.particles[0].clone();
+            if glow.color == [0.6, 1.0, 0.8] {
+                bright += 1;
+            } else {
+                assert_eq!(glow.color, [0.08, 0.4, 0.4]);
+                dim += 1;
+            }
+            assert!((8..=40).contains(&glow.lifetime), "{}", glow.lifetime);
+            shortest = shortest.min(glow.lifetime);
+            longest = longest.max(glow.lifetime);
+            assert!((0.075..0.15).contains(&glow.quad_size), "{}", glow.quad_size);
+            assert_eq!(glow.size_at(0.5), glow.quad_size);
+            assert_eq!((glow.friction, glow.gravity, glow.alpha), (0.96, 0.0, 1.0));
+            assert!(!glow.translucent());
+            let v = glow.velocity;
+            assert!(v.x.abs() < 0.02 && v.z.abs() < 0.02 && v.y.abs() < 0.06, "{v:?}");
+            assert_eq!(glow.sprite().unwrap().key(), "minecraft:particle/glow");
+            assert_eq!(glow.glow(3.0, 0.0), 3.0);
+            let mut late = glow.clone();
+            late.age = late.lifetime / 2;
+            assert!(late.glow(3.0, 0.0) > 3.0, "it brightens as it ages");
+            late.age = late.lifetime;
+            assert_eq!(late.glow(3.0, 0.0), 15.0);
+            particles.tick(&open());
+            let moved = &particles.particles[0];
+            assert_eq!(moved.position, start + v);
+            assert_eq!(moved.velocity, v * f64::from(0.96_f32));
+        }
+        assert!(bright > 120 && dim > 120, "{bright} {dim}");
+        assert!(shortest <= 10 && longest >= 30, "{shortest} {longest}");
+        let mut particles = AmbientParticles::new(9);
+        particles.add(Kind::Glow, start, DVec3::ZERO);
+        particles.particles[0].velocity = DVec3::new(0.01, 0.0, -0.02);
+        particles.tick(&open());
+        let blocked = particles.particles[0].velocity;
+        let faster = f64::from(0.96_f32) * 1.1;
+        assert!((blocked.x - 0.01 * faster).abs() < 1e-12 && (blocked.z + 0.02 * faster).abs() < 1e-12, "{blocked:?}");
+        let lifetime = particles.particles[0].lifetime;
+        let mut lived = 1;
+        while !particles.is_empty() {
+            particles.tick(&open());
+            lived += 1;
+        }
+        assert_eq!(lived, lifetime + 1);
+        assert!(textures().contains(&ResourceId::parse("minecraft:particle/glow").unwrap()));
+        let light = SkyLight::from_levels((0, 64, 0), (1, 1, 1), vec![4], vec![2]);
+        let atlas = crate::mesh::make_atlas(&crate::pack::PackStack::open(Vec::new()).unwrap(), textures()).unwrap();
+        let mut particles = AmbientParticles::new(1);
+        particles.add(Kind::Glow, start, DVec3::ZERO);
+        let mut opaque = ChunkMesh::default();
+        let mut translucent = ChunkMesh::default();
+        particles.append_mesh(&mut opaque, &mut translucent, &atlas, Vec3::Z, 0.0, &light);
+        assert!(translucent.vertices.is_empty());
+        assert_eq!(opaque.vertices.len(), 4);
+        assert!(opaque.vertices.iter().all(|v| v.sky_light == 4.0 && v.block_light == 2.0));
     }
 
     #[test]

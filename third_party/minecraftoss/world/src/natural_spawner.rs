@@ -825,7 +825,7 @@ impl CreatureSpawns {
     /// box (entities never obstruct in a generation region; the server's
     /// spawner tests them itself).
     fn check_spawn_obstruction(&self, level: &mut dyn SpawnLevel, info: &TypeInfo, x: f64, y: f64, z: f64) -> bool {
-        if matches!(info.rules, Rules::Strider | Rules::Drowned) {
+        if matches!(info.rules, Rules::Strider | Rules::Drowned) || info.placement == Placement::InWater {
             return true;
         }
         if info.rules == Rules::Ocelot {

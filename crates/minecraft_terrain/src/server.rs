@@ -3125,6 +3125,15 @@ impl ServerSim {
         }
     }
 
+    pub fn empty_mob_bucket(&mut self, bucket: &crate::families::water::buckets::MobBucketUse) -> bool {
+        let block = |(x, y, z): BlockPos| minecraftoss_core::BlockPos::new(x, y, z);
+        let emptied = self.level.empty_mob_bucket(block(bucket.pos), block(bucket.at), bucket.item, bucket.components.as_ref());
+        if emptied {
+            self.take_spawned();
+        }
+        emptied
+    }
+
     pub fn hang_frame(&mut self, clicked: BlockPos, face: minecraftoss_core::pos::Direction, glow: bool) -> bool {
         let pos = crate::item_frame::hung_at(clicked, face);
         if pos.1 < self.level.min_y() || pos.1 > self.level.max_y() {
@@ -4319,6 +4328,7 @@ pub enum Command {
     BoneMeal { player: u64, pos: BlockPos, face: &'static str },
     Attack { player: u64, pos: BlockPos },
     ItemOnBlock { player: u64, pos: BlockPos, action: ItemOnBlock },
+    EmptyMobBucket { player: u64, bucket: crate::families::water::buckets::MobBucketUse },
     SpawnItem { item: String, count: i32, components: Option<String>, position: [f64; 3], velocity: [f64; 3], pickup_delay: i32, age: i32 },
     KeepDroppedContents { pos: BlockPos, item: String, components: String },
     /// The recipe book, for mobs.
@@ -4730,6 +4740,10 @@ impl ServerHandle {
         self.send(Command::ItemOnBlock { player, pos, action });
     }
 
+    pub fn empty_mob_bucket(&mut self, player: u64, bucket: crate::families::water::buckets::MobBucketUse) {
+        self.send(Command::EmptyMobBucket { player, bucket });
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn spawn_item(&mut self, item: &str, count: i32, components: Option<&str>, position: [f64; 3], velocity: [f64; 3], pickup_delay: i32, age: i32) {
         self.send(Command::SpawnItem { item: item.to_owned(), count, components: components.map(str::to_owned), position, velocity, pickup_delay, age });
@@ -5043,6 +5057,9 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                 }
                 Command::ItemOnBlock { player, pos, action } => {
                     out.item_uses.push((player, sim.acting(Some(player), |sim| sim.item_on_block_by(Some(player), pos, action))));
+                }
+                Command::EmptyMobBucket { player, bucket } => {
+                    out.item_uses.push((player, sim.acting(Some(player), |sim| sim.empty_mob_bucket(&bucket))));
                 }
                 Command::SpawnItem { item, count, components, position, velocity, pickup_delay, age } => {
                     sim.spawn_item(&item, count, components.as_deref(), position, velocity, pickup_delay, age);
@@ -9231,6 +9248,37 @@ mod tests {
         assert!(server.item_on_block((8, 200, 8), ItemOnBlock::FillBucket));
         let drained: std::collections::HashMap<_, _> = server.take_changes().into_iter().collect();
         assert_eq!(property(&block_at(&drained, (8, 200, 8)), "waterlogged").as_deref(), Some("false"));
+    }
+
+    #[test]
+    fn an_emptied_mob_bucket_spawns_its_tag_with_the_bucket_data() {
+        use crate::families::water::buckets::MobBucketUse;
+        use minecraftoss_core::nbt::Tag;
+        let Some((mut server, _)) = door_world() else { return };
+        if server.level.registries().entities.is_none() {
+            return;
+        }
+        server.take_changes();
+        let dormant = server.dormant_count();
+        let data = [("Health", Tag::Double(2.0)), ("NoAI", Tag::Int(1)), ("Motion", Tag::List(vec![Tag::Double(0.0), Tag::Double(1.0), Tag::Double(0.0)]))];
+        let data = Tag::Compound(data.into_iter().map(|(key, value)| (key.to_owned(), value)).collect());
+        let components = Tag::Compound([("minecraft:bucket_entity_data".to_owned(), data)].into_iter().collect());
+        let cod = MobBucketUse { pos: (8, 200, 8), at: (8, 200, 8), item: "minecraft:cod_bucket", components: Some(components) };
+        assert!(server.empty_mob_bucket(&cod));
+        let poured: std::collections::HashMap<_, _> = server.take_changes().into_iter().collect();
+        assert_eq!(block_at(&poured, (8, 200, 8)).map(|b| b.id.key()), Some("minecraft:water".to_owned()));
+        assert!(server.level.spawned.is_empty(), "the level hands the cod over at once");
+        assert_eq!(server.dormant_count(), dormant + 1, "no fish is simulated yet, so the cod waits dormant");
+        let (group, tag) = server.dormant.last().expect("the cod");
+        assert_eq!((group[0].kind.as_str(), group[0].pos), ("minecraft:cod", [8.5, 200.0, 8.5]));
+        assert_eq!(tag.get("FromBucket"), Some(&Tag::Byte(1)));
+        assert_eq!(tag.get("Health"), Some(&Tag::Float(2.0)));
+        assert_eq!(tag.get("NoAI"), Some(&Tag::Byte(1)));
+        let motion = tag.get("Motion").and_then(Tag::as_list).map(|list| list.iter().filter_map(Tag::as_f64).collect::<Vec<_>>());
+        assert_ne!(motion, Some(vec![0.0, 1.0, 0.0]), "the bucket carries no motion");
+        let into_stone = MobBucketUse { pos: (8, 199, 8), at: (8, 199, 8), item: "minecraft:salmon_bucket", components: None };
+        assert!(!server.empty_mob_bucket(&into_stone));
+        assert_eq!(server.dormant_count(), dormant + 1, "no water, no salmon");
     }
 
     #[test]

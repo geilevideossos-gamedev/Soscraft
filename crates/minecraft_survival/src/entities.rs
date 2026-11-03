@@ -1114,6 +1114,14 @@ impl Entities {
         self.players.queue(player).item_use_waiting = Some(sent);
     }
 
+    pub fn empty_mob_bucket(&mut self, player: u64, bucket: minecraft_terrain::families::water::buckets::MobBucketUse, mut sent: SentItemUse, infinite: bool) {
+        if infinite {
+            sent.outcome.result = None;
+        }
+        self.server.empty_mob_bucket(player, bucket);
+        self.players.queue(player).item_use_waiting = Some(sent);
+    }
+
     pub fn throw_eye(&mut self, player: u64, throw: minecraft_terrain::ender_eye::EyeThrow, sent: SentItemUse) {
         self.server.throw_eye(player, throw);
         self.players.queue(player).item_use_waiting = Some(sent);
@@ -3572,6 +3580,47 @@ mod tests {
         };
         assert_eq!(felled(&friend_told), ["GREAT ENEMY FELLED"]);
         assert!(felled(&host_told).is_empty(), "the host never fought him");
+    }
+
+    fn friend_uses_done(entities: &mut Entities, host: &mut Inventory, friend: &mut Inventory) -> Vec<SentItemUse> {
+        let started = std::time::Instant::now();
+        while entities.awaits_item_use(FRIEND) {
+            assert!(started.elapsed().as_secs() < 300, "the use never came back from the host");
+            tick_both(entities, host, friend);
+        }
+        entities.take_player_outputs(FRIEND).item_uses_done
+    }
+
+    #[test]
+    fn a_friend_empties_a_fish_bucket_through_the_host() {
+        use minecraft_terrain::families::water::buckets::MobBucketUse;
+        use minecraft_terrain::server::ItemOnBlock;
+        let Some(mut entities) = friend_world() else {
+            return;
+        };
+        entities.spawn_mobs = false;
+        let (mut host, mut friend) = (Inventory::default(), Inventory::default());
+        let pool = (12, 201, 12);
+        let bucket = MobBucketUse { pos: pool, at: pool, item: "minecraft:tropical_fish_bucket", components: None };
+        let empty = || Some(ItemStack::new("minecraft:bucket", 1));
+        let mut poured = sent_use(3);
+        poured.outcome.result = empty();
+        entities.empty_mob_bucket(FRIEND, bucket.clone(), poured, false);
+        assert!(entities.awaits_item_use(FRIEND));
+        assert!(!entities.awaits_item_use(HOST), "the host's hand is free");
+        let done = friend_uses_done(&mut entities, &mut host, &mut friend);
+        let answered: Vec<(usize, Option<ItemStack>)> = done.into_iter().map(|used| (used.slot, used.outcome.result)).collect();
+        assert_eq!(answered, [(3, empty())], "the friend gets the empty bucket");
+        assert!(entities.take_player_outputs(HOST).item_uses_done.is_empty());
+        entities.item_on_block(FRIEND, pool, ItemOnBlock::FillBucket, sent_use(4));
+        let filled = friend_uses_done(&mut entities, &mut host, &mut friend);
+        assert_eq!(filled.iter().map(|used| used.slot).collect::<Vec<_>>(), [4], "the host poured a water source there");
+        let mut creative = sent_use(5);
+        creative.outcome.result = empty();
+        entities.empty_mob_bucket(FRIEND, bucket, creative, true);
+        let kept = friend_uses_done(&mut entities, &mut host, &mut friend);
+        let answered: Vec<(usize, Option<ItemStack>)> = kept.into_iter().map(|used| (used.slot, used.outcome.result)).collect();
+        assert_eq!(answered, [(5, None)], "in creative the fish bucket stays in the hand");
     }
 
     #[test]
