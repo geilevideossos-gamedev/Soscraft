@@ -81,7 +81,6 @@ pub trait Swimmer {
     type Extra: SwimExtra;
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
 #[allow(clippy::too_many_arguments)]
 pub(in crate::world) fn swim_ai_step<S: Swimmer, W: World>(
     ai: &mut MonsterAi,

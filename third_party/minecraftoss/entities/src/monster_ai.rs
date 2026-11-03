@@ -1843,7 +1843,8 @@ impl Goal<MonsterGoalContext> for AvoidEntityGoal {
         }
         let Some((_, avoid)) = best else { return false };
         let profile = ctx.profile();
-        let Some(pos) = crate::stroll::default_random_position_away(world, &profile, p, 16, 7, avoid.position, &mut ctx.random) else { return false };
+        let away = if matches!(ctx.navigation.water, crate::navigation::WaterNav::Bound { .. }) { crate::stroll::water_bound_random_position_away } else { crate::stroll::default_random_position_away };
+        let Some(pos) = away(world, &profile, p, 16, 7, avoid.position, &mut ctx.random) else { return false };
         if avoid.position.distance_squared(pos) < avoid.position.distance_squared(p) {
             return false;
         }

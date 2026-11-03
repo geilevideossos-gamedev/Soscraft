@@ -29,6 +29,8 @@ Files under `third_party/minecraftoss` this track patched or added.
 - Patched (water-swimming 1): `entities/src/look.rs` (`LookControl::tick_smooth_swimming` after `set_look_at_with_limits`), `entities/src/movement.rs` (`Body::travel_swimming` after `travel_drowned_swimming`). Changed again: `entities/src/world/families/water.rs` (`pub mod swim;`, and `swimming` made `pub`), `entities/src/world/families/water/swimming.rs` (`SwimControls`, `SwimGoals`, `Swimmer`, `swim_ai_step`), the probe and the water tests.
 - Added (water-swimming 1): `entities/src/world/families/water/swim.rs`, `entities/src/world/families/water/swim/tests.rs` (test only).
 - Changed again (water-swimming 2): `entities/src/world/families/water/swim.rs` (`random_position`, `random_swimmable_position`, `swim_stroll_target`, `TryFindLiquid`, `flop`), `entities/src/world/families/water/swimming.rs` (`RandomSwimmingGoal`, `TryFindLiquidGoal`, `SwimGoals.wanted`), the probe and both test files.
+- Patched (fish-live 1): `entities/src/stroll.rs` (`water_bound_random_position_away` after `water_bound_random_position`), `entities/src/monster_ai.rs` (`AvoidEntityGoal` takes its spot away by the navigation's water mode: one changed line and one added). Changed again: `entities/src/stroll/tests.rs`, `entities/src/world/families/water.rs` (`pub mod abstract_fish;`, `pub mod fish;` and `fish: fish::Fish,`), `entities/src/world/families/water/swimming.rs` (the dead-code attribute on `swim_ai_step` dropped).
+- Added (fish-live 1): `entities/src/world/families/water/abstract_fish.rs`, `entities/src/world/families/water/fish.rs`, `entities/src/world/families/water/fish/ai.rs`, `entities/src/world/families/water/fish/tests.rs` (test only).
 
 ## Hooks
 
@@ -43,6 +45,7 @@ Root hooks this track added (M20, "Owners of shared pieces"). The shared path pi
 - **"Registered Minecraft mobs can have a tracking range per kind"** (squids-drawn 1): `fn tracking_range(kind: &'static str) -> i32 { Self::TRACKING_RANGE }` after `CAGE_MARGIN` in `TerrainFamily` (`crates/minecraft_terrain/src/families.rs`). `terrain_group!`'s `tracking_range` finds the family's own `KINDS` entry for the asked kind (with or without `minecraft:`, the new private `named` beside `names`) and asks the hook with it, so `mob_tracking::tracking_range` answers per kind. Squids answer 10 for the glow squid (squids-drawn 2), and guardians will (the elder guardian).
 
 - **The swimming step and its controls** (water-swimming 1; shared pieces M20 gives M2, not registry hooks): `LookControl::tick_smooth_swimming` in `look.rs`, `Body::travel_swimming(world, input, yaw, acceleration)` in `movement.rs`, and in M2's own files `world/families/water/swim.rs` (`SmoothSwimmingMoveControl`, `FishMoveControl`, `SwimFrame`, `water_walk`) and `world/families/water/swimming.rs` (`SwimControls`, `SwimGoals` with `SwimExtra`, the `Swimmer` trait and `swim_ai_step`). Water-swimming 2 adds `RandomSwimmingGoal` and `TryFindLiquidGoal` to `swimming.rs`, and `random_swimmable_position`, `swim_stroll_target`, `TryFindLiquid` and `flop` to `swim.rs`. How a family uses them is under "Group water-swimming" below.
+- **What every `AbstractFish` shares** (fish-live 1; M2's own file `world/families/water/abstract_fish.rs`, for the four fish now and the tadpoles later): the fish `CONTROLS` (`SwimControls` with `FishMoveControl`, the plain look with a head limit of 75, the fixed 0.01 acceleration and the sink without a target), `FishGoals` with the `FishExtra` trait (`can_random_swim`, true by default), the goals `FishPanicGoal` and `FishSwimGoal` with `add_goals` (panic 0, players avoided 2, swimming 4), `despawn(from_bucket)`, `last_damage` (`getLastDamageSource`'s 40 ticks), `look_for_water` and `dying_swim` (a dying fish's own water travel). The shared `AvoidEntityGoal` (`monster_ai.rs`) now takes its spot away with `stroll::water_bound_random_position_away` for a water-bound navigation and with `default_random_position_away` for every other one, as vanilla's `DefaultRandomPos.getPosAway` asks the navigation whether a spot is stable.
 
 ## Protocol
 
@@ -68,6 +71,7 @@ None yet. The mob bucket posts `entity_place` at the block the mob comes out in 
   - The family components (salmon size, tropical pattern, axolotl variant, sulfur cube content) start empty in the rows (`MobBucket.components`); each family group fills its own.
 - **Mob buckets in dispensers (water-buckets 3):** 26.3 dispenses the sulfur cube bucket with the same behaviour as the fish buckets; the sulfur cube groups add `"sulfur_cube_bucket"` to the dispenser arm (the level side already lets a cube out without water). A dispensed water mob bucket plays no hiss where water evaporates, as the fork's plain water bucket plays none from a dispenser.
 - **Squids (squids-live 2, squids-drawn):** Impaling's extra damage (`#sensitive_to_impaling`) waits until the fork has Impaling for any mob. The golden dandelion's pause and reset particles are dropped, as for rabbits and polar bears.
+- **Fish (fish-live 1):** the pufferfish drops its ambient call after the base tick, but the call's two pitch draws stay, where vanilla's missing ambient sound draws no pitch (only the fish's own random sees the difference).
 - **Mob bucket pickup (water-buckets 2):** vanilla copies the mob's custom name onto the bucket (`saveDefaultDataToBucketTag`), but `MobCore` holds no name (only the server's tag for the mob keeps it), so a picked-up mob loses its name. A name on the bucket item itself still names the poured mob.
 
 ## Combined kit
@@ -871,4 +875,64 @@ After 8f50a80f.
 
 ```
 IW4L_MINECRAFT_KIT=minecraft:cod_bucket,minecraft:water_bucket,minecraft:water_bucket,minecraft:stone*16,minecraft:drowned_spawn_egg*2,minecraft:iron_shovel
+```
+
+### Group fish-live
+
+#### 1. Minecraft cod, salmon, tropical fish and pufferfish swim in the entity world
+
+After 815102c8.
+
+- **javap (26.3 `client.jar`):**
+  - `EntityTypes`: `COD` 0.5 x 0.3, eyes 0.195; `SALMON` 0.7 x 0.4, eyes 0.26; `TROPICAL_FISH` 0.5 x 0.4, eyes 0.26; `PUFFERFISH` 0.7 x 0.7, eyes 0.455; all `WATER_AMBIENT` with `clientTrackingRange(4)`.
+  - `AbstractFish`: health 3 (`createAttributes`, with the default speed 0.7 and follow range 16), `FishMoveControl`, `WaterBoundPathNavigation`, saved `FromBucket`, `requiresCustomPersistence` from the bucket, `removeWhenFarAway` only when neither from a bucket nor named, cluster 8. Goals: 0 `PanicGoal(1.25)`, 2 `AvoidEntityGoal(Player, 8, 1.6, 1.4, NO_SPECTATORS)`, 4 `FishSwimGoal` (`RandomSwimmingGoal(1.0, 40)` while `canRandomSwim`, true here). `travelInWater`: 0.01, x0.9, -0.005 with no target. `aiStep` flops before `super.aiStep()`. `playStepSound` is empty, `getSwimSound` is `entity.fish.swim`.
+  - `WaterAnimal`: ambient interval 120, experience `1 + random.nextInt(3)` from the mob's own random, the gills (water-hooks 1), not pushed by fluids, not leashable.
+  - `PanicGoal`: `shouldPanic` is a last damage source (`getLastDamageSource`, 40 ticks) in `#panic_causes`; on fire, `lookForWater(5)` (only with nothing solid at the feet: `findBlocksInBoxByManhattanDistance(pos, 5, 1)` for a water fluid, the block's corner); else `DefaultRandomPos.getPos(5, 4)`, which asks the navigation whether a spot is stable; `start` is `moveTo(x, y, z, speed)` (reach 1); it runs until the path is done.
+  - `AvoidEntityGoal`: the nearest in the box grown by (8, 3, 8) that `forCombat().range(8)` accepts (`LivingEntity.canAttack`: no players on Peaceful, none in creative or spectating), then `DefaultRandomPos.getPosAway(16, 7, its position)` farther from it than the mob, `createPath(.., 0)`, the walk speed 1.6, and in `tick` 1.4 within 7 blocks (`distanceToSqr < 49`), else 1.6.
+  - `Salmon$Variant`: small 0 x0.5, medium 1 x1 (default), large 2 x1.5, saved by name as `type`. `Pufferfish.getScale`: puff 0 x0.5, 1 x0.7, any other x1, with `PuffState` read as `min(v, 2)`. Both rescale through `EntityDimensions.scale`, eyes included.
+  - Sounds: `entity.{cod,salmon,tropical_fish}.{ambient,hurt,death,flop}`; the pufferfish has no ambient sound and uses `entity.puffer_fish.{hurt,death,flop}`.
+- **Changed (vendored entities crate):**
+  - New `world/families/water/abstract_fish.rs`: see "Hooks" ("What every `AbstractFish` shares").
+  - New `world/families/water/fish.rs`, the family `Fish` (key 65; `minecraft:cod`, `minecraft:salmon`, `minecraft:tropical_fish` and `minecraft:pufferfish` in one store): `FishVariant` (`Cod`, `Salmon(SalmonSize)`, `Tropical(packed)`, `Pufferfish`), `from_bucket`, `puff`, `last_damage` and the goal AI.
+    - Hooks: category `water_ambient`; `hurt` stamps the damage type for the panic; experience 1-3; `despawn` at 64 blocks, kept when from a bucket; `breathes_water`, `Breath::Gills`; voice `(cod | salmon | tropical_fish | puffer_fish, 1, neutral_volume)`; swim `entity.fish.swim` with the generic splash, quiet steps; `OWN_DYING_TRAVEL`.
+    - Sizes: `refresh_size` scales the body, the eyes and the walk profile by the salmon's size or the pufferfish's puff; `set_salmon_size` and `set_puff` (capped at 2) call it.
+    - The tick, in vanilla's order: `family_base_tick` (the gills); the pufferfish drops its ambient call; the flop with the kind's sound; a dying fish's own water travel; then, for a living fish with AI, the 40-tick damage memory into the goals and `swim_ai_step::<FishSwimmer, W>` through `family_goal_step_with` at speed 0.7; `family_after_move`.
+  - New `world/families/water/fish/ai.rs`: `FishAi` (the goal extra, holding `FishGoals`), the marker `FishSwimmer` with the fish `CONTROLS`, and four `MonsterSpec`s that differ by eye height (`spec_of`).
+  - `world/families/water.rs`: `pub mod abstract_fish;`, `pub mod fish;` and `fish: fish::Fish,` after the squids in `family_group!(water 64..=79 { .. })`.
+  - `world/families/water/swimming.rs`: `swim_ai_step` loses its `#[cfg_attr(not(test), allow(dead_code))]`, as water-swimming 1 planned.
+  - `stroll.rs`: `water_bound_random_position_away` after `water_bound_random_position` (a spot within a quarter turn of away, refused only outside the world, in a solid-render block or with a malus).
+  - `monster_ai.rs` (`AvoidEntityGoal::can_start`): the spot away comes from `water_bound_random_position_away` when the navigation is `WaterNav::Bound`, else from `default_random_position_away` as before.
+- **Tests added** (`world::families::water::fish::tests`, `stroll::tests`):
+  - `a_cod_is_half_a_block_long_with_three_health_and_its_kind` (the four kinds' sizes, eyes, health, key, kind, gills, despawn rule, water-bound navigation and walk profile, category, traits and voices, census and `mob_candidates`; killed, each leaves its own table and 1-3 experience).
+  - `salmon_sizes_and_pufferfish_puffs_scale_their_bodies` (small, large and medium salmon with their eyes and walk profiles; the ids clamp, and the names; puffs 1, 2, 7 kept as 2, and 0; a cod keeps its size).
+  - `a_fish_swims_with_the_fish_move_control_and_settles_when_idle` (300 ticks in a tank with a player 24 blocks off: always in the water, the speed either 0 or an eighth closer to 0.7 each tick, and it wanders more than 2 blocks; then 500 ticks alone: the path done, speed 0, nearly still, still in the water).
+  - `a_fish_out_of_water_flops_and_drowns_in_seventeen_seconds` (each kind on stone: health 3 until tick 320, 1 until 340, dead at 340 with one death sound; ten or more flops with its own sound).
+  - `a_hurt_fish_panics_and_fish_flee_survival_players_within_eight_blocks` (a player's hit starts the panic at 1.25 towards a spot within 5 and 4, forgotten later; a survival player at 5 blocks makes it flee at 1.4, at 7.5 at 1.6, to a spot no nearer; none at 9 blocks, for a creative player or on Peaceful; `look_for_water` takes the first water by Manhattan order, and none with stone at the feet).
+  - `fish_despawn_beyond_64_blocks_unless_from_a_bucket` (a cod at 70 blocks goes; one at 60 and a salmon from a bucket at 70 stay; the bucket fish counts as persistent; nothing goes on Peaceful near a player).
+  - `fish_sound_like_vanilla` (in 3000 ticks the cod calls at least three times, each more than 120 ticks apart, the pufferfish never; `entity.fish.swim` and never the generic swim; no steps, in the water or flopping on stone).
+  - `a_cod_drops_cod_and_sometimes_bone_meal_and_a_burning_one_cooked_cod` (with the 26.3 jar: 200 cods drop one raw cod each, 200 burning ones one cooked cod each, and some bone meal; 1-3 experience).
+  - `stroll::tests::a_water_bound_spot_away_lies_in_open_water_away_from_the_threat` (spots without a floor, never in stone, within a quarter turn of away and within 16 and 7 blocks; the ground rule finds none there).
+- **Decisions:**
+  - **The shared `AvoidEntityGoal` asks the navigation's water mode for its spot away** (one changed line, and a sibling of `water_bound_random_position`), rather than a fish copy of the goal: vanilla's `DefaultRandomPos.getPosAway` asks `mob.getNavigation().isStableDestination`, and the ground rule (a solid block below) never holds in open water. Ground and amphibious mobs keep the ground rule (no amphibious mob uses this goal).
+  - **The fish panic with their own `FishPanicGoal`**, not M1's `PanicGoal`: `PanicState::can_use` picks a ground spot (`default_random_position`), which never succeeds in open water. It uses the same causes (`feline_ai::panic_cause`), M1's 40-tick memory (`LAST_DAMAGE_TICKS`) and the burning mob's water search (`manhattan_ordered`), with the spot from the navigation's water mode (`swim::random_position`).
+  - **A dying fish moves by its own water travel** (`OWN_DYING_TRAVEL` and `dying_swim`): vanilla's `travel` runs `AbstractFish.travelInWater` while it dies (0.01, x0.9, sinking 0.005), where the shared dying travel drags by 0.8.
+  - **No `in_water` field:** `Body.touching_water` is vanilla's `isInWater` (`wasTouchingWater`); the flop reads it, and the renderer will.
+  - **Four specs that differ by eye height**, all with the same goals for now; `family_goal_step_with` takes the eyes from the core each tick, so a salmon's size and a pufferfish's puff reach the goals.
+  - **The fleeing speeds are vanilla's:** 1.6 beyond 7 blocks and 1.4 within, so a fish is slower when you are close, against the brief's step 2 ("faster when you are close"); the steps below say what vanilla does. On Peaceful no fish flees a player (`LivingEntity.canAttack`), which the shared `can_attack` already answers.
+  - **The variant and the puff come with this commit** (sizes and sounds), though nothing changes them yet: the salmon's size draw is `fish-spawning`'s, the tropical patterns are `fish-drawn`'s and the puffing is `fish-pufferfish`'s.
+- **Terrain:** the fish are not registered in terrain yet (`fish-drawn`), so in the game they stay dormant. D0's terrain test `server_mobs::tests::every_registered_kind_is_simulated_and_summonable`, which compares the two registries, fails from this commit until `fish-drawn` 2 registers `Fish` in terrain, as it did for the squids between `squids-live` 2 and `squids-drawn` 2.
+- **Protocol:** none.
+- **Game events still to add:** none (the swim and the splash come from the shared movement; the flop posts none).
+- **What changes in the game:** nothing visible yet: the fish wait dormant until `fish-drawn`. A water-bound mob that avoids something now finds its spot in open water; no such mob is live yet, and every ground mob's avoidance is as before.
+- **Runs:**
+  - `test -p minecraftoss-entities --locked --lib world::families::water`: 37 passed on the first run, the loot test with the 26.3 jar (the wrapper sets `MINECRAFTOSS_ROOT`).
+  - `test -p minecraftoss-entities --locked --lib`: 700 passed. `check -p launcher --locked`: green, with only the old render_frame and skate warnings.
+  - The four new files pass `rustfmt --check --edition 2021` on their staged content with empty output; `stroll.rs` and `monster_ai.rs` keep their own style. No added line holds a comment.
+- **Test steps** (regression; the fish stay unseen until `fish-drawn`). Release build, survival, Normal, by day, on grass. Name each screenshot by its label.
+  1. Use a rabbit egg 6 blocks away and walk towards it: it hops away from you, as before. **m2-fish-1**
+  2. Place stone 3 blocks away and use the cod bucket on it: water appears with the fish-bucket splash and you hold an empty bucket, as before.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:rabbit_spawn_egg*2,minecraft:cod_bucket,minecraft:stone*16
 ```

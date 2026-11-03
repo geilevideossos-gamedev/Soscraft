@@ -249,6 +249,16 @@ pub fn water_bound_random_position(world: &dyn World, profile: &WalkProfile, pos
     })
 }
 
+pub fn water_bound_random_position_away(world: &dyn World, profile: &WalkProfile, position: DVec3, horizontal: u32, vertical: u32, avoid: DVec3, random: &mut LegacyRandom) -> Option<DVec3> {
+    let dir = position - avoid;
+    best_of(world, profile, || {
+        let direction = random_direction_within(random, 0.0, f64::from(horizontal), vertical, dir.x, dir.z, f64::from(std::f32::consts::FRAC_PI_2))?;
+        let pos = toward(position, direction);
+        let outside = pos.1 < world.min_y() || pos.1 > world.max_y();
+        (!outside && !world.solid_render(pos) && !has_malus(world, profile, pos)).then_some(pos)
+    })
+}
+
 fn within_home((x, y, z): BlockPos, radius: i32, pos: BlockPos) -> bool {
     let d = DVec3::new(f64::from(x - pos.0), f64::from(y - pos.1), f64::from(z - pos.2));
     d.length_squared() < f64::from(radius * radius)

@@ -127,3 +127,39 @@ fn a_water_bound_spot_stays_inside_its_home() {
         assert!(spot.is_some_and(|spot| (block_of(spot).0 - 30).abs() <= 10));
     }
 }
+
+#[test]
+fn a_water_bound_spot_away_lies_in_open_water_away_from_the_threat() {
+    let mut scene = Scene::default();
+    scene.fill((-30, 30, -30), (30, 63, 30), "minecraft:water");
+    scene.fill((6, 30, -30), (8, 63, 30), "minecraft:stone");
+    let mut profile = swimmer();
+    profile.set_malus(PathType::Blocked, 0.0);
+    let position = DVec3::new(0.5, 50.0, 0.5);
+    let threat = DVec3::new(-4.5, 50.0, 0.5);
+    let mut found = 0;
+    for seed in 0..200 {
+        let mut random = LegacyRandom::new(seed);
+        let spot = water_bound_random_position_away(
+            &scene,
+            &profile,
+            position,
+            16,
+            7,
+            threat,
+            &mut random,
+        );
+        let Some(spot) = spot else { continue };
+        found += 1;
+        let block = block_of(spot);
+        assert!(!scene.solid_render(block), "{spot:?}");
+        let off = spot - position;
+        assert!(off.x >= -1.0, "within a quarter turn of away: {spot:?}");
+        assert!(off.x.abs() <= 16.5 && off.z.abs() <= 16.5 && off.y.abs() <= 7.0);
+        let mut random = LegacyRandom::new(seed);
+        let ground =
+            default_random_position_away(&scene, &swimmer(), position, 16, 7, threat, &mut random);
+        assert_eq!(ground, None, "no floor in open water");
+    }
+    assert!(found > 150, "{found}");
+}
