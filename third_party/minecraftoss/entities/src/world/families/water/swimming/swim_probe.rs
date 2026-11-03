@@ -1,5 +1,6 @@
 use super::{
-    SwimAcceleration, SwimControls, SwimGoals, SwimLook, SwimMovement, Swimmer, swim_ai_step,
+    RandomSwimmingGoal, SwimAcceleration, SwimControls, SwimGoals, SwimLook, SwimMovement, Swimmer,
+    TryFindLiquidGoal, swim_ai_step,
 };
 use crate::goals::GoalSelector;
 use crate::monster_ai::{MonsterAi, MonsterGoalContext, MonsterKind};
@@ -7,7 +8,7 @@ use crate::navigation::WaterNav;
 use crate::tempt::PlayerCandidate;
 use crate::world::EntityWorld;
 use crate::world::emissions::play_movement;
-use crate::world::families::water::swim::{SmoothSwimmingMoveControl, water_walk};
+use crate::world::families::water::swim::{SmoothSwimmingMoveControl, flop, water_walk};
 use crate::world::families::{
     AiStep, Breath, Family, FamilyMob, MobCore, MonsterSpec, movement_sounds,
 };
@@ -18,6 +19,7 @@ pub const KIND: &str = "minecraft:swim_probe";
 pub const SILENT: &str = "minecraft:silent_swim_probe";
 pub const SWIMMING: &str = "minecraft:swimming_probe";
 pub const SWIM: &str = "entity.fish.swim";
+pub const FLOP: &str = "entity.cod.flop";
 pub const SILENT_SPLASH: &str = "entity.hostile.splash";
 pub const WIDTH: f32 = 0.5;
 pub const HEIGHT: f32 = 0.3;
@@ -56,17 +58,24 @@ impl Swimmer for Smooth {
     type Extra = SwimGoals;
 }
 
-pub const GOAL_NAMES: [&str; 0] = [];
+pub const GOAL_NAMES: [&str; 2] = ["TryFindLiquidGoal", "RandomSwimmingGoal"];
 
 pub static SPEC: MonsterSpec = MonsterSpec {
     goal_names: &GOAL_NAMES,
     target_names: &[],
-    goals: no_goals,
+    goals,
     targets: no_goals,
     eye_height: EYE_HEIGHT,
     follow_range: FOLLOW_RANGE,
     walk: water_walk,
 };
+
+fn goals() -> GoalSelector<MonsterGoalContext> {
+    let mut selector = GoalSelector::default();
+    selector.add(0, TryFindLiquidGoal::<SwimGoals>::default());
+    selector.add(4, RandomSwimmingGoal::new(1.0, 40));
+    selector
+}
 
 fn no_goals() -> GoalSelector<MonsterGoalContext> {
     GoalSelector::default()
@@ -122,6 +131,10 @@ impl Family for SwimProbe {
             .family_mob_mut::<Self>(id)
             .and_then(|mob| mob.state.ai.as_ref().map(|_| mob.state.smooth));
         if let Some(smooth) = smooth {
+            let fish = world.family_mob_mut::<Self>(id).filter(|_| !smooth);
+            if let Some(mob) = fish {
+                flop(&mut mob.core, FLOP);
+            }
             if base.alive && !base.no_ai {
                 let run: AiStep<W> = if smooth {
                     swim_ai_step::<Smooth, W>

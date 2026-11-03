@@ -1,7 +1,8 @@
 use super::*;
 use crate::look::LookControl;
 use crate::movement::Body;
-use minecraftoss_player::{Block, Pos, World};
+use minecraftoss_player::Block;
+use std::collections::HashSet;
 
 const DOLPHIN: SmoothSwimmingMoveControl = SmoothSwimmingMoveControl::new(85, 10, 0.02, 0.1, true);
 const START: DVec3 = DVec3::new(0.5, 64.0, 0.5);
@@ -256,4 +257,177 @@ fn swimming_travel_keeps_nine_tenths_without_gravity() {
     let mut sinking = Body::new(START, 0.5, 0.3);
     sinking.travel_water(&Sea, DVec3::ZERO, 0.0);
     assert!(sinking.velocity.y < 0.0, "plain water travel sinks");
+}
+
+#[derive(Default)]
+struct Shore {
+    water: HashSet<Pos>,
+    stone: HashSet<Pos>,
+}
+
+impl World for Shore {
+    fn block(&self, pos: Pos) -> Option<Block> {
+        if self.water.contains(&pos) {
+            return Some(Block::new(WATER));
+        }
+        let stone = pos.1 < 64 || self.stone.contains(&pos);
+        stone.then(|| Block::new("minecraft:stone"))
+    }
+
+    fn set_block(&mut self, _: Pos, _: Option<Block>) {}
+}
+
+struct Pond;
+
+impl World for Pond {
+    fn block(&self, (x, y, z): Pos) -> Option<Block> {
+        let water = x.abs() <= 3 && z.abs() <= 3 && (60..=66).contains(&y);
+        if water {
+            Some(Block::new(WATER))
+        } else {
+            (y <= 66).then(|| Block::new("minecraft:stone"))
+        }
+    }
+
+    fn set_block(&mut self, _: Pos, _: Option<Block>) {}
+}
+
+fn swimmer_walk() -> WalkProfile {
+    let mut profile = WalkProfile::animal(0.5, 0.3);
+    water_walk(&mut profile);
+    profile
+}
+
+fn widened(position: DVec3, first: DVec3, keep: impl Fn(DVec3) -> bool) -> DVec3 {
+    let mut last = first;
+    for (horizontal, vertical) in SWIM_TIERS.into_iter().skip(1) {
+        let (h, v) = (f64::from(horizontal), f64::from(vertical));
+        let next = position + normalize(last - position) * DVec3::new(h, v, h);
+        if !keep(next) {
+            return last;
+        }
+        last = next;
+    }
+    last
+}
+
+#[test]
+fn try_find_liquid_waits_on_its_clock_and_prefers_water_with_air_above() {
+    let mob = DVec3::new(0.5, 64.0, 0.5);
+    let mut shore = Shore::default();
+    shore.water.extend([(0, 63, 0), (1, 63, 0)]);
+    shore.stone.insert((1, 64, 0));
+    let mut find = TryFindLiquid::default();
+    let nothing = LiquidSearch::Searched(None);
+    assert_eq!(
+        find.run(&shore, mob, 6, 100),
+        nothing,
+        "its own column, too near"
+    );
+    assert_eq!(find.next, 140);
+    assert_eq!(find.run(&shore, mob, 6, 110), LiquidSearch::Waited);
+    assert_eq!(find.next, 132, "each early call puts it off again");
+
+    shore.water.insert((-3, 63, 0));
+    shore.stone.insert((-3, 64, 0));
+    let covered = LiquidSearch::Searched(Some((-3, 63, 0)));
+    assert_eq!(
+        find.run(&shore, mob, 6, 132),
+        covered,
+        "the first one not too near"
+    );
+    assert_eq!(find.next, 172);
+
+    shore.water.insert((0, 63, 3));
+    let open = LiquidSearch::Searched(Some((0, 63, 3)));
+    assert_eq!(
+        find.run(&shore, mob, 6, 172),
+        open,
+        "water open to the air wins"
+    );
+
+    let mut far = Shore::default();
+    far.water.insert((0, 63, 7));
+    let mut find = TryFindLiquid::default();
+    assert_eq!(find.run(&far, mob, 6, 0), nothing, "beyond its range");
+
+    shore.water.insert((0, 64, 0));
+    let mut find = TryFindLiquid { next: 5 };
+    assert_eq!(find.run(&shore, mob, 6, 300), LiquidSearch::InLiquid);
+    assert_eq!(find.next, 5, "in water the clock stands still");
+}
+
+#[test]
+fn the_swim_stroll_target_widens_through_six_tiers() {
+    let profile = swimmer_walk();
+    let water = WaterNav::Bound { breaching: false };
+    let position = DVec3::new(0.5, 64.0, 0.5);
+    let mut moved = 0;
+    for seed in 0..20 {
+        let mut random = LegacyRandom::new(seed);
+        let mut replay = random.clone();
+        let target = swim_stroll_target(&Sea, &profile, water, position, None, &mut random);
+        let first =
+            random_swimmable_position(&Sea, &profile, water, position, 1, 1, None, &mut replay);
+        let first = first.expect("a spot in open water");
+        assert_eq!(
+            target,
+            Some(widened(position, first, |_| true)),
+            "seed {seed}"
+        );
+        assert_eq!(
+            random.next_long(),
+            replay.next_long(),
+            "one random spot, then straight on"
+        );
+        let reach = (target.unwrap() - position).length();
+        if first != position {
+            moved += 1;
+            assert!(
+                (7.0 - 1.0e-9..=10.0 + 1.0e-9).contains(&reach),
+                "seed {seed}: {reach}"
+            );
+        }
+    }
+    assert!(moved >= 15, "{moved}");
+
+    let in_pond = |spot: DVec3| Pond.floatable_fluid(block_of(spot));
+    for seed in 0..20 {
+        let mut random = LegacyRandom::new(seed);
+        let mut replay = random.clone();
+        let target = swim_stroll_target(&Pond, &profile, water, position, None, &mut random);
+        let first =
+            random_swimmable_position(&Pond, &profile, water, position, 1, 1, None, &mut replay);
+        let expected = first
+            .filter(|&first| in_pond(first))
+            .map(|first| widened(position, first, in_pond));
+        assert_eq!(target, expected, "seed {seed}");
+        assert!(target.is_none_or(in_pond), "it stops where the pond ends");
+    }
+
+    let home = Some((block_of(position), 4));
+    let near_home = |spot: DVec3| {
+        let block = block_of(spot);
+        let d = DVec3::new(
+            f64::from(block.0),
+            f64::from(block.1 - 64),
+            f64::from(block.2),
+        );
+        d.length_squared() < 16.0
+    };
+    for seed in 0..20 {
+        let mut random = LegacyRandom::new(seed);
+        let mut replay = random.clone();
+        let target = swim_stroll_target(&Sea, &profile, water, position, home, &mut random);
+        let first =
+            random_swimmable_position(&Sea, &profile, water, position, 1, 1, home, &mut replay);
+        let expected = first.map(|first| widened(position, first, near_home));
+        assert_eq!(target, expected, "seed {seed}");
+        assert!(target.is_some_and(near_home), "it stays home");
+    }
+
+    let mut random = LegacyRandom::new(3);
+    let land = Shore::default();
+    let stranded = swim_stroll_target(&land, &profile, water, position, None, &mut random);
+    assert_eq!(stranded, None, "no water near");
 }

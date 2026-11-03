@@ -1,14 +1,20 @@
 use crate::fluid::FluidFrame;
-use crate::monster_ai::MonsterAi;
+use crate::goals::{Control, Controls, Goal};
+use crate::monster_ai::{MonsterAi, MonsterGoalContext};
 use crate::movement::Body;
+use crate::navigation::navigate_walk_to;
 use crate::tempt::PlayerCandidate;
 use crate::world::emissions::play_movement;
-use crate::world::families::water::swim::{FishMoveControl, SmoothSwimmingMoveControl, SwimFrame};
+use crate::world::families::goals::reduced_tick_delay;
+use crate::world::families::water::swim::{
+    FishMoveControl, SmoothSwimmingMoveControl, SwimFrame, block_of, random_swimmable_position,
+};
 use crate::world::{MonsterStep, Voice};
 use glam::DVec3;
 use minecraftoss_player::World;
 use minecraftoss_player::rng::LegacyRandom;
 use std::any::Any;
+use std::marker::PhantomData;
 
 #[cfg(test)]
 pub mod swim_probe;
@@ -17,6 +23,10 @@ pub const NEAR_PLAYER: f64 = 32.0;
 pub const INPUT_FADE: f32 = 0.98;
 pub const JUMP_THRESHOLD: f64 = 0.4;
 pub const SINK_WITHOUT_TARGET: f64 = 0.005;
+pub const IDLE_LIMIT: i32 = 100;
+pub const SWIM_RANGE: (u32, u32) = (10, 7);
+pub const FIND_WATER_REACH: f64 = 2.0;
+pub const FIND_WATER_SPEED: f64 = 1.0;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum SwimMovement {
@@ -48,6 +58,7 @@ pub struct SwimControls {
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct SwimGoals {
     pub up: f32,
+    pub wanted: Option<DVec3>,
 }
 
 pub trait SwimExtra: Any + Clone + Send {
@@ -115,11 +126,16 @@ pub(in crate::world) fn swim_ai_step<S: Swimmer, W: World>(
     if let Some(velocity) = ai.state.leap.take() {
         body.velocity = velocity;
     }
-    let up = ai
+    let swim = ai
         .state
         .extra
-        .get::<S::Extra>()
-        .map_or(0.0, |extra| extra.swim().up);
+        .get_mut::<S::Extra>()
+        .map(SwimExtra::swim_mut);
+    let (wanted, up) = swim.map_or((None, 0.0), |swim| (swim.wanted.take(), swim.up));
+    if let Some(wanted) = wanted {
+        ai.move_control
+            .set_wanted_position(wanted, FIND_WATER_SPEED);
+    }
     let profile = ai.state.profile();
     let navigation = &mut ai.state.navigation;
     navigation.delayed_recompute(world, body, &profile, fluid, step.game_time);
@@ -225,4 +241,105 @@ pub(in crate::world) fn swim_ai_step<S: Swimmer, W: World>(
     ai.body_rotation
         .tick_limited(yaw, look, previous_position, after, max);
     landed
+}
+
+#[derive(Clone)]
+pub struct RandomSwimmingGoal {
+    pub speed: f64,
+    pub interval: u32,
+    pub wanted: Option<DVec3>,
+}
+
+impl RandomSwimmingGoal {
+    pub fn new(speed: f64, interval: u32) -> Self {
+        Self {
+            speed,
+            interval,
+            wanted: None,
+        }
+    }
+}
+
+impl Goal<MonsterGoalContext> for RandomSwimmingGoal {
+    fn controls(&self) -> Controls {
+        Controls::new(&[Control::Move])
+    }
+
+    fn can_start(&mut self, ctx: &mut MonsterGoalContext, world: &dyn World) -> bool {
+        if ctx.no_action_time >= IDLE_LIMIT
+            || ctx.random.next_int(reduced_tick_delay(self.interval)) != 0
+        {
+            return false;
+        }
+        let (water, position) = (ctx.navigation.water, ctx.body.position);
+        let (horizontal, vertical) = SWIM_RANGE;
+        let random = &mut ctx.random;
+        self.wanted = random_swimmable_position(
+            world, &ctx.walk, water, position, horizontal, vertical, None, random,
+        );
+        self.wanted.is_some()
+    }
+
+    fn can_continue(&mut self, ctx: &mut MonsterGoalContext, _world: &dyn World) -> bool {
+        !ctx.navigation.is_done()
+    }
+
+    fn start_world(&mut self, ctx: &mut MonsterGoalContext, world: &dyn World) {
+        let Some(target) = self.wanted else {
+            return;
+        };
+        let profile = ctx.profile();
+        let navigation = &mut ctx.navigation;
+        let _ = navigate_walk_to(
+            &ctx.body, navigation, world, &profile, ctx.fluid, target, self.speed, 1,
+        );
+    }
+
+    fn stop(&mut self, ctx: &mut MonsterGoalContext) {
+        ctx.navigation.stop();
+    }
+}
+
+pub struct TryFindLiquidGoal<E> {
+    extra: PhantomData<fn() -> E>,
+}
+
+impl<E> Clone for TryFindLiquidGoal<E> {
+    fn clone(&self) -> Self {
+        Self { extra: PhantomData }
+    }
+}
+
+impl<E> Default for TryFindLiquidGoal<E> {
+    fn default() -> Self {
+        Self { extra: PhantomData }
+    }
+}
+
+impl<E: SwimExtra> Goal<MonsterGoalContext> for TryFindLiquidGoal<E> {
+    fn controls(&self) -> Controls {
+        Controls::new(&[])
+    }
+
+    fn can_start(&mut self, ctx: &mut MonsterGoalContext, world: &dyn World) -> bool {
+        let body = &ctx.body;
+        body.on_ground && !world.floatable_fluid(block_of(body.position))
+    }
+
+    fn start_world(&mut self, ctx: &mut MonsterGoalContext, world: &dyn World) {
+        let p = ctx.body.position;
+        let reach = FIND_WATER_REACH;
+        let low = block_of(p - DVec3::splat(reach));
+        let high = block_of(p + DVec3::new(reach, 0.0, reach));
+        let mut blocks = (low.2..=high.2).flat_map(|z| {
+            (low.1..=high.1).flat_map(move |y| (low.0..=high.0).map(move |x| (x, y, z)))
+        });
+        let Some((x, y, z)) = blocks.find(|&pos| world.floatable_fluid(pos)) else {
+            return;
+        };
+        if let Some(extra) = ctx.extra.get_mut::<E>() {
+            let corner = DVec3::new(f64::from(x), f64::from(y), f64::from(z));
+            extra.swim_mut().wanted = Some(corner);
+        }
+    }
 }

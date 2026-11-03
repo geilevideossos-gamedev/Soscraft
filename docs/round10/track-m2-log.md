@@ -28,6 +28,7 @@ Files under `third_party/minecraftoss` this track patched or added.
 - Added (squids-live 3): `world/src/natural_spawner/families/water/tests.rs` (test only).
 - Patched (water-swimming 1): `entities/src/look.rs` (`LookControl::tick_smooth_swimming` after `set_look_at_with_limits`), `entities/src/movement.rs` (`Body::travel_swimming` after `travel_drowned_swimming`). Changed again: `entities/src/world/families/water.rs` (`pub mod swim;`, and `swimming` made `pub`), `entities/src/world/families/water/swimming.rs` (`SwimControls`, `SwimGoals`, `Swimmer`, `swim_ai_step`), the probe and the water tests.
 - Added (water-swimming 1): `entities/src/world/families/water/swim.rs`, `entities/src/world/families/water/swim/tests.rs` (test only).
+- Changed again (water-swimming 2): `entities/src/world/families/water/swim.rs` (`random_position`, `random_swimmable_position`, `swim_stroll_target`, `TryFindLiquid`, `flop`), `entities/src/world/families/water/swimming.rs` (`RandomSwimmingGoal`, `TryFindLiquidGoal`, `SwimGoals.wanted`), the probe and both test files.
 
 ## Hooks
 
@@ -41,7 +42,7 @@ Root hooks this track added (M20, "Owners of shared pieces"). The shared path pi
 - **"Registered Minecraft mobs can move by their own rules while dying"** (squids-live 1): `const OWN_DYING_TRAVEL: bool = false` after `MOUNT` in `Family` (`entities/src/world/families.rs`). `family_base_tick` runs the shared `living::dying_travel` (no input, falling or sinking with the plain drag, the swim and step sounds) only for a dead mob with AI whose family leaves it false. A family that sets it moves its dead mobs in its own tick, as vanilla's `LivingEntity.aiStep` calls the class's own `travel` while it dies. Squids set it (`Squid.travel` is a bare `move`), and dolphins and axolotls will.
 - **"Registered Minecraft mobs can have a tracking range per kind"** (squids-drawn 1): `fn tracking_range(kind: &'static str) -> i32 { Self::TRACKING_RANGE }` after `CAGE_MARGIN` in `TerrainFamily` (`crates/minecraft_terrain/src/families.rs`). `terrain_group!`'s `tracking_range` finds the family's own `KINDS` entry for the asked kind (with or without `minecraft:`, the new private `named` beside `names`) and asks the hook with it, so `mob_tracking::tracking_range` answers per kind. Squids answer 10 for the glow squid (squids-drawn 2), and guardians will (the elder guardian).
 
-- **The swimming step and its controls** (water-swimming 1; shared pieces M20 gives M2, not registry hooks): `LookControl::tick_smooth_swimming` in `look.rs`, `Body::travel_swimming(world, input, yaw, acceleration)` in `movement.rs`, and in M2's own files `world/families/water/swim.rs` (`SmoothSwimmingMoveControl`, `FishMoveControl`, `SwimFrame`, `water_walk`) and `world/families/water/swimming.rs` (`SwimControls`, `SwimGoals` with `SwimExtra`, the `Swimmer` trait and `swim_ai_step`). How a family uses them is under "Group water-swimming" below.
+- **The swimming step and its controls** (water-swimming 1; shared pieces M20 gives M2, not registry hooks): `LookControl::tick_smooth_swimming` in `look.rs`, `Body::travel_swimming(world, input, yaw, acceleration)` in `movement.rs`, and in M2's own files `world/families/water/swim.rs` (`SmoothSwimmingMoveControl`, `FishMoveControl`, `SwimFrame`, `water_walk`) and `world/families/water/swimming.rs` (`SwimControls`, `SwimGoals` with `SwimExtra`, the `Swimmer` trait and `swim_ai_step`). Water-swimming 2 adds `RandomSwimmingGoal` and `TryFindLiquidGoal` to `swimming.rs`, and `random_swimmable_position`, `swim_stroll_target`, `TryFindLiquid` and `flop` to `swim.rs`. How a family uses them is under "Group water-swimming" below.
 
 ## Protocol
 
@@ -809,4 +810,65 @@ After 24d774f1.
 
 ```
 IW4L_MINECRAFT_KIT=minecraft:drowned_spawn_egg*2,minecraft:squid_spawn_egg*2,minecraft:water_bucket,minecraft:water_bucket,minecraft:iron_shovel
+```
+
+#### 2. Minecraft swimmers wander the water, head for it on land and flop when stranded
+
+After 8f50a80f.
+
+- **javap (26.3 `client.jar`):**
+  - `RandomStrollGoal(mob, speed, interval)`: the `MOVE` flag; `canUse` refuses with a controlling passenger, with `noActionTime >= 100` (`checkNoActionTime`) and when `nextInt(reducedTickDelay(interval)) != 0`, then takes `getPosition()` and refuses on null; it continues while the navigation runs and no passenger steers; `start` is `navigation.moveTo(wanted, speed)` (reach 1) and `stop` `navigation.stop()`.
+  - `RandomSwimmingGoal(mob, speed, interval)`: `getPosition` is `BehaviorUtils.getRandomSwimmablePos(mob, 10, 7)`.
+  - `BehaviorUtils.getRandomSwimmablePos(mob, h, v)`: `DefaultRandomPos.getPos(mob, h, v)`, drawn again while the spot is not null, its block is not `isPathfindable(WATER)` and fewer than 10 redraws were made (`i++ < 10`); the last spot comes back either way, so eleven draws at most.
+  - `RandomStroll.swim(speed)` (`getTargetSwimPos`), tiers `{1,1} {3,3} {5,5} {6,5} {7,7} {10,7}`: the first tier is a random swimmable spot; each later one is `position + normalize(position.vectorTo(last)) * (h, v, h)`. A tier whose spot is null, holds no fluid (`FluidState.isEmpty`) or is outside the home (`GoalUtils.isRestricted(mobRestricted(mob, h), ..)`) ends the walk with the last good spot (null at the first tier); after the sixth the sixth comes back.
+  - `TryFindLiquidGoal(mob, #water)` (the dolphin's, at priority 0): no flags; `canUse` is `onGround()` and the fluid at its block not in the tag, and it continues while that holds; `start` scans `BlockPos.betweenClosed(floor(x - 2), floor(y - 2), floor(z - 2), floor(x + 2), blockY, floor(z + 2))` (x fastest, then y, then z) and hands the first block whose fluid is in the tag to `moveControl.setWantedPosition(x, y, z, 1.0)`, the block's corner. It has no tick.
+  - `TryFindLiquid.create(range, speed, tag)` (axolotl brains): needs no `ATTACK_TARGET` and no `WALK_TARGET`; in the fluid it does nothing; before its clock it puts the clock at `time + 20 + 2` and is done; otherwise it walks `findBlocksInBoxByManhattanDistance(blockPos, range)` (`BlockPos.withinBoxByManhattanDistance(pos, r, r, r)`, `manhattanOrdered` to depth `3r`), keeping blocks outside its own column (`differsHorizontally`) that are a `LiquidBlock` of the tag: the first with air above wins at once, else the first not within 1.5 of the mob (`closerToCenterThan`). A find becomes the `LOOK_TARGET` and the `WALK_TARGET` (the block, its speed, reach 0). The clock goes to `time + 40`.
+  - `AbstractFish.aiStep`, before `super.aiStep()` (so after the base tick, and while dying or without AI too): out of water (`isInWater`), on the ground and after a vertical collision, `v += ((nextFloat * 2 - 1) * 0.05f, 0.4000000059604645, (nextFloat * 2 - 1) * 0.05f)` (x drawn first), `setOnGround(false)`, `needsSync`, and `makeSound(getFlopSound())` at the sound volume (1) and the voice pitch.
+  - `Dolphin.registerGoals`: `TryFindLiquidGoal` at 0 and `RandomSwimmingGoal(1.0, 10)` at 4. `AbstractFish`: its swim goal at 4 is `RandomSwimmingGoal(1.0, 40)` while `canRandomSwim`.
+- **Changed (vendored entities crate):**
+  - `world/families/water/swim.rs`:
+    - `random_position(world, profile, water, position, h, v, home, random)`: `DefaultRandomPos.getPos` with the navigation's stable rule, `water_bound_random_position` (with the home) for `WaterNav::Bound`, `amphibious_random_position` for `Amphibious`, `default_random_position` for `Ground`;
+    - `random_swimmable_position(..)`: vanilla's eleven draws until the block is pathfindable in water;
+    - `swim_stroll_target(world, profile, water, position, home, random)`: `RandomStroll.swim`'s six tiers;
+    - `TryFindLiquid { next }` with `run(world, position, range, time) -> LiquidSearch { InLiquid, Waited, Searched(Option<Pos>) }`, the brains' search and its clock (water only);
+    - `flop(core, sound) -> bool`, the stranded fish's hop with its sound, and `block_of`.
+  - `world/families/water/swimming.rs`:
+    - `RandomSwimmingGoal { speed, interval, wanted }` over `random_swimmable_position` with the navigation's own water mode;
+    - `TryFindLiquidGoal<E: SwimExtra>`, which hands the corner it found to `SwimGoals.wanted`;
+    - `swim_ai_step` takes that spot after the goals and sets it on the move control at speed 1, before the navigation's tick, as vanilla's order has it.
+  - The probe: its spec now holds `TryFindLiquidGoal` (0) and `RandomSwimmingGoal(1.0, 40)` (4), and a probe with fish controls flops with `entity.cod.flop` after its base tick.
+- **How a family uses it:**
+  - Fish (`fish-live`): their swim goal wraps `RandomSwimmingGoal::new(1.0, 40)` with `canRandomSwim` (the schooling fish's followers do not wander), and the tick calls `swim::flop(&mut mob.core, <its flop sound>)` right after `family_base_tick`, for every fish (dying and without AI too). Tadpoles flop the same way from their brain tick.
+  - Dolphins: `TryFindLiquidGoal::<DolphinGoals>` at 0 and `RandomSwimmingGoal::new(1.0, 10)` at 4.
+  - Brain families (axolotls, frogs, tadpoles, nautiluses): `swim_stroll_target` for `RandomStroll.swim`, with their `WaterNav` and home; `TryFindLiquid` in their brain state for `TryFindLiquid.create`, setting their walk and look targets from `Searched(Some(..))` with their own speed.
+- **Tests added:**
+  - `world::families::water::swim::tests::try_find_liquid_waits_on_its_clock_and_prefers_water_with_air_above` (its own column and a block within 1.5 are passed over; the clock at +40, an early call puts it at +22; the first covered water beyond 1.5 is kept until water open to the air comes up; beyond its range nothing; in water it does nothing and keeps its clock).
+  - `world::families::water::swim::tests::the_swim_stroll_target_widens_through_six_tiers` (over 20 seeds each: in open water one random spot within a block, then straight on to 7-10 blocks, with only that one spot drawn; in a pond 7 wide it stops at the last tier still in water; with a home of radius 4 at the last tier still inside it; stranded on land, nothing).
+  - `world::families::water::tests::a_swimmer_wanders_only_to_water_within_ten_and_seven` (interval 20: in 400 calls about one in ten starts, each spot in water within 10 across and 7 up or down, each with a path that stopping clears; never after 100 idle ticks; in open air the eleventh draw of ten candidates comes back, with exactly 330 draws of the random).
+  - `world::families::water::tests::a_stranded_swimmer_heads_for_water_within_two_blocks` (a probe on stone takes the first water block by rows of z as its move target at speed 1, its goal running; water 3 blocks away is out of reach; in water the goal never runs).
+  - `world::families::water::tests::a_stranded_fish_flops_four_tenths_up_with_its_flop_sound` (on stone it flops again and again, each time one flop sound at volume 1 where it lay and `(v + 0.4000000059604645 - gravity) * 0.98` up after the tick; in water never).
+  - `a_swim_probe_swims_to_a_spot_in_a_pool_and_never_leaves_it` (commit 1) now drops the probe's goals before sending it, so its wandering does not replace the path.
+- **Decisions:**
+  - **One `random_position` by the navigation's water mode** serves the goals and the brains: vanilla's `DefaultRandomPos` asks the navigation whether a spot is stable. The amphibious and ground rules take no home; no amphibious or ground swimmer has one.
+  - **The spot of `TryFindLiquidGoal` travels in `SwimGoals.wanted`**, as goals only see their context; `swim_ai_step` sets it on the move control between the goals and the navigation's tick. As in vanilla, a water-bound mob without a path stops in its move control anyway, so the spot only steers while a path runs; the dolphin's own land hop belongs to the dolphins group.
+  - **The searches are for water only** (`#water`): the brains' search takes `minecraft:water` blocks (the `LiquidBlock`), the feet test and the goal's scan any block holding water, waterlogged ones too.
+  - **`TryFindLiquid` returns what it found** (`LiquidSearch`), and the brain family writes its own walk and look targets with its speed and reach 0, as the memories belong to the family's brain.
+  - **`flop` is the family's call after its base tick**, for living, dying and AI-less mobs alike, as vanilla's `aiStep` runs for all of them; the probe flops only with fish controls (the dolphin hops by its own rule).
+  - **`RandomSwimmingGoal` leaves out the controlling passenger** (no rider steers a swimmer yet; the nautiluses add it with their riding) and the fish's `canRandomSwim` (the fish wrap it).
+  - **`RandomSwimmingGoal.wanted` is public**, so the tests read the spot it chose.
+  - **The tests sit in M2's files** (`swim/tests.rs` and `water/tests.rs`), with the worlds they need (a shore, a pond, the basin).
+- **Protocol:** none.
+- **Game events still to add:** none (the flop posts none; `RandomSwimmingGoal` and the searches post none).
+- **What changes in the game:** nothing yet. The goals, the search and the flop wait for the fish (`fish-live`, segment m2b), the dolphins and the brain families.
+- **Runs:**
+  - `test -p minecraftoss-entities --locked --lib world::families::water`: 29 passed. `test -p minecraftoss-entities --locked --lib`: 691 passed.
+  - `check -p launcher --locked`: green, with only the old render_frame and skate warnings; the entities crate shows none.
+  - The changed M2 files (`swim.rs`, `swim/tests.rs`, `swimming.rs`, `swimming/swim_probe.rs`, `water/tests.rs`) pass `rustfmt --check --edition 2021` with the repo's config and empty output. No added line holds a comment.
+- **Test steps** (regression; nothing new to see until the fish are live). Release build, survival, Normal, by day, flat ground. Name each screenshot by its label.
+  1. Place stone 3 blocks away and use the cod bucket on it: a water source appears with the fish-bucket splash and you hold an empty bucket, as before (the cod waits unseen until the fish are live). **m2-swim-2**
+  2. Dig a pool 5 x 5 and 3 deep and fill it from both water buckets. Use a drowned egg in it and stand at the edge: the drowned swims to you, as before.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:cod_bucket,minecraft:water_bucket,minecraft:water_bucket,minecraft:stone*16,minecraft:drowned_spawn_egg*2,minecraft:iron_shovel
 ```

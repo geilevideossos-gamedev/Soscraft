@@ -1,10 +1,16 @@
+use super::swim::{FLOP_LIFT, block_of, random_swimmable_position};
+use super::swimming::RandomSwimmingGoal;
 use super::swimming::swim_probe::{self, KIND, SILENT, SILENT_SPLASH, SWIM, SWIMMING, SwimProbe};
+use crate::control::MoveOperation;
 use crate::fluid::FluidFrame;
-use crate::navigation::{GroundNavigation, navigate_walk_to};
+use crate::goals::Goal;
+use crate::navigation::{GroundNavigation, WaterNav, navigate_walk_to};
+use crate::walk_path::pathfindable_in_water;
 use crate::world::families::pests::probe::{self, Probe};
 use crate::world::families::{Breath, Family, FamilyMob, Hurt};
 use crate::world::{DamageSourceKind, EntityWorld, MobSound};
 use glam::DVec3;
+use minecraftoss_player::rng::LegacyRandom;
 use minecraftoss_player::{Block, Pos, World};
 use std::collections::HashSet;
 
@@ -326,6 +332,7 @@ fn navigation(world: &EntityWorld, id: u64) -> &GroundNavigation {
 fn send(world: &mut EntityWorld, id: u64, level: &impl World, to: DVec3) {
     let FamilyMob { core, state } = probe_mut(world, id);
     let ai = state.ai.as_deref_mut().unwrap();
+    ai.retain_goals(&[]);
     let body = &core.body;
     let fluid = FluidFrame::sample(level, body.position, body.width, body.height);
     let profile = ai.state.profile();
@@ -356,5 +363,157 @@ fn a_swim_probe_swims_to_a_spot_in_a_pool_and_never_leaves_it() {
         let p = probe(&world, id).core.body.position;
         assert!(p.distance(spot) < 2.0, "{smooth}: {p}");
         assert_eq!(nose_up, smooth, "only the smooth swimmer tilts");
+    }
+}
+
+#[test]
+fn a_swimmer_wanders_only_to_water_within_ten_and_seven() {
+    let basin = Basin { size: 40, top: 79 };
+    let at = DVec3::new(20.5, 70.0, 20.5);
+    let mut ai = SwimProbe::spawn(SWIMMING, at).unwrap().state.ai.unwrap();
+    ai.state.fluid = FluidFrame::sample(&basin, at, swim_probe::WIDTH, swim_probe::HEIGHT);
+    ai.state.random = LegacyRandom::new(5);
+    let mut goal = RandomSwimmingGoal::new(1.0, 20);
+    let mut starts = 0;
+    for _ in 0..400 {
+        if !goal.can_start(&mut ai.state, &basin) {
+            continue;
+        }
+        starts += 1;
+        let wanted = goal.wanted.unwrap();
+        let block = block_of(wanted);
+        assert!(pathfindable_in_water(&basin, block), "{wanted}");
+        let off = wanted - at;
+        let (h, v) = (off.x.abs().max(off.z.abs()), off.y.abs());
+        assert!(h <= 10.0 && v <= 7.0, "{off}");
+        goal.start_world(&mut ai.state, &basin);
+        let moving = block != block_of(at);
+        assert!(
+            !moving || !ai.state.navigation.is_done(),
+            "a path through water"
+        );
+        goal.stop(&mut ai.state);
+        assert!(ai.state.navigation.is_done());
+    }
+    assert!((20..=60).contains(&starts), "one time in ten: {starts}");
+
+    ai.state.no_action_time = 100;
+    assert!(
+        (0..100).all(|_| !goal.can_start(&mut ai.state, &basin)),
+        "idle too long"
+    );
+
+    let sky = Pool::default();
+    let up_high = DVec3::new(0.5, 100.0, 0.5);
+    let water = WaterNav::Bound { breaching: false };
+    let mut random = LegacyRandom::new(11);
+    let mut replay = random.clone();
+    let profile = &ai.state.walk;
+    let spot = random_swimmable_position(&sky, profile, water, up_high, 10, 7, None, &mut random);
+    let spot = spot.expect("a spot in the air");
+    assert!(
+        !pathfindable_in_water(&sky, block_of(spot)),
+        "no water anywhere"
+    );
+    for _ in 0..11 * 10 {
+        replay.next_int(21);
+        replay.next_int(15);
+        replay.next_int(21);
+    }
+    assert_eq!(
+        random.next_long(),
+        replay.next_long(),
+        "eleven tries of ten spots"
+    );
+}
+
+#[test]
+fn a_stranded_swimmer_heads_for_water_within_two_blocks() {
+    let mut world = EntityWorld::default();
+    let mut shore = Pool::default();
+    shore.water.extend([(-2, 63, 1), (2, 63, -1)]);
+    let id = swimming(&mut world, DVec3::new(0.5, 64.0, 0.5), true);
+    for _ in 0..6 {
+        world.tick(&mut shore);
+    }
+    let ai = probe(&world, id).state.ai.as_deref().unwrap();
+    assert!(ai.running_goals().contains(&"TryFindLiquidGoal"));
+    let control = &ai.move_control;
+    let corner = DVec3::new(2.0, 63.0, -1.0);
+    assert_eq!(
+        control.wanted, corner,
+        "the first water by rows of z, at its corner"
+    );
+    assert_eq!(
+        (control.operation, control.speed_modifier),
+        (MoveOperation::MoveTo, 1.0)
+    );
+
+    let mut world = EntityWorld::default();
+    let mut far = Pool::default();
+    far.water.insert((3, 63, 0));
+    let id = swimming(&mut world, DVec3::new(0.5, 64.0, 0.5), true);
+    for _ in 0..6 {
+        world.tick(&mut far);
+    }
+    let ai = probe(&world, id).state.ai.as_deref().unwrap();
+    assert!(ai.running_goals().contains(&"TryFindLiquidGoal"));
+    assert_eq!(
+        ai.move_control.operation,
+        MoveOperation::Wait,
+        "three blocks is too far"
+    );
+
+    let mut world = EntityWorld::default();
+    let mut basin = Basin { size: 10, top: 67 };
+    let id = swimming(&mut world, DVec3::new(4.5, 64.0, 4.5), true);
+    for _ in 0..20 {
+        world.tick(&mut basin);
+        let ai = probe(&world, id).state.ai.as_deref().unwrap();
+        assert!(
+            !ai.running_goals().contains(&"TryFindLiquidGoal"),
+            "in water"
+        );
+    }
+}
+
+#[test]
+fn a_stranded_fish_flops_four_tenths_up_with_its_flop_sound() {
+    let mut world = EntityWorld::default();
+    let mut land = Pool::default();
+    let id = swimming(&mut world, DVec3::new(0.5, 64.0, 0.5), false);
+    let (mut flops, mut before) = (0, DVec3::ZERO);
+    for tick in 0..100 {
+        world.tick(&mut land);
+        let heard = world.take_sounds();
+        let flopped: Vec<_> = heard
+            .iter()
+            .filter(|s| s.event == swim_probe::FLOP)
+            .collect();
+        let body = &probe(&world, id).core.body;
+        if let [flop] = flopped[..] {
+            flops += 1;
+            assert_eq!(flop.volume, 1.0);
+            assert!((flop.position.y - 64.0).abs() < 1.0e-6, "where it lay");
+            let lifted = (before.y + FLOP_LIFT - body.gravity) * f64::from(0.98_f32);
+            assert_eq!(body.velocity.y, lifted, "tick {tick}");
+            assert!(body.velocity.x.abs() < 0.1 && body.velocity.z.abs() < 0.1);
+        } else {
+            assert!(flopped.is_empty());
+        }
+        before = body.velocity;
+    }
+    assert!(flops >= 3, "it keeps flopping: {flops}");
+
+    let mut world = EntityWorld::default();
+    let mut basin = Basin { size: 10, top: 67 };
+    swimming(&mut world, DVec3::new(4.5, 64.0, 4.5), false);
+    for _ in 0..60 {
+        world.tick(&mut basin);
+        let heard = world.take_sounds();
+        assert!(
+            heard.iter().all(|s| s.event != swim_probe::FLOP),
+            "not in water"
+        );
     }
 }
