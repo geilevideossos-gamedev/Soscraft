@@ -414,7 +414,9 @@ pub fn build_item_model(packs: &PackStack, item: &ResourceId) -> Result<Option<B
         .item_definition(item)?
         .map(|value| crate::interface::item_model_tints(packs, &value["model"], None))
         .transpose()?
-        .unwrap_or_default();
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
     let textures = model
         .elements
         .iter()
@@ -675,7 +677,7 @@ fn build_internal<S: Scene>(scene: &S, packs: &PackStack, preload_blocks: bool) 
                         continue;
                     };
                     let key = model_key(block);
-                    if !models.contains_key(&key) {
+                    if let std::collections::hash_map::Entry::Vacant(slot) = models.entry(key) {
                         let variants = resolve_block_variants(packs, block)
                             .with_context(|| format!("block {} at {x},{y},{z}", block.id.key()))?;
                         for (model, _) in &variants {
@@ -685,7 +687,7 @@ fn build_internal<S: Scene>(scene: &S, packs: &PackStack, preload_blocks: bool) 
                                 }
                             }
                         }
-                        models.insert(key, variants);
+                        slot.insert(variants);
                     }
                 }
             }
@@ -972,8 +974,8 @@ impl ItemVisuals {
                 .as_ref()
                 .map(|value| crate::interface::item_look_tints(packs, &value["model"], potion, &look))
                 .transpose()?
-                .unwrap_or_default()
                 .into_iter()
+                .flatten()
                 .map(|rgb| rgb.map(|component| component as f32 / 255.0))
                 .collect();
             let mut min = Vec3::splat(f32::INFINITY);
@@ -1641,7 +1643,7 @@ fn quad_direction(element: &crate::model::Element, face: &str, corners: &[[f32; 
         (v1[0] - v0[0]) * (v2[1] - v0[1]) - (v1[1] - v0[1]) * (v2[0] - v0[0]),
     ];
     let length = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
-    if !(length > 0.0) || !length.is_finite() {
+    if length <= 0.0 || !length.is_finite() {
         return Ok("up");
     }
     for v in &mut n {
@@ -1973,7 +1975,7 @@ fn animated_frames(
         .get("height")
         .and_then(|v| v.as_u64())
         .unwrap_or(square as u64) as u32;
-    if width == 0 || height == 0 || sheet.width() % width != 0 || sheet.height() % height != 0 {
+    if width == 0 || height == 0 || !sheet.width().is_multiple_of(width) || !sheet.height().is_multiple_of(height) {
         return None;
     }
     let columns = sheet.width() / width;
@@ -2234,7 +2236,7 @@ pub(crate) fn bake_quads(block: &Block, model: &ResolvedModel, atlas: &Atlas) ->
                 (0, 0, 0)
             };
             let full_cube = element.from == [0.0; 3] && element.to == [1.0; 3] && element.rotation.is_none() && !entity;
-            let ao_axes = full_cube.then(|| match dir {
+            let ao_axes = full_cube.then_some(match dir {
                 "up" | "down" => [0, 2],
                 "north" | "south" => [0, 1],
                 _ => [1, 2],
@@ -2526,6 +2528,7 @@ fn fluid_corner_height<S: Scene>(
         sum / weight
     }
 }
+#[allow(clippy::too_many_arguments)]
 fn fluid_quad(
     mesh: &mut ChunkMesh,
     transparent: &mut Vec<u32>,
@@ -2619,25 +2622,20 @@ fn append_fluid<S: Scene>(
     let _ = tint_source;
     let [x, y, z] = [pos.0 as f32, pos.1 as f32, pos.2 as f32];
     let h = fluid_render_height(scene, cell.kind, pos);
-    let nw;
-    let ne;
-    let sw;
-    let se;
-    if h >= 1.0 {
-        nw = 1.0;
-        ne = 1.0;
-        sw = 1.0;
-        se = 1.0;
+    let (nw, ne, sw, se) = if h >= 1.0 {
+        (1.0, 1.0, 1.0, 1.0)
     } else {
         let north = fluid_render_height(scene, cell.kind, near((0, 0, -1)));
         let south = fluid_render_height(scene, cell.kind, near((0, 0, 1)));
         let west = fluid_render_height(scene, cell.kind, near((-1, 0, 0)));
         let east = fluid_render_height(scene, cell.kind, near((1, 0, 0)));
-        nw = fluid_corner_height(scene, cell.kind, h, north, west, near((-1, 0, -1)));
-        ne = fluid_corner_height(scene, cell.kind, h, north, east, near((1, 0, -1)));
-        sw = fluid_corner_height(scene, cell.kind, h, south, west, near((-1, 0, 1)));
-        se = fluid_corner_height(scene, cell.kind, h, south, east, near((1, 0, 1)));
-    }
+        (
+            fluid_corner_height(scene, cell.kind, h, north, west, near((-1, 0, -1))),
+            fluid_corner_height(scene, cell.kind, h, north, east, near((1, 0, -1))),
+            fluid_corner_height(scene, cell.kind, h, south, west, near((-1, 0, 1))),
+            fluid_corner_height(scene, cell.kind, h, south, east, near((1, 0, 1))),
+        )
+    };
     let top = top_open && !scene.fluid_face_hidden(up, Direction::Up, nw.min(ne).min(sw).min(se));
     let sky = light.get(pos).max(light.get(up)) as f32;
     let color = |shade: f32| [shade * tint[0], shade * tint[1], shade * tint[2], 1.0];

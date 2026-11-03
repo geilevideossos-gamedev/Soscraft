@@ -23,3 +23,5 @@ zip = { version = "2", default-features = false, features = ["deflate"] }
 sha2 = "0.10"
 regex = "1"
 
+[lints]
+workspace = true

@@ -40,6 +40,7 @@ pub enum Hazard {
     InWall,
     /// Too many mobs in one place (`cramming`).
     Cramming,
+    Fall,
     Freeze,
     LightningBolt,
 }
@@ -57,7 +58,7 @@ impl Hazard {
 
     /// `#bypasses_armor`.
     pub fn bypasses_armor(self) -> bool {
-        matches!(self, Self::OnFire | Self::InWall | Self::Cramming | Self::Freeze)
+        matches!(self, Self::OnFire | Self::InWall | Self::Cramming | Self::Fall | Self::Freeze)
     }
 
     /// The damage type's ID.
@@ -72,6 +73,7 @@ impl Hazard {
             Self::OnFire => "minecraft:on_fire",
             Self::InWall => "minecraft:in_wall",
             Self::Cramming => "minecraft:cramming",
+            Self::Fall => "minecraft:fall",
             Self::Freeze => "minecraft:freeze",
             Self::LightningBolt => "minecraft:lightning_bolt",
         }
@@ -589,5 +591,11 @@ mod tests {
         );
         assert_eq!(Hazard::Freeze.damage_type(), "minecraft:freeze");
         assert!(Hazard::Freeze.bypasses_armor() && !Hazard::Freeze.is_fire() && !Hazard::Freeze.panics());
+    }
+
+    #[test]
+    fn a_shared_fall_is_minecraft_fall_bypasses_armour_and_panics_nothing() {
+        assert_eq!(Hazard::Fall.damage_type(), "minecraft:fall");
+        assert!(Hazard::Fall.bypasses_armor() && !Hazard::Fall.is_fire() && !Hazard::Fall.panics());
     }
 }

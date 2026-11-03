@@ -48,7 +48,7 @@ impl Sounds {
             for (event, value) in entries {
                 let list = value["sounds"]
                     .as_array()
-                    .map(|sounds| {
+                    .map_or_else(Vec::new, |sounds| {
                         sounds
                             .iter()
                             .filter_map(|sound| match sound {
@@ -71,8 +71,7 @@ impl Sounds {
                                 _ => None,
                             })
                             .collect::<Vec<_>>()
-                    })
-                    .unwrap_or_default();
+                    });
                 events.insert(event.clone(), list);
             }
         }

@@ -58,7 +58,7 @@ The open survival limits and multiplayer leftovers (`docs/MINECRAFT-SURVIVAL.md`
     - Gentle mode while the owner plays on this PC: `%LOCALAPPDATA%\iw4l-cargo-slot.txt` with `slots=1`, `jobs=4` and `priority=low` runs one cargo at a time with `-j 4` below normal priority. For full speed when the owner is away, set `slots=2`, `jobs=4` and `priority=low`; never `jobs=8` with two slots and never delete the file (the PC crashed under two slots at `-j 8` on 2026-10-28).
     - `--release`, `--workspace`, `--profile` and `+exclusive` take both slots, so a release build or the full suite runs alone.
     - If its shell is killed, cargo and rustc die with it.
-    - PowerShell drops a bare `--` when calling a script, so quote it: `& scripts\cargo-slot.ps1 clippy -p x --locked '--' -A clippy::approx_constant`.
+    - PowerShell drops a bare `--` when calling a script, so quote it: `& scripts\cargo-slot.ps1 test -p minecraft_terrain --locked '--' darkness`.
   - One target dir per worktree. Two worktrees must never share one: cargo's mtime check would reuse the other worktree's build of a crate whose files are older there.
   - Builds link with rust-lld (`.cargo/config.toml`). Dev and test builds optimise dependencies at opt-level 1, skip debug info and are not incremental (`Cargo.toml`), so no `CARGO_INCREMENTAL` or `CARGO_PROFILE_DEV_DEBUG` variables are needed.
   - Use PowerShell, not Git Bash, for cargo.
@@ -67,7 +67,7 @@ The open survival limits and multiplayer leftovers (`docs/MINECRAFT-SURVIVAL.md`
   - `D:\iw4l-target` itself is protected from deletion by a permission rule. Only its subfolders may be removed, such as a stale `debug`.
 - **Build workflow**
   - While implementing: `check -p` and `test -p` on only the crates that changed, and `check -p launcher` before a commit that touches game code.
-  - Once per track: clippy on the touched crates, and the full suite `scripts\full-suite.ps1` (workspace tests without doc-tests, plus the five minecraftoss crates with their stand-in files) after the track is merged.
+  - Once per track: clippy on the touched crates (the vendored minecraftoss crates through `scripts\clippy-vendored.ps1`), and the full suite `scripts\full-suite.ps1` (workspace tests without doc-tests, plus the five minecraftoss crates with their stand-in files) after the track is merged.
   - Parallel tracks: one git worktree in `C:\Dev\Soscraft\mc-wt\<name>`, one branch and one target dir (`D:\iw4l-wt\<name>`) each, merged into `minecraft-survival` one at a time with the full suite after each merge.
   - Tracks run with the saved workflow `.claude/workflows/track-runner.js` (the `track-runner` workflow). Args: `{track, worktree, branch, target, base, briefs, groups:[{key,prompt}], avoid?, notes?, skipReview?}`.
     - It runs one agent per commit group in order, each continuing from what is already committed, then an adversarial review that fixes real defects in new commits, then clippy and the tests of the touched crates.

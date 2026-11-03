@@ -442,8 +442,8 @@ fn text<'a>(tag: &'a Tag, key: &str) -> Option<&'a str> {
 /// A seed for the entity's own random from its UUID: vanilla seeds entity
 /// randoms from the clock, so any seed is as good; this one repeats.
 fn seed(tag: &Tag) -> u64 {
-    let uuid = tag.get("UUID").and_then(Tag::as_ints).unwrap_or_default();
-    uuid.iter().fold(0x9E37_79B9_7F4A_7C15u64, |h, &w| (h ^ u64::from(w as u32)).wrapping_mul(0x100_0000_01B3))
+    let uuid = tag.get("UUID").and_then(Tag::as_ints).into_iter().flatten();
+    uuid.fold(0x9E37_79B9_7F4A_7C15u64, |h, w| (h ^ u64::from(w as u32)).wrapping_mul(0x100_0000_01B3))
 }
 
 pub const SIMULATED_KINDS: &[&str] = &[
@@ -1318,7 +1318,7 @@ pub fn spawn_saved(world: &mut EntityWorld, tag: &Tag) -> Option<u64> {
             // What it holds is its main hand.
             entity.held_item = tag.get("equipment").and_then(|e| e.get("mainhand")).and_then(|item| {
                 let id = text(item, "id")?.to_owned();
-                let components = item.get("components").map(tag_json).and_then(|v| v.as_object().cloned()).unwrap_or_default();
+                let components = item.get("components").map(tag_json).as_ref().and_then(serde_json::Value::as_object).map_or_else(serde_json::Map::new, Clone::clone);
                 Some(minecraftoss_entities::trading::TradeItem { id, count: int(item, "count").unwrap_or(1), components })
             });
             // `Mob.readAdditionalSaveData`: false unless saved (village
@@ -2163,7 +2163,7 @@ fn attribute_base(tag: &Tag, id: &str) -> Option<f64> {
 /// A saved entity's attributes with one base set (the entry added when
 /// missing), the rest as loaded.
 fn with_attribute_base(original: Option<&Tag>, id: &str, base: f64) -> Tag {
-    let mut list = original.and_then(|t| t.get("attributes")).and_then(Tag::as_list).map(<[Tag]>::to_vec).unwrap_or_default();
+    let mut list = original.and_then(|t| t.get("attributes")).and_then(Tag::as_list).map_or_else(Vec::new, <[Tag]>::to_vec);
     match list.iter_mut().find(|a| a.get("id").and_then(Tag::as_str) == Some(id)) {
         Some(Tag::Compound(entry)) => {
             entry.insert("base".to_owned(), Tag::Double(base));
@@ -2224,8 +2224,7 @@ fn attribute_value(tag: &Tag, id: &str) -> Option<f64> {
     let modifiers: Vec<(&str, f64)> = entry
         .get("modifiers")
         .and_then(Tag::as_list)
-        .map(|list| list.iter().filter_map(|m| Some((m.get("operation")?.as_str()?, m.get("amount")?.as_f64()?))).collect())
-        .unwrap_or_default();
+        .map_or_else(Vec::new, |list| list.iter().filter_map(|m| Some((m.get("operation")?.as_str()?, m.get("amount")?.as_f64()?))).collect());
     for (_, amount) in modifiers.iter().filter(|(op, _)| *op == "add_value") {
         base += amount;
     }

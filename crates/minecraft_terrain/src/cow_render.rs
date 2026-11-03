@@ -151,7 +151,8 @@ pub fn append_cows<'a>(
         }
         // Native model coordinates are downward-positive with its feet at Y=24.
         // The adult layer is CowModel.createBaseCowModel (26.3).
-        let boxes: [([f32; 3], [f32; 3], [f32; 2], [f32; 3], bool); 7] = [
+        type CowBox = ([f32; 3], [f32; 3], [f32; 2], [f32; 3], bool);
+        let boxes: [CowBox; 7] = [
             (
                 [-4., -4., -6.],
                 [4., 4., 0.],
@@ -213,7 +214,8 @@ pub fn append_cows<'a>(
         emit_mirrored(mesh, [-2., 0., -2.], [2., 12., 2.], [0., 16.], [4., 12., -5.], leg(left_front), true);
         let head = [0., 4., -8.];
         // WarmCowModel mirrors its two left horn pieces.
-        let horns: &[([f32; 3], [f32; 3], [f32; 2], bool)] = match cow.variant {
+        type HornBox = ([f32; 3], [f32; 3], [f32; 2], bool);
+        let horns: &[HornBox] = match cow.variant {
             CowVariant::Temperate => &[
                 ([-5., -5., -5.], [-4., -2., -4.], [22., 0.], false),
                 ([4., -5., -5.], [5., -2., -4.], [22., 0.], false),

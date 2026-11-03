@@ -537,7 +537,8 @@ impl Survival {
         self.hurt_by_fall(landing_damage(distance, landed_on, crouching), distance)
     }
 
-    pub fn rider_fall(&mut self, distance: f64, multiplier: f32) -> i32 {
+    pub fn rider_fall(&mut self, distance: f64, multiplier: f32, feet_y: f64) -> i32 {
+        let distance = self.impulse_fall(distance, feet_y);
         self.hurt_by_fall(fall_damage(distance, multiplier), 0.0)
     }
 
@@ -3311,12 +3312,12 @@ mod tests {
     #[test]
     fn a_rider_takes_the_horse_s_fall_and_hits_the_ground_too_hard() {
         let mut survival = fresh();
-        assert_eq!(survival.rider_fall(10.0, 1.0), 7);
+        assert_eq!(survival.rider_fall(10.0, 1.0, 64.0), 7);
         assert!((survival.status.health - 13.0).abs() < 1e-6);
         let mut thrown = fresh();
         thrown.status.health = 5.0;
-        assert_eq!(thrown.rider_fall(20.0, 0.2), 3);
-        assert_eq!(thrown.rider_fall(30.0, 1.0), 27);
+        assert_eq!(thrown.rider_fall(20.0, 0.2, 64.0), 3);
+        assert_eq!(thrown.rider_fall(30.0, 1.0, 64.0), 27);
         assert_eq!(thrown.status.health, 0.0);
         assert_eq!(
             death(&thrown),
@@ -3325,24 +3326,38 @@ mod tests {
         );
         for (distance, multiplier) in [(3.0, 1.0), (7.9, 0.2), (30.0, 0.0)] {
             assert_eq!(
-                fresh().rider_fall(distance, multiplier),
+                fresh().rider_fall(distance, multiplier, 64.0),
                 0,
                 "{distance} {multiplier}"
             );
         }
-        assert_eq!(creative().rider_fall(30.0, 1.0), 0);
+        assert_eq!(creative().rider_fall(30.0, 1.0, 64.0), 0);
         let mut ruled = fresh();
         ruled.rules.fall_damage = false;
-        assert_eq!(ruled.rider_fall(30.0, 1.0), 0);
+        assert_eq!(ruled.rider_fall(30.0, 1.0, 64.0), 0);
         assert_eq!(ruled.status.health, 20.0);
         let mut cushioned = fresh();
         cushioned.wear(wearing("minecraft:feather_falling", 4));
-        assert_eq!(cushioned.rider_fall(10.0, 1.0), 7);
+        assert_eq!(cushioned.rider_fall(10.0, 1.0, 64.0), 7);
         assert!(
             (cushioned.status.health - (20.0 - 7.0 * (1.0 - 12.0 / 25.0))).abs() < 1e-5,
             "{}",
             cushioned.status.health
         );
+    }
+
+    #[test]
+    fn a_rider_thrown_up_by_a_wind_charge_counts_only_the_fall_below_the_burst() {
+        let mut survival = fresh();
+        survival.start_impulse(70.0);
+        assert_eq!(survival.rider_fall(20.0, 1.0, 60.0), 7, "not 17");
+        assert!((survival.status.health - 13.0).abs() < 1e-6);
+        assert_eq!(survival.impulse, None, "the hurt ends the impulse");
+        assert_eq!(survival.rider_fall(20.0, 1.0, 60.0), 17);
+        let mut above = fresh();
+        above.start_impulse(70.0);
+        assert_eq!(above.rider_fall(20.0, 1.0, 71.0), 0, "landing above the burst");
+        assert_eq!(above.impulse, None);
     }
 
     #[test]

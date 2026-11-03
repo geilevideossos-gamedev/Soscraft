@@ -72,9 +72,11 @@ fn clothing(grow: f32) -> [Part; 7] {
     ]
 }
 
+type Mushroom = ([f32; 3], [f32; 3], [f32; 2], [f32; 3], [f32; 3]);
+
 /// `BoggedModel`'s mushrooms, children of the head: box, texture offset,
 /// offset and rotation (x, y, z).
-const MUSHROOMS: [([f32; 3], [f32; 3], [f32; 2], [f32; 3], [f32; 3]); 6] = [
+const MUSHROOMS: [Mushroom; 6] = [
     ([-3., -3., 0.], [3., 1., 0.], [50., 16.], [3., -8., 3.], [0., std::f32::consts::FRAC_PI_4, 0.]),
     ([-3., -3., 0.], [3., 1., 0.], [50., 16.], [3., -8., 3.], [0., 3.0 * std::f32::consts::FRAC_PI_4, 0.]),
     ([-3., -3., 0.], [3., 1., 0.], [50., 22.], [-3., -8., -3.], [0., std::f32::consts::FRAC_PI_4, 0.]),

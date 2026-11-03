@@ -513,7 +513,7 @@ pub(crate) fn host(
                 .into_iter()
                 .flatten()
                 .collect();
-            let edits = host.edit_books.remove(&session.client).unwrap_or_else(Vec::new);
+            let edits = host.edit_books.remove(&session.client).into_iter().flatten().collect();
             edit_books(player, edits);
             let id = sim::ClientId(session.client);
             let was = player.menus.block().cloned();

@@ -33,7 +33,9 @@ pub fn item_icon_at(
         .as_ref()
         .map(|value| item_look_tints(packs, &value["model"], potion, &look))
         .transpose()?
-        .unwrap_or_default();
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
     if definition.as_ref().is_some_and(|value| crate::special_models::uses_item_geometry(&value["model"])) {
         if let Some(geometry) = crate::model::resolve_item_model_with(packs, &id, None, &look)? {
             let gui = crate::model::item_display_transform(packs, &id, "gui")?;
@@ -85,13 +87,12 @@ pub fn language(packs: &PackStack) -> Result<HashMap<String, String>> {
     };
     let mut language: HashMap<String, String> = value
         .as_object()
-        .map(|entries| {
+        .map_or_else(HashMap::new, |entries| {
             entries
                 .iter()
                 .filter_map(|(key, text)| Some((key.clone(), text.as_str()?.to_owned())))
                 .collect()
-        })
-        .unwrap_or_default();
+        });
     crate::fork_items::add_names(&mut language);
     Ok(language)
 }

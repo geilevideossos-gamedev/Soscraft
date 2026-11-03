@@ -13,7 +13,7 @@ use skate_core::{
 use skate_data::collections::Collections;
 use super::offboard::contact_queries::Probe;
 
-pub(super) struct Runtime {
+pub(crate) struct Runtime {
     history: History,
     settings: Settings,
     measurements: i32,
