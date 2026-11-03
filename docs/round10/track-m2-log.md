@@ -708,3 +708,16 @@ After 8809844c.
 - **Also found, not fixable here:** d11758b3's subject starts with a byte-order mark (noted under squids-drawn 2). Removing it means rewriting that commit, which a track run must not do; it is left for the owner to decide at the merge.
 - **Runs:** `test -p minecraftoss-entities --locked --lib world::families::water`: 19 passed. The staged file passes `rustfmt --check --edition 2021` with empty output.
 - **Test steps:** none in game (a test file only). No kit is needed.
+
+### Final verification
+
+Clippy and the tests of the touched crates over r10-m2a-base..909e959d. Each fix is its own commit below.
+
+#### 1. The squid texture test walks the textures without an index
+
+After 909e959d.
+
+- **Defect:** `clippy -p minecraft_terrain --all-targets` warned `needless_range_loop` on a line of this track: `every_squid_picks_its_texture_by_kind_and_age` (`crates/minecraft_terrain/src/families/water/squids/render/tests.rs`, added in 93f77e9b) looped `for other in 0..TEXTURES.len()` and read `TEXTURES[other]` for its message.
+- **Changed:** the loop is `for (other, texture) in TEXTURES.into_iter().enumerate()`, as the file's first test already loops, and the message names `texture`. The test checks the same regions as before.
+- **Runs:** `clippy -p minecraft_terrain --locked --all-targets -- -A clippy::approx_constant`: exits 0, and the warning is gone. `test -p minecraft_terrain --locked`: 1727 passed (3 ignored, as before). The staged file passes `rustfmt --check --edition 2021` with empty output.
+- **Test steps:** none in game (a test file only). No kit is needed.

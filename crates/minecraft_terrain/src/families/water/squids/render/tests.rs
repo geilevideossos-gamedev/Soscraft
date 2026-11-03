@@ -210,12 +210,11 @@ fn every_squid_picks_its_texture_by_kind_and_age() {
         spawn_saved(&mut world, &parse(&tag)).unwrap();
         let mesh = drawn(&world, &atlas, &light(0), 0.0);
         assert_eq!(mesh.faces, 54, "{kind} {age}");
-        for other in 0..TEXTURES.len() {
+        for (other, texture) in TEXTURES.into_iter().enumerate() {
             assert_eq!(
                 inside(region(&atlas, other), &mesh),
                 other == index,
-                "{kind} {age}: {}",
-                TEXTURES[other]
+                "{kind} {age}: {texture}"
             );
         }
     }
