@@ -98,6 +98,7 @@ Disk (2026-11-02 23:35): target dirs `D:\iw4l-wt\track-m1`, `track-m2`, `track-m
 ## Release builds
 | # | When | Commit | State |
 |---|---|---|---|
+| 7 | M1 (m1b), W (w3), M2 (m2a) and M3 (m3a) merged, protocol 12 | 6ad783e5 | done 2026-11-03: release 8m 55s after 21 min waiting for both slots (`-p launcher -p iw4l-master`); copied in as `iw4l-survival.exe`, release 6 kept as `iw4l-survival-789f6d2.exe`, relay copied in (hashes checked, relay unchanged); test steps `docs/round10/release-7-tests.md` being written and checked |
 | 6 | W (w2), F (f3), the E1 review, E2 (e2b) and D0 (d0b) merged, protocol 11 | 789f6d23 | done 2026-11-02: release 15m 57s (`-p launcher -p iw4l-master`); copied in as `iw4l-survival.exe`, release 5 kept as `iw4l-survival-e7c9a1c.exe`, relay copied in (hashes checked, relay unchanged); test steps `docs/round10/release-6-tests.md` (149 steps, 94 screenshots, 7 kits, written and checked by 12 agents) |
 | 5 | D (d2) and E1 (e1b) merged, protocol 10; the week's last | e7c9a1c8 | done 2026-10-29: release 17m 46s (`-p launcher -p iw4l-master`); copied in as `iw4l-survival.exe`, release 4 kept as `iw4l-survival-c41ac6a.exe`, relay copied in (hashes checked, relay unchanged); test steps `docs/round10/release-5-tests.md` |
 | 4 | W (w1) and M1 (m1a) merged, protocol 9 | c41ac6af | done 2026-10-29: release 9m 17s (`-p launcher -p iw4l-master`); copied in as `iw4l-survival.exe`, release 3 kept as `iw4l-survival-3fefa3f.exe`, relay copied in (hashes checked, relay unchanged); test steps `docs/round10/release-4-tests.md` |
