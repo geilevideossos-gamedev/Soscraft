@@ -13,6 +13,7 @@ Nothing yet.
 E3-1's tooling groups edit `CLAUDE.md`, `docs/MINECRAFT-SURVIVAL.md` and `.claude/workflows/track-runner.js` directly (E3-0 "Docs"); their changes are listed in their entries below. For the orchestrator to copy at round end:
 
 - `docs/round10/release-2-tests.md:565` (and any state doc that repeats it): "A rider hears no block fall sound, and a mob riding a horse takes no share of its fall." becomes "A rider hears no block fall sound (vanilla)." (rider-falls, E3-2). `docs/round10/track-e1-log.md:477`'s note that a wind charge's impulse does not shorten a rider's share is resolved by the same group.
+  - The review of segment e3a adds one limit to that line, so it stays true: "A mob riding a ravager takes no share of its fall." Horses, donkeys, mules, llamas and striders pass their falls on; the ravager is the one other vehicle that carries mobs (`server_mobs.rs:497` `VEHICLES`, raid riders), and vanilla passes every living vehicle's fall on.
 
 ## Segment e3a
 
@@ -248,3 +249,17 @@ IW4L_MINECRAFT_KIT=minecraft:saddle,minecraft:saddle,minecraft:saddle,minecraft:
 ```
 
 **Protocol:** no message changed in this group (the shares stay on the host: `rider_falls` reaches each player's survival through `PlayerOutputs`, not the wire).
+
+## Review of segment e3a
+
+After e6d68f7c. The adversarial review of `r10-e3a-base..e6d68f7c` (3a70396d..e6d68f7c, eight commits, no merge) found no defect in the lines the track wrote, so it makes no fix commit. What it checked, and the older mismatches it found next to them:
+
+- **Vanilla 26.3** (javap and the jar's data): `Entity.causeFallDamage` returns before propagating for `#fall_damage_immune` (offsets 0-21); `LivingEntity.causeFallDamage` clips at the impulse (0-55), propagates at 67 whatever its own damage, then sounds and hurts (81-116); `AbstractHorse.causeFallDamage` hurts and then propagates only when its damage is above 0 (38-59); `Strider` does not override it and `Strider.checkFallDamage` resets the fall in lava. The 18 ids of `fall_damage_immune` in `riding.rs` are the tag's; `#bypasses_armor` has `minecraft:fall`, `#panic_causes` and `#panic_environmental_causes` do not. Only `AbstractHorse` and `Fox` use `SAFE_FALL_DISTANCE` or `FALL_DAMAGE_MULTIPLIER`, so the default 3 and 1 hold for every mob that can ride. The `hostile` choice matches the stores' own landings and `Monster`'s subclasses (the slime and the hoglin stay generic).
+- **Lint commits:** every rewrite keeps its values and order (`length <= 0.0 || !length.is_finite()` still sends a NaN to `"up"`, `then_some` takes constant arrays, `Entry::Vacant` inserts as before, `into_iter().flatten()` walks the same items). `#[must_use]` sits on `host_viewmodel_render_fx_flags`, and the `#[allow]`s sit on their own items.
+- **Script:** `clippy-vendored.ps1` passes `+target=`, `+wait=` and `+exclusive` ahead of the subcommand as `cargo-slot.ps1` reads them, and restores both variables in `finally`.
+- **Run:** `test -p minecraftoss-entities --locked --lib -- riding`: 19 passed, 0 failed.
+- **Older mismatches, not fixed** (outside the brief; for the orchestrator to place):
+  1. **Every push starts a fall impulse.** `minecraft_players.rs:950-957` calls `survival.start_impulse(feet[1])` for every push: melee and arrow knockback (`landed`), explosions (`explosion_push`), the dragon's wings, ravager roars, shield blocks and a breeze's wind charge. It dates from ac27e8b3, when only wind charge bursts pushed players (`players_pushed` had that one source then); the other pushes joined the same loop later. Vanilla starts one only through `ServerPlayer.onExplosionHit` for the player's wind charge (`setIgnoreFallDamageFromCurrentImpulse(cause.is(WIND_CHARGE), position())`; any other explosion only zeroes the grace), the mace and `ApplyEntityImpulse`. So a player thrown up by TNT or a creeper takes no fall damage when he lands at the height where he was hit, and since e6d68f7c a rider's share is clipped the same way (this needs the mount itself to fall more than 6 blocks, so it is rare). The pushes carry no kind yet. E3-7's `blast-push` re-plumbs them (`blast_pushes`), so it is the natural place to start the impulse for the player's wind charge only.
+  2. **Ravager riders** take no share of the ravager's fall (the state doc line above).
+  3. **Fall-immune mobs that take fall damage:** snow golems (`snow_golems.rs:163-167`) and blazes (`blazes.rs:173-177`) are hurt by their own landings, though both are in `#fall_damage_immune`. A creeper's landing does not add `fallDistance * 1.5` to its swell (`Creeper.causeFallDamage`).
+- **Owner's steps:** none (log only). No kit line.
