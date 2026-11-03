@@ -1,6 +1,7 @@
 use crate::client_mobs::ClientMobs;
 use crate::families::{FamilyDraw, FamilyShow, TerrainFamily};
 use crate::item_nbt::stack_tag;
+use crate::keyframes;
 use crate::lighting::SkyLight;
 use crate::mesh::Atlas;
 use crate::piglin_save::stack_of;
@@ -13,6 +14,8 @@ use minecraftoss_entities::world::families::land::foxes::{
     self, CROUCHING, FoxVariant, SITTING, SLEEPING,
 };
 use std::collections::BTreeMap;
+
+mod render;
 
 pub const SHADOW_RADIUS: f32 = 0.4;
 const MAINHAND: &str = "mainhand";
@@ -38,8 +41,9 @@ fn uuid_tag(uuid: u128) -> Tag {
 impl TerrainFamily for Fox {
     const TRACKING_RANGE: i32 = 8;
     const VOLATILE: &'static [&'static str] = &["Sleeping", "Sitting", "Crouching", "ForcedAge"];
-    const TEXTURES: &'static [&'static str] = &[];
+    const TEXTURES: &'static [&'static str] = &render::TEXTURES;
     const SHADOW_RADIUS: f32 = SHADOW_RADIUS;
+    const CAGE_MARGIN: f32 = 0.21;
 
     fn read(mob: &mut FamilyMob<Self>, tag: &Tag) {
         let yaw = mob.core.yaw;
@@ -129,13 +133,16 @@ impl TerrainFamily for Fox {
     }
 
     fn draw(
-        _out: &mut FamilyDraw<'_>,
-        _mobs: &[FamilyMob<Self>],
-        _poses: &ClientMobs,
-        _atlas: &Atlas,
-        _light: &SkyLight,
-        _partial: f32,
+        out: &mut FamilyDraw<'_>,
+        mobs: &[FamilyMob<Self>],
+        poses: &ClientMobs,
+        atlas: &Atlas,
+        light: &SkyLight,
+        partial: f32,
     ) {
+        let walk = render::baby_walk(keyframes::shared());
+        let shown = mobs.iter().filter(|mob| !mob.core.removed);
+        render::append_foxes(out, shown, poses, atlas, light, partial, walk.as_deref());
     }
 }
 

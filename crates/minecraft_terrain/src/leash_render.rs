@@ -82,6 +82,7 @@ pub fn leash_offset(kind: &str, eye_height: f32, width: f32) -> DVec3 {
         "llama" | "trader_llama" => (0.75, 0.5),
         "snow_golem" => (0.75, 0.4),
         "ocelot" => (0.5, 0.4),
+        "fox" => (0.55, 0.4),
         "iron_golem" => (0.875, 0.4),
         "rabbit" => (0.6, 0.4),
         "pig" | "wolf" | "strider" => (0.6, 0.4),
