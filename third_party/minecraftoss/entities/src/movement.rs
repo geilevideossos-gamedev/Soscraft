@@ -303,6 +303,10 @@ impl Body {
         self.travel_water_mode(world, input, yaw, 0.01_f32 as f64, 0.9, false);
     }
 
+    pub fn travel_swimming(&mut self, world: &impl World, input: DVec3, yaw: f32, acceleration: f64) {
+        self.travel_water_mode(world, input, yaw, acceleration, 0.9, false);
+    }
+
     fn travel_water_mode(
         &mut self,
         world: &impl World,

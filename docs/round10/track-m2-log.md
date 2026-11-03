@@ -26,6 +26,8 @@ Files under `third_party/minecraftoss` this track patched or added.
 - Added (squids-live 2): `entities/src/world/families/water/squids.rs`, `entities/src/world/families/water/squids/tests.rs` (test only).
 - Patched (squids-live 3): `world/src/natural_spawner.rs` (the `InWater` line in `check_spawn_obstruction`). Changed again: `world/src/natural_spawner/families/water.rs` (the squid rows and their rules).
 - Added (squids-live 3): `world/src/natural_spawner/families/water/tests.rs` (test only).
+- Patched (water-swimming 1): `entities/src/look.rs` (`LookControl::tick_smooth_swimming` after `set_look_at_with_limits`), `entities/src/movement.rs` (`Body::travel_swimming` after `travel_drowned_swimming`). Changed again: `entities/src/world/families/water.rs` (`pub mod swim;`, and `swimming` made `pub`), `entities/src/world/families/water/swimming.rs` (`SwimControls`, `SwimGoals`, `Swimmer`, `swim_ai_step`), the probe and the water tests.
+- Added (water-swimming 1): `entities/src/world/families/water/swim.rs`, `entities/src/world/families/water/swim/tests.rs` (test only).
 
 ## Hooks
 
@@ -38,6 +40,8 @@ Root hooks this track added (M20, "Owners of shared pieces"). The shared path pi
 - **"Registered Minecraft mobs make their own swim and step sounds"** (water-hooks 2): `Family::swim_sounds(kind) -> Option<(&'static str, &'static str)>` (swim, splash; `None` keeps the category's, an empty swim sound means none) and `Family::quiet_steps(kind) -> bool` (false by default), after `emits_sounds` in `entities/src/world/families.rs`. D0's `movement_sounds::<S>` puts the pair into its `MovementSounds` and turns quiet steps into `step: Some("")` at `with_step_volume(0.0)`. In `world/emissions.rs` the own-step arm plays only above zero volume, and the swim arm plays only a sound that is not empty; the step itself (its next-step distance, the amethyst chime and W's `step` game event) and the swim's `swim` game event still happen.
 - **"Registered Minecraft mobs can move by their own rules while dying"** (squids-live 1): `const OWN_DYING_TRAVEL: bool = false` after `MOUNT` in `Family` (`entities/src/world/families.rs`). `family_base_tick` runs the shared `living::dying_travel` (no input, falling or sinking with the plain drag, the swim and step sounds) only for a dead mob with AI whose family leaves it false. A family that sets it moves its dead mobs in its own tick, as vanilla's `LivingEntity.aiStep` calls the class's own `travel` while it dies. Squids set it (`Squid.travel` is a bare `move`), and dolphins and axolotls will.
 - **"Registered Minecraft mobs can have a tracking range per kind"** (squids-drawn 1): `fn tracking_range(kind: &'static str) -> i32 { Self::TRACKING_RANGE }` after `CAGE_MARGIN` in `TerrainFamily` (`crates/minecraft_terrain/src/families.rs`). `terrain_group!`'s `tracking_range` finds the family's own `KINDS` entry for the asked kind (with or without `minecraft:`, the new private `named` beside `names`) and asks the hook with it, so `mob_tracking::tracking_range` answers per kind. Squids answer 10 for the glow squid (squids-drawn 2), and guardians will (the elder guardian).
+
+- **The swimming step and its controls** (water-swimming 1; shared pieces M20 gives M2, not registry hooks): `LookControl::tick_smooth_swimming` in `look.rs`, `Body::travel_swimming(world, input, yaw, acceleration)` in `movement.rs`, and in M2's own files `world/families/water/swim.rs` (`SmoothSwimmingMoveControl`, `FishMoveControl`, `SwimFrame`, `water_walk`) and `world/families/water/swimming.rs` (`SwimControls`, `SwimGoals` with `SwimExtra`, the `Swimmer` trait and `swim_ai_step`). How a family uses them is under "Group water-swimming" below.
 
 ## Protocol
 
@@ -734,3 +738,75 @@ After 39943b65. Log only.
 - **Checks:** every `.rs` file the track added passes `git show HEAD:<path> | rustfmt --check` with empty output at its crate's edition (2021 for the terrain and vendored crates), and no added line of Rust holds a comment.
 - **Combined kit:** rewritten (see "Combined kit" above) to cover every step with something new to see, the squids' among them, at 27 stacks; the regression steps keep their own lines.
 - **Owner's test steps:** none new; the steps of each commit above stand, with the combined kit.
+
+## Segment m2b
+
+The base is 24d774f1 (`minecraft-survival` with M2's m2a merged), which also holds M1's "Registered Minecraft mobs can run their own AI step" (`family_goal_step_with`, 8ad4c103), so `water-swimming`'s wait is met.
+
+### Group water-swimming
+
+#### 1. Minecraft mobs swim with vanilla smooth swimming and fish controls
+
+After 24d774f1.
+
+- **javap (26.3 `client.jar`):**
+  - `SmoothSwimmingMoveControl(mob, maxTurnX, maxTurnY, inWaterSpeedModifier, outsideWaterSpeedModifier, applyGravity)`, `tick`:
+    1. with gravity and `isInWater`: `vy += 0.005`;
+    2. not `MOVE_TO`, or the navigation done: `setSpeed(0)`, `xxa`, `yya` and `zza` 0, and return;
+    3. `d² < 2.500000277905201E-7`: only `zza = 0`, and return;
+    4. `yRot = rotlerp(yRot, (float)(Mth.atan2(dz, dx) * 57.2957763671875) - 90, maxTurnY)`, then `yBodyRot` and `yHeadRot` take it; `s = (float)(speedModifier * MOVEMENT_SPEED)`;
+    5. in water: `setSpeed(s * inWater)`; when `|dy|` or the horizontal distance is above `1.0e-5F`, the pitch target `-(float)(Mth.atan2(dy, horizontal) * 57.2957763671875)`, wrapped and clamped to `±maxTurnX`, and `xRot = rotateTowards(xRot, target, 5)`; then `zza = Mth.cos(xRot * 0.017453292F) * s` and `yya = -Mth.sin(xRot * 0.017453292F) * s` (by `s`, not by the speed in water);
+    6. out of water: `setSpeed(s * outside * (1 - clamp((|wrapDegrees(yRot - target)| - 10) / 50, 0, 1)))`, with the yaw after its turn; `yya` stays as it was.
+  - `Mob.setSpeed` also sets `zza`. `LivingEntity.applyInput` fades only `xxa` and `zza` by 0.98 (not `yya`), before `serverAiStep`; `aiStep` travels with `(xxa, yya, zza)`.
+  - `SmoothSwimmingLookControl(mob, maxYRotFromCenter)`, `tick` (it never resets the pitch):
+    - while looking (`lookAtCooldown > 0`, counted down): the head yaw towards the target's yaw + 20 at `yMaxRotSpeed`, the pitch towards the target's pitch + 10 at `xMaxRotAngle`;
+    - otherwise: the pitch towards 0 by 5 only when the navigation is done, and the head yaw towards the body at `yMaxRotSpeed` (0 until something was looked at);
+    - then the body yaw moves 4 towards the head while the head is more than `maxYRotFromCenter` from it.
+  - `AbstractFish$FishMoveControl.tick`: eyes in water (`isEyeInFluid(WATER)`): `vy += 0.005`; not `MOVE_TO` or the navigation done: `setSpeed(0)`; otherwise `setSpeed(Mth.lerp(0.125, speed, s))`, `vy += speed * (dy / distance) * 0.1` when `dy != 0`, and `yRot = rotlerp(yRot, target, 90)` with `yBodyRot` following when `dx` or `dz` is not 0. It never sets the operation back to `WAIT`, and never sets the head or the pitch.
+  - `AbstractFish.travelInWater`: `moveRelative(0.01)`, `move`, `× 0.9`, then `vy -= 0.005` with no target. `Dolphin.travelInWater` is the same with `moveRelative(getSpeed())`. Neither runs the climbing push or `jumpOutOfFluid` of `LivingEntity.travelInWater`.
+  - `Dolphin`: `SmoothSwimmingMoveControl(85, 10, 0.02, 0.1, true)`, `SmoothSwimmingLookControl(10)`, `getMaxHeadXRot` and `getMaxHeadYRot` 1.
+  - `Mob.serverAiStep`: sensing, the goal selectors, `navigation.tick`, `customServerAiStep`, then the move, look and jump controls.
+- **Changed (vendored entities crate):**
+  - `look.rs`: `LookControl::tick_smooth_swimming(position, eye_height, &mut body_yaw, navigating, max_from_centre)` after `set_look_at_with_limits`, beside the private `x_max_rot_angle` it reads.
+  - `movement.rs`: `Body::travel_swimming(world, input, yaw, acceleration)` after `travel_drowned_swimming`: `travel_water_mode(acceleration, 0.9, no gravity)`.
+  - New `world/families/water/swim.rs`: `SwimFrame { yaw, pitch, body_yaw, head_yaw, speed, sideways, up, forward }`, `SmoothSwimmingMoveControl` (`new` is `const`, so a family keeps its controls in a constant) and `FishMoveControl`, each with a `tick` over the shared `MoveControl`'s wanted spot, and `water_walk` (`WATER` malus 0, `WalkTarget::Zero`, no floating).
+  - `world/families/water/swimming.rs`:
+    - `SwimControls { movement: Smooth(..) | Fish, look: Smooth(max) | Plain, acceleration: Fixed(f) | Speed, sink_without_target, max_head_y_rot }`;
+    - `SwimGoals { up }` (vanilla's `yya`, which no fade touches and which outlives the tick) with the `SwimExtra` trait, so a family whose goals keep their own extra holds it inside;
+    - the `Swimmer` trait (`CONTROLS`, `Extra`), and `swim_ai_step::<S: Swimmer, W>`, which has `monster_ai_step`'s signature and goes straight into `family_goal_step_with`. In vanilla's order: the idle clock, the goals, the delayed recomputation and `tick_water`, the input fade, the move control, the look control (smooth, or plain with the family's head limit), the jump, the travel with `(xxa, yya, zza)` (`travel_swimming` in water with the fixed or the speed's acceleration and the sink without a target; lava and air as before), the movement sounds and the body rotation.
+  - `world/families/water.rs`: `pub mod swim;`, and `swimming` is `pub` now.
+  - The probe `SwimProbe` gains the kind `minecraft:swimming_probe`: a goal mob with an empty spec (`water_walk`, follow range 16), a water-bound navigation and `SwimGoals`, which runs `swim_ai_step` with fish controls, or the dolphin's smooth ones when its `smooth` is set. It steps quietly like the first probe.
+- **How a family uses it** (the fish, dolphins, and guardians where they fit):
+  - In `spawn`, right after `MonsterAi::of_kind`: `navigation.water` (water-paths 2), and `ai.state.extra.set(..)` with `SwimGoals` or the family's own extra that implements `SwimExtra`.
+  - The spec's `walk` is `swim::water_walk`, or a function that calls it first.
+  - A marker type implements `Swimmer` with its `SwimControls` constant, and the tick passes `swim_ai_step::<Marker, W>` as `family_goal_step_with`'s `run`. The fish: `Fish`, `Plain`, `Fixed(0.01_f32 as f64)`, sinking without a target, head limit 75. The dolphin: `Smooth(SmoothSwimmingMoveControl::new(85, 10, 0.02, 0.1, true))`, `Smooth(10.0)`, `Speed`, sinking, head limit 1.
+- **Tests added:**
+  - `world::families::water::swim::tests::smooth_swimming_turns_ten_degrees_and_pitches_five_up_to_eighty_five` (10 a tick to face east and 5 a tick of pitch to -45; up to -85 and no further when the target is straight up; `zza` and `yya` from the pitch by the full speed, and the speed by 0.02 in water; on land the turning factor 0, 1 and one half; a stopped or finished move zeroes all inputs, a reached spot only `zza`; +0.005 in water only with its gravity).
+  - `world::families::water::swim::tests::the_smooth_look_tilts_twenty_and_ten_and_drags_the_body_after_ten_degrees` (the first ticks step by step; after 30 ticks the head at -70 for a target at -90, the pitch at +10 and the body dragged to -60; the pitch kept while a path runs and eased by 5 after it; a head that never looked keeps its yaw and pulls the body 4).
+  - `world::families::water::swim::tests::the_fish_control_lerps_its_speed_by_an_eighth_and_rises_towards_its_target` (the eighth, the rise by `speed * dy / distance * 0.1` plus 0.005 under water, the 90-degree turn of the yaw and the body only, no turn straight up, a stop keeps the yaw).
+  - `world::families::water::swim::tests::swimming_travel_keeps_nine_tenths_without_gravity` (the move, then 0.9 and no gravity; the up input lifts; plain water travel still sinks).
+  - `world::families::water::tests::a_swim_probe_swims_to_a_spot_in_a_pool_and_never_leaves_it` (a fish-controlled and a smooth probe, each sent 7 blocks across a pool dug in stone, stay in its water every tick of 300, reach the spot within 1.5 blocks with the path done, and only the smooth one tilts its nose up).
+- **Decisions:**
+  - **The controls ride on a trait.** The brief planned a two-line wrapper per family around `swim_ai_step(&CONTROLS, ..)`; with `Swimmer` the step itself has `monster_ai_step`'s signature, so a family passes `swim_ai_step::<Marker, W>` and writes no wrapper of eleven arguments.
+  - **`yya` lives in `SwimGoals`**, the goal extra (the brief's `SwimGoals`), as `MonsterAi` has no field for it and `monster_ai.rs` stays untouched. A family with its own extra embeds `SwimGoals` and implements `SwimExtra`, as M1's animals do with `AnimalExtra`.
+  - **`max_head_y_rot` joins `SwimControls`**: the body rotation and the plain look clamp the head by the mob's `getMaxHeadYRot` (75 by default, the dolphin's 1).
+  - **`water_walk` came with this commit**, not the second: the probe's spec needs it for its paths (vanilla's `WATER` malus 0).
+  - **`swim` and `swimming` are `pub` modules** (the brief had `pub(crate)`), so the controls that only later families use raise no dead-code warnings. `swim_ai_step` itself is `pub(in crate::world)` (it takes D0's private `MonsterStep`), so it carries `#[cfg_attr(not(test), allow(dead_code))]` until the fish use it; `fish-live` drops the attribute.
+  - **The swimming travel keeps the shared water travel's climbing push** (`travel_water_mode`, as the drowned's swimming travel does): vanilla's own `travelInWater` of fish and dolphins has none, which only differs for a swimmer pressed against a waterlogged ladder.
+  - **The movement test sits in M2's `swim/tests.rs`** (as `world::families::water::swim::tests::..`), not in a new test module of the shared `movement.rs`.
+  - **The probe's pool test sends the probe by a path**: no wandering goal exists yet (commit 2).
+- **Protocol:** none. The pitch already travels as `ServerMob.x_rot` through `MobCore.look`.
+- **Game events still to add:** none (`swim` comes from the shared movement emission).
+- **What changes in the game:** nothing yet. No registered mob swims with these controls until the fish (`fish-live`, segment m2b) and the dolphins.
+- **Runs:**
+  - `test -p minecraftoss-entities --locked --lib world::families::water`: 24 passed, after two fixes of the new tests' own expectations: vanilla's table `Mth.atan2(10, 10)` gives a pitch target of -44.999996, not -45, and the pool test's first spot was within the path's reach of 1 on the level it started at, so the smooth probe never had to tilt (the spot is now 3 blocks up from the pool's floor).
+  - `test -p minecraftoss-entities --locked --lib`: 686 passed (the registry's own tests with the probe's third kind among them). `check -p launcher --locked`: green, with only the old render_frame and skate warnings.
+  - The new and changed M2 files (`swim.rs`, `swim/tests.rs`, `swimming.rs`, `swimming/swim_probe.rs`, `water/tests.rs`) pass `rustfmt --check --edition 2021` with the repo's config and empty output; `look.rs` and `movement.rs` keep their own style. No added line holds a comment.
+- **Test steps** (regression; nothing new to see: no mob uses the new controls yet). Release build, survival, Normal, by day. Name each screenshot by its label.
+  1. Dig a pool 5 x 5 and 3 deep and fill it from both water buckets. Use a drowned egg in it and stand at the edge: the drowned swims to you, as before. **m2-swim-1**
+  2. Use a squid egg in the pool: it swims in pulses, as before.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:drowned_spawn_egg*2,minecraft:squid_spawn_egg*2,minecraft:water_bucket,minecraft:water_bucket,minecraft:iron_shovel
+```

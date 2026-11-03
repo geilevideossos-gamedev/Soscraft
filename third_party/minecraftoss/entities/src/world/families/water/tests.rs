@@ -1,4 +1,6 @@
-use super::swimming::swim_probe::{self, KIND, SILENT, SILENT_SPLASH, SWIM, SwimProbe};
+use super::swimming::swim_probe::{self, KIND, SILENT, SILENT_SPLASH, SWIM, SWIMMING, SwimProbe};
+use crate::fluid::FluidFrame;
+use crate::navigation::{GroundNavigation, navigate_walk_to};
 use crate::world::families::pests::probe::{self, Probe};
 use crate::world::families::{Breath, Family, FamilyMob, Hurt};
 use crate::world::{DamageSourceKind, EntityWorld, MobSound};
@@ -286,5 +288,73 @@ fn a_family_that_moves_its_own_way_while_dying_skips_the_shared_dying_travel() {
             let slowed = body.velocity.z < push.z;
             assert!(slowed && body.velocity.y < 0.0, "{start}: drag and sinking");
         }
+    }
+}
+
+struct Basin {
+    size: i32,
+    top: i32,
+}
+
+impl World for Basin {
+    fn block(&self, (x, y, z): Pos) -> Option<Block> {
+        if y > self.top {
+            return None;
+        }
+        let inside = |c: i32| (0..self.size).contains(&c);
+        let water = y >= 64 && inside(x) && inside(z);
+        Some(Block::new(if water {
+            "minecraft:water"
+        } else {
+            "minecraft:stone"
+        }))
+    }
+
+    fn set_block(&mut self, _: Pos, _: Option<Block>) {}
+}
+
+fn swimming(world: &mut EntityWorld, at: DVec3, smooth: bool) -> u64 {
+    let id = world.spawn_family_kind(SWIMMING, at).unwrap();
+    probe_mut(world, id).state.smooth = smooth;
+    id
+}
+
+fn navigation(world: &EntityWorld, id: u64) -> &GroundNavigation {
+    &probe(world, id).state.ai.as_ref().unwrap().state.navigation
+}
+
+fn send(world: &mut EntityWorld, id: u64, level: &impl World, to: DVec3) {
+    let FamilyMob { core, state } = probe_mut(world, id);
+    let ai = state.ai.as_deref_mut().unwrap();
+    let body = &core.body;
+    let fluid = FluidFrame::sample(level, body.position, body.width, body.height);
+    let profile = ai.state.profile();
+    let navigation = &mut ai.state.navigation;
+    navigate_walk_to(body, navigation, level, &profile, fluid, to, 1.0, 1);
+}
+
+#[test]
+fn a_swim_probe_swims_to_a_spot_in_a_pool_and_never_leaves_it() {
+    let spot = DVec3::new(7.5, 67.0, 7.5);
+    for smooth in [false, true] {
+        let mut world = EntityWorld::default();
+        let mut basin = Basin { size: 10, top: 67 };
+        let id = swimming(&mut world, DVec3::new(2.5, 64.0, 2.5), smooth);
+        send(&mut world, id, &basin, spot);
+        assert!(!navigation(&world, id).is_done(), "{smooth}: a path");
+        let mut nose_up = false;
+        for tick in 0..300 {
+            world.tick(&mut basin);
+            let core = &probe(&world, id).core;
+            let p = core.body.position;
+            let pool = (0.0..10.0).contains(&p.x) && (0.0..10.0).contains(&p.z);
+            let wet = pool && (64.0..68.0).contains(&p.y) && core.body.touching_water;
+            assert!(wet, "{smooth} at tick {tick}: {p}");
+            nose_up |= core.look.pitch < 0.0;
+        }
+        assert!(navigation(&world, id).is_done(), "{smooth}: there");
+        let p = probe(&world, id).core.body.position;
+        assert!(p.distance(spot) < 2.0, "{smooth}: {p}");
+        assert_eq!(nose_up, smooth, "only the smooth swimmer tilts");
     }
 }

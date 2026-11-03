@@ -1,5 +1,6 @@
 pub mod squids;
-pub(crate) mod swimming;
+pub mod swim;
+pub mod swimming;
 #[cfg(test)]
 mod tests;
 

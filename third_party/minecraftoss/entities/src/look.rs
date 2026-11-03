@@ -137,6 +137,35 @@ impl LookControl {
         self.cooldown = 2;
     }
 
+    pub fn tick_smooth_swimming(&mut self, position: DVec3, eye_height: f32, body_yaw: &mut f32, navigating: bool, max_from_centre: f32) {
+        if self.cooldown > 0 {
+            self.cooldown -= 1;
+            let xd = self.wanted.x - position.x;
+            let yd = self.wanted.y - (position.y + f64::from(eye_height));
+            let zd = self.wanted.z - position.z;
+            if xd.abs() > 1.0e-5_f32 as f64 || zd.abs() > 1.0e-5_f32 as f64 {
+                let target = (minecraft_atan2(zd, xd) * 57.2957763671875_f64) as f32 - 90.0;
+                self.head_yaw = rotate_towards(self.head_yaw, target + 20.0, self.y_max_rot_speed);
+            }
+            let horizontal = (xd * xd + zd * zd).sqrt();
+            if yd.abs() > 1.0e-5_f32 as f64 || horizontal.abs() > 1.0e-5_f32 as f64 {
+                let target = -(minecraft_atan2(yd, horizontal) * 57.2957763671875_f64) as f32;
+                self.pitch = rotate_towards(self.pitch, target + 10.0, self.x_max_rot_angle);
+            }
+        } else {
+            if !navigating {
+                self.pitch = rotate_towards(self.pitch, 0.0, 5.0);
+            }
+            self.head_yaw = rotate_towards(self.head_yaw, *body_yaw, self.y_max_rot_speed);
+        }
+        let from_centre = wrap_degrees(self.head_yaw - *body_yaw);
+        if from_centre < -max_from_centre {
+            *body_yaw -= 4.0;
+        } else if from_centre > max_from_centre {
+            *body_yaw += 4.0;
+        }
+    }
+
     pub fn tick(&mut self, position: DVec3, eye_height: f32, body_yaw: f32, navigating: bool) {
         self.tick_limited(position, eye_height, body_yaw, navigating, 75.0);
     }
