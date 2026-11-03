@@ -862,7 +862,7 @@ pub(crate) fn struck(
         landed.extend(push.landing(hurt, blocked > 0.0, knockback_resistance));
     }
     for (distance, multiplier) in outputs.rider_falls.into_iter().filter(|_| alive) {
-        let damage = survival.rider_fall(distance, multiplier);
+        let damage = survival.rider_fall(distance, multiplier, feet[1]);
         if damage > 0
             && let Some(sounds) = sounds.as_mut()
         {

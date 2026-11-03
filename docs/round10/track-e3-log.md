@@ -222,3 +222,29 @@ After 310cd4bf. Gap horses-4, strider half.
      - **Screenshot e3h03**, right after landing.
   5. Repeat from 4 high (`/fill ~3 ~ ~-3 ~9 ~3 ~3 netherrack`, `/tp @s ~6 ~4 ~`): you lose half a heart. From 3 high you lose nothing.
   7. Friend (two windows, `scripts\mp-local.ps1`): F does step 4 on F's own strider. F loses 1.5 hearts, and the host hears F land. **Screenshot e3h04**, F's window.
+
+### 8. Minecraft riders thrown up by a wind charge count only the fall below the burst
+
+After 9d23d92f. Gap horses-7.
+
+- **Why:** on foot a fall is clipped at a wind charge's burst height (`survival.impulse_fall`, `minecraft_players.rs:438`), but a rider's share of its mount's fall went to `survival.rider_fall(distance, multiplier)` whole (`track-e1-log.md:477`). Vanilla's `LivingEntity.causeFallDamage` clips every fall it is handed, a passenger's share included, at `currentImpulseImpactPos.y - getY()` (offsets 0-55), and every push already starts an impulse for a seated rider (`minecraft_players.rs:956`, `takes_pushes`).
+- **Changed:**
+  - `crates/minecraft_survival/src/survival.rs:540`: `rider_fall(distance, multiplier, feet_y)` first clips `distance` through `self.impulse_fall(distance, feet_y)`: the fall counts only down from where the burst caught the rider, a landing at or above the burst ends the impulse, and a hurting landing ends it in `hurt_by_fall` as on foot.
+  - `crates/render_anim/src/minecraft_players.rs:865`: passes the rider's own `feet[1]` (`:787`), as vanilla clips with the rider's own height against the vehicle's distance.
+  - The existing rider test passes a third argument (64) with no impulse, so its numbers stay.
+- **Tests:**
+  - `survival::tests::a_rider_thrown_up_by_a_wind_charge_counts_only_the_fall_below_the_burst`: after `start_impulse(70.0)`, `rider_fall(20.0, 1.0, 60.0)` takes 7, not 17, and the impulse is gone, so the same fall again takes 17; a landing at 71, above the burst, takes nothing and ends the impulse.
+  - `minecraft_survival`: 844 passed and `tests/vanilla_world.rs` 1, no failure. `render_anim`: 226 passed, no failure. `check -p launcher --locked`: green, no warning.
+- **Owner's steps** (as above; optional):
+  6. Wind charge:
+     - Run `/fill ~3 ~ ~-3 ~9 ~11 ~3 stone` (12 high), `/tp @s ~6 ~12 ~`, then `/summon minecraft:horse ~ ~ ~2 {Tame:1b}`. Saddle the horse and ride it off the edge: you lose 4.5 hearts.
+     - Get back up (`/gamemode creative`, fly up, `/gamemode survival`). Summon and saddle a new tame horse and ride it.
+     - Look straight down, throw a wind charge at its feet, and ride off the edge within two seconds. You again lose 4.5 hearts, not more.
+
+**Group rider-falls, kit** (steps 1 to 7; at most 27 stacks, here 10):
+
+```
+IW4L_MINECRAFT_KIT=minecraft:saddle,minecraft:saddle,minecraft:saddle,minecraft:strider_spawn_egg*2,minecraft:warped_fungus_on_a_stick,minecraft:wind_charge*16,minecraft:cobblestone*64,minecraft:golden_apple*8,minecraft:cooked_beef*32,minecraft:iron_sword
+```
+
+**Protocol:** no message changed in this group (the shares stay on the host: `rider_falls` reaches each player's survival through `PlayerOutputs`, not the wire).
