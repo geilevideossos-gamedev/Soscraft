@@ -60,7 +60,7 @@ pub struct MinecraftWorldView {
     pub armor_glint_texture: Option<Arc<image::RgbaImage>>,
     /// Mob models (cut out, back-face culled, translucent) and entity
     /// shadows, as `mesh::Vertex` bytes and indices.
-    pub entity_meshes: [(Vec<u8>, Vec<u32>); 6],
+    pub entity_meshes: [(Vec<u8>, Vec<u32>); 7],
     /// The black card behind the inventory's character, in blocks.
     pub backdrop: Option<[[f32; 3]; 4]>,
     pub puppet_gear: (Vec<u8>, Vec<u32>),
@@ -1555,6 +1555,7 @@ fn update(
             raw(&meshes.shadows),
             raw(&meshes.glow),
             raw(&meshes.glow_cover),
+            raw(&meshes.additive),
         ];
         let mesh = meshes.items;
         let (bytes, indices) = &mut view.particles;
@@ -1605,6 +1606,7 @@ fn update(
         darkness: *darkness,
         world_fog: ui.boss_bars.iter().any(|bar| bar.world_fog),
         credits: ui.credits.is_some(),
+        sky_flash: entities.as_ref().is_some_and(|entities| entities.view.sky_flash()),
     };
     let sky_ticked = present_sky(&mut view, terrain, &globals.registries, light, (environment_accumulator, environment_primed), &inputs);
     if let (Some((x_angle, y_angle)), Some(sounds)) = (sky_ticked.flash, sounds.as_mut()) {
@@ -1637,6 +1639,7 @@ pub(crate) struct SkyInputs {
     pub(crate) darkness: minecraft_terrain::darkness::Darkness,
     pub(crate) world_fog: bool,
     pub(crate) credits: bool,
+    pub(crate) sky_flash: bool,
 }
 
 pub(crate) fn present_crumbs(view: &mut minecraft_survival::entity_view::EntityView, mining: &mut crate::minecraft_mining::Mining, packs: &PackStack, scene: &HandcraftedScene, atlas: &Atlas) {
@@ -1672,7 +1675,7 @@ pub(crate) struct SkyTicked {
 }
 
 pub(crate) fn present_sky(view: &mut MinecraftWorldView, terrain: &mut minecraft_survival::level::Terrain, registries: &Registries, light: &SkyLight, (accumulator, primed): (&mut f64, &mut bool), inputs: &SkyInputs) -> SkyTicked {
-    let SkyInputs { eye, forward, aspect, dt, clock_ticks, game_time, rain_level, thunder_level, lava, powder_snow, darkness, world_fog, credits } = *inputs;
+    let SkyInputs { eye, forward, aspect, dt, clock_ticks, game_time, rain_level, thunder_level, lava, powder_snow, darkness, world_fog, credits, sky_flash } = *inputs;
     let mut ticked = SkyTicked::default();
     let eye_block = (eye[0].floor() as i32, eye[1].floor() as i32, eye[2].floor() as i32);
     view.eye_light = [
@@ -1689,6 +1692,9 @@ pub(crate) fn present_sky(view: &mut MinecraftWorldView, terrain: &mut minecraft
     *accumulator += dt;
     if !*primed || *accumulator >= TICK_SECONDS {
         *accumulator = (*accumulator % TICK_SECONDS).min(TICK_SECONDS);
+        if sky_flash {
+            terrain.environment.flash_sky();
+        }
         let scene = &terrain.scene;
         let flash = terrain.environment.tick(
             clock_ticks,
@@ -2681,7 +2687,7 @@ mod darkness_tests {
     }
 
     fn environment(terrain: &mut Terrain, registries: &Registries, darkness: Darkness, lava: Option<(bool, bool)>) -> [[f32; 4]; 16] {
-        let inputs = SkyInputs { eye: [0.5, 80.0, 0.5], forward: glam::Vec3::Z, aspect: 1.5, dt: 0.0, clock_ticks: 6000, game_time: 6000.0, rain_level: 0.0, thunder_level: 0.0, lava, powder_snow: None, darkness, world_fog: false, credits: false };
+        let inputs = SkyInputs { eye: [0.5, 80.0, 0.5], forward: glam::Vec3::Z, aspect: 1.5, dt: 0.0, clock_ticks: 6000, game_time: 6000.0, rain_level: 0.0, thunder_level: 0.0, lava, powder_snow: None, darkness, world_fog: false, credits: false, sky_flash: false };
         let mut view = MinecraftWorldView::default();
         present_sky(&mut view, terrain, registries, &SkyLight::streamed(), (&mut 0.0, &mut false), &inputs);
         view.environment

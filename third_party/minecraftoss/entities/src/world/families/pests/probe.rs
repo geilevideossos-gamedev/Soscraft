@@ -7,7 +7,7 @@ use crate::monster_ai::{
 use crate::tempt::PlayerCandidate;
 use crate::walk_path::WalkProfile;
 use crate::world::families::{Family, FamilyMob, MobCore, MonsterSpec};
-use crate::world::{EntityWorld, PlayerHitKind, Rider};
+use crate::world::{Bolt, EntityWorld, PlayerHitKind, Rider};
 use glam::DVec3;
 use minecraftoss_player::World;
 use minecraftoss_player::inventory::ItemStack;
@@ -119,6 +119,8 @@ impl Goal<MonsterGoalContext> for ProbeGoal {
 pub struct Probe {
     pub undead: bool,
     pub fire_immune: bool,
+    pub thunder_answers: bool,
+    pub thunder_bolts: Vec<[i32; 4]>,
     pub immune_to_poison: bool,
     pub leashable: bool,
     pub unpushable: bool,
@@ -154,6 +156,8 @@ impl Family for Probe {
             state: Probe {
                 undead: false,
                 fire_immune: false,
+                thunder_answers: false,
+                thunder_bolts: Vec::new(),
                 immune_to_poison: false,
                 leashable: false,
                 unpushable: false,
@@ -257,6 +261,11 @@ impl Family for Probe {
 
     fn fire_immune(mob: &FamilyMob<Self>) -> bool {
         mob.state.fire_immune
+    }
+
+    fn thunder_hit(mob: &mut FamilyMob<Self>, bolt: &Bolt) -> bool {
+        mob.state.thunder_bolts.push(bolt.uuid);
+        mob.state.thunder_answers
     }
 
     fn leashable(mob: &FamilyMob<Self>) -> bool {

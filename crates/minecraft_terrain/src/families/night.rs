@@ -1,1 +1,5 @@
-terrain_group!(night {});
+mod phantoms;
+
+terrain_group!(night {
+    phantoms::Phantom,
+});

@@ -56,6 +56,8 @@ pub mod hotbars;
 pub mod frame_spans;
 pub(crate) mod interface;
 pub mod lighting;
+pub mod lightning;
+pub mod lightning_render;
 pub mod locate;
 pub mod lodestone;
 pub mod map_picture;

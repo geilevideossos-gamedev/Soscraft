@@ -41,6 +41,7 @@ pub enum Hazard {
     /// Too many mobs in one place (`cramming`).
     Cramming,
     Freeze,
+    LightningBolt,
 }
 
 impl Hazard {
@@ -51,7 +52,7 @@ impl Hazard {
 
     /// `#panic_causes` (through `#panic_environmental_causes`).
     pub fn panics(self) -> bool {
-        matches!(self, Self::InFire | Self::Lava | Self::Cactus | Self::HotFloor | Self::OnFire)
+        matches!(self, Self::InFire | Self::Lava | Self::Cactus | Self::HotFloor | Self::OnFire | Self::LightningBolt)
     }
 
     /// `#bypasses_armor`.
@@ -72,6 +73,7 @@ impl Hazard {
             Self::InWall => "minecraft:in_wall",
             Self::Cramming => "minecraft:cramming",
             Self::Freeze => "minecraft:freeze",
+            Self::LightningBolt => "minecraft:lightning_bolt",
         }
     }
 }

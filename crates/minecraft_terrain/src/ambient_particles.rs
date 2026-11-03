@@ -70,6 +70,7 @@ pub enum Kind {
     ExplosionEmitter,
     SonicBoom,
     HappyVillager,
+    Mycelium,
     Rain,
     Flame,
     SmallFlame,
@@ -85,6 +86,7 @@ pub enum Kind {
     Snowflake,
     EndRod,
     Crit,
+    ElectricSpark,
     DragonBreath,
     Totem,
     Heart,
@@ -438,6 +440,17 @@ impl Particle {
         particle
     }
 
+    fn mycelium(at: DVec3, motion: DVec3, random: &mut LegacyRandom) -> Self {
+        let mut particle = Self::base(Kind::Mycelium, at, motion, random);
+        let grey = random.next_float() * 0.1 + 0.2;
+        particle.color = [grey; 3];
+        particle.size = f64::from(0.02_f32);
+        particle.quad_size *= random.next_float() * 0.6 + 0.5;
+        particle.velocity *= f64::from(0.02_f32);
+        particle.lifetime = (20.0 / (f64::from(random.next_float()) * 0.8 + 0.2)) as i32;
+        particle
+    }
+
     fn heart(kind: Kind, at: DVec3, random: &mut LegacyRandom) -> Self {
         let mut particle = Self::base(kind, at, DVec3::ZERO, random);
         particle.speed_up = true;
@@ -506,6 +519,17 @@ impl Particle {
         particle.quad_size *= 0.75;
         particle.lifetime = ((6.0 / (f64::from(random.next_float()) * 0.8 + 0.6)) as i32).max(1);
         particle.coast();
+        particle
+    }
+
+    fn electric_spark(at: DVec3, motion: DVec3, random: &mut LegacyRandom) -> Self {
+        let mut particle = Self::base(Kind::ElectricSpark, at, DVec3::ZERO, random);
+        particle.friction = 0.96;
+        particle.speed_up = true;
+        particle.quad_size *= 0.75;
+        particle.color = [1.0, 0.9, 1.0];
+        particle.velocity = motion * 0.25;
+        particle.lifetime = random.next_int(2) as i32 + 2;
         particle
     }
 
@@ -598,6 +622,23 @@ impl Particle {
         }
         self.velocity.x *= f64::from(self.friction);
         self.velocity.z *= f64::from(self.friction);
+        true
+    }
+
+    fn glide(&mut self) -> bool {
+        self.previous = self.position;
+        let prior = self.age;
+        self.age += 1;
+        if prior >= self.lifetime {
+            return false;
+        }
+        self.velocity.y -= 0.04 * f64::from(self.gravity);
+        self.position += self.velocity;
+        if self.speed_up && self.position.y == self.previous.y {
+            self.velocity.x *= 1.1;
+            self.velocity.z *= 1.1;
+        }
+        self.velocity *= f64::from(self.friction);
         true
     }
 
@@ -722,6 +763,7 @@ impl Particle {
                 format!("sonic_boom_{}", step.clamp(0, SONIC_BOOM_SPRITES - 1))
             }
             Kind::HappyVillager => "glint".to_owned(),
+            Kind::Mycelium => "generic_0".to_owned(),
             Kind::Rain => format!("splash_{}", self.sprite),
             Kind::Flame | Kind::SmallFlame => "flame".to_owned(),
             Kind::SoulFireFlame => "soul_fire_flame".to_owned(),
@@ -750,6 +792,7 @@ impl Particle {
                 )
             }
             Kind::Crit => "critical_hit".to_owned(),
+            Kind::ElectricSpark => "glow".to_owned(),
             Kind::SculkSoul => {
                 let step = self.age * (SCULK_SOUL_SPRITES - 1) / self.lifetime.max(1);
                 format!("sculk_soul_{}", step.clamp(0, SCULK_SOUL_SPRITES - 1))
@@ -799,9 +842,11 @@ impl Particle {
             | Kind::ExplosionEmitter
             | Kind::SonicBoom
             | Kind::HappyVillager
+            | Kind::Mycelium
             | Kind::Rain
             | Kind::Snowflake
             | Kind::EndRod
+            | Kind::ElectricSpark
             | Kind::Totem
             | Kind::TrialOmen
             | Kind::OminousSpawning
@@ -1001,7 +1046,7 @@ pub fn textures() -> Vec<ResourceId> {
     let souls = (0..SCULK_SOUL_SPRITES).map(|index| format!("sculk_soul_{index}"));
     let charges = (0..SCULK_CHARGE_SPRITES).map(|index| format!("sculk_charge_{index}"));
     let pops = (0..SCULK_CHARGE_POP_SPRITES).map(|index| format!("sculk_charge_pop_{index}"));
-    ["lava", "glint", "flame", "soul_fire_flame", "critical_hit", "heart", "angry", "trial_omen", "ominous_spawning", "vault_connection"]
+    ["lava", "glint", "flame", "soul_fire_flame", "critical_hit", "glow", "heart", "angry", "trial_omen", "ominous_spawning", "vault_connection"]
         .into_iter()
         .map(str::to_owned)
         .chain(["glow".to_owned()])
@@ -1400,6 +1445,7 @@ impl AmbientParticles {
             Kind::ExplosionEmitter => Particle::emitter(at, random),
             Kind::SonicBoom => Particle::sonic_boom(at, random),
             Kind::HappyVillager => Particle::happy_villager(at, motion, random),
+            Kind::Mycelium => Particle::mycelium(at, motion, random),
             Kind::Rain => Particle::rain(at, random),
             Kind::Flame | Kind::SmallFlame | Kind::SoulFireFlame => {
                 Particle::flame(kind, at, motion, random)
@@ -1415,6 +1461,7 @@ impl AmbientParticles {
             Kind::Snowflake => Particle::snowflake(at, motion, random),
             Kind::EndRod => Particle::end_rod(at, motion, random),
             Kind::Crit => Particle::crit(at, motion, random),
+            Kind::ElectricSpark => Particle::electric_spark(at, motion, random),
             Kind::DragonBreath => Particle::dragon_breath(at, motion, 1.0, random),
             Kind::Totem => Particle::totem(at, motion, random),
             Kind::Heart => Particle::heart(kind, at, random),
@@ -1459,6 +1506,7 @@ impl AmbientParticles {
             }
             Kind::Explosion | Kind::SonicBoom => particle.hold(),
             Kind::HappyVillager => particle.linger(),
+            Kind::Mycelium => particle.linger(),
             Kind::Rain => particle.drip(scene, &mut cache, random),
             Kind::Flame | Kind::SmallFlame | Kind::SoulFireFlame => particle.rise(),
             Kind::SquidInk | Kind::GlowSquidInk => {
@@ -1488,6 +1536,7 @@ impl AmbientParticles {
             Kind::CosySmoke | Kind::SignalSmoke => particle.drift(scene, &mut cache, random),
             Kind::EndRod | Kind::Crit | Kind::TrialOmen => particle.coast(),
             Kind::Sneeze => particle.coast(),
+            Kind::ElectricSpark => particle.glide(),
             Kind::OminousSpawning => particle.fly_home(),
             Kind::VaultConnection => particle.fly_to_keyhole(),
             Kind::DragonBreath => particle.breathe(),
@@ -1546,7 +1595,7 @@ impl AmbientParticles {
             let (sky, block) = match particle.kind {
                 Kind::Explosion | Kind::SonicBoom | Kind::EndRod | Kind::Totem => (FULL_BRIGHT, FULL_BRIGHT),
                 Kind::Lava | Kind::TrialSpawnerDetection | Kind::TrialSpawnerDetectionOminous | Kind::OminousSpawning | Kind::VaultConnection | Kind::SculkSoul | Kind::SculkCharge | Kind::SculkChargePop => (f32::from(light.get(cell)), FULL_BRIGHT),
-                Kind::Flame | Kind::SmallFlame | Kind::SoulFireFlame => (f32::from(light.get(cell)), particle.glow(f32::from(light.get_block(cell)), partial)),
+                Kind::Flame | Kind::SmallFlame | Kind::SoulFireFlame | Kind::ElectricSpark => (f32::from(light.get(cell)), particle.glow(f32::from(light.get_block(cell)), partial)),
                 Kind::SquidInk | Kind::GlowSquidInk => (FULL_BRIGHT, FULL_BRIGHT),
                 Kind::Glow => (f32::from(light.get(cell)), particle.glow(f32::from(light.get_block(cell)), partial)),
                 _ => (f32::from(light.get(cell)), f32::from(light.get_block(cell))),
@@ -2217,6 +2266,39 @@ mod tests {
     }
 
     #[test]
+    fn mycelium_lingers_grey_for_twenty_to_a_hundred_ticks() {
+        let at = DVec3::new(0.5, 64.5, 0.5);
+        let scene = Blocks(HashMap::from([((0, 64, 0), Block::new("minecraft:stone"))]));
+        for seed in 0..40 {
+            let mut particles = AmbientParticles::new(seed);
+            particles.add(Kind::Mycelium, at, DVec3::ZERO);
+            let speck = particles.particles[0].clone();
+            let [red, green, blue] = speck.color;
+            assert!(red == green && green == blue && (0.2..=0.3).contains(&red), "{red}");
+            assert!((20..=100).contains(&speck.lifetime), "{}", speck.lifetime);
+            assert!(speck.velocity.length() < 0.006, "{}", speck.velocity);
+            assert!((0.05..=0.22).contains(&speck.quad_size), "{}", speck.quad_size);
+            assert_eq!(speck.size_at(0.5), speck.quad_size);
+            assert!(!speck.translucent());
+            assert_eq!(
+                speck.sprite().map(|id| id.key()).as_deref(),
+                Some("minecraft:particle/generic_0")
+            );
+            particles.tick(&scene);
+            let moved = &particles.particles[0];
+            assert_eq!(moved.position, at + speck.velocity, "through the stone");
+            assert_eq!(moved.velocity, speck.velocity * 0.99);
+            for _ in 1..speck.lifetime {
+                particles.tick(&scene);
+            }
+            assert_eq!(particles.len(), 1);
+            assert!((particles.particles[0].position - at).length() < 0.5);
+            particles.tick(&scene);
+            assert!(particles.is_empty());
+        }
+    }
+
+    #[test]
     fn rain_splashes_hop_up_and_die_on_the_ground_or_in_water() {
         let mut particles = AmbientParticles::new(18);
         particles.add(Kind::Rain, DVec3::new(0.5, 65.0, 0.5), DVec3::ZERO);
@@ -2569,6 +2651,48 @@ mod tests {
         assert!(names.contains(&"minecraft:particle/critical_hit".to_owned()));
         assert!(names.contains(&"minecraft:particle/glitter_0".to_owned()));
         assert!(names.contains(&"minecraft:particle/glitter_7".to_owned()));
+    }
+
+    #[test]
+    fn an_electric_spark_fades_quickly() {
+        let start = DVec3::new(0.5, 70.5, 0.5);
+        let walled = Blocks(HashMap::from([((0, 70, 0), Block::new("minecraft:stone")), ((1, 70, 0), Block::new("minecraft:stone"))]));
+        for seed in 0..40 {
+            let mut particles = AmbientParticles::new(seed);
+            particles.add(Kind::ElectricSpark, start, DVec3::new(0.8, 0.0, 0.0));
+            let spark = particles.particles[0].clone();
+            assert!((2..=3).contains(&spark.lifetime), "{}", spark.lifetime);
+            assert_eq!((spark.position, spark.color, spark.alpha), (start, [1.0, 0.9, 1.0], 1.0));
+            assert_eq!(spark.velocity, DVec3::new(0.2, 0.0, 0.0), "a quarter of the asked speed");
+            assert!((0.075..=0.15).contains(&spark.quad_size), "{}", spark.quad_size);
+            assert_eq!(spark.size_at(0.5), spark.quad_size);
+            assert!(!spark.translucent());
+            assert_eq!(spark.sprite().unwrap().key(), "minecraft:particle/glow");
+            assert_eq!(spark.glow(3.0, 0.0), 3.0);
+            let mut spent = spark.clone();
+            spent.age = spent.lifetime;
+            assert_eq!(spent.glow(3.0, 0.0), 15.0);
+            particles.tick(&walled);
+            let moved = &particles.particles[0];
+            assert_eq!(moved.position, start + DVec3::new(0.2, 0.0, 0.0), "through the stone");
+            assert_eq!(moved.velocity.x, 0.2 * 1.1 * f64::from(0.96_f32), "sped up while it keeps its height, then slowed");
+            let mut lived = 1;
+            while !particles.is_empty() {
+                particles.tick(&walled);
+                lived += 1;
+            }
+            assert_eq!(lived, spark.lifetime + 1);
+        }
+        let mut particles = AmbientParticles::new(5);
+        particles.add(Kind::ElectricSpark, start, DVec3::ZERO);
+        let light = SkyLight::from_levels((0, 70, 0), (1, 1, 1), vec![12], vec![3]);
+        let atlas = crate::mesh::make_atlas(&crate::pack::PackStack::open(Vec::new()).unwrap(), textures()).unwrap();
+        let (mut opaque, mut translucent) = (ChunkMesh::default(), ChunkMesh::default());
+        particles.append_mesh(&mut opaque, &mut translucent, &atlas, Vec3::Z, 0.0, &light);
+        assert_eq!(opaque.vertices.len(), 4);
+        assert!(translucent.vertices.is_empty());
+        assert!(opaque.vertices.iter().all(|v| v.sky_light == 12.0 && v.block_light == 3.0 && v.color == [1.0, 0.9, 1.0, 1.0]));
+        assert!(textures().contains(&ResourceId::parse("minecraft:particle/glow").unwrap()));
     }
 
     #[test]

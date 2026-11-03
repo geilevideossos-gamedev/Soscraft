@@ -144,7 +144,7 @@ pub fn registries(packs: &minecraft_terrain::pack::PackStack) -> CommandRegistri
     effects.sort();
     CommandRegistries {
         items,
-        entities: minecraft_terrain::server_mobs::simulated_kinds()
+        entities: minecraft_terrain::lightning::summon_kinds()
             .iter()
             .map(|kind| (*kind).to_owned())
             .collect(),

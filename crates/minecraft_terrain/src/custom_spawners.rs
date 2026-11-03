@@ -25,6 +25,8 @@ pub const PATROL_ONE_IN: i32 = 5;
 pub const PATROL_VILLAGE_SECTIONS: i32 = 2;
 pub const PATROL_MIN_DISTANCE: i32 = 24;
 pub const PATROL_DISTANCE_SPREAD: i32 = 24;
+pub const PHANTOM_DELAY: i32 = 60;
+pub const PHANTOM_DELAY_SPREAD: i32 = 60;
 
 #[derive(Clone, Debug)]
 pub struct CustomSpawners {
@@ -33,6 +35,8 @@ pub struct CustomSpawners {
     pub spawn_wandering_traders: bool,
     pub patrols: Option<PatrolSpawner>,
     pub spawn_patrols: bool,
+    pub phantoms: Option<PhantomSpawner>,
+    pub spawn_phantoms: bool,
 }
 
 impl Default for CustomSpawners {
@@ -43,6 +47,8 @@ impl Default for CustomSpawners {
             spawn_wandering_traders: true,
             patrols: None,
             spawn_patrols: true,
+            phantoms: None,
+            spawn_phantoms: true,
         }
     }
 }
@@ -56,6 +62,8 @@ impl CustomSpawners {
             spawn_wandering_traders: true,
             patrols: overworld.then(PatrolSpawner::default),
             spawn_patrols: true,
+            phantoms: overworld.then(PhantomSpawner::default),
+            spawn_phantoms: true,
         }
     }
 }
@@ -167,6 +175,22 @@ impl PatrolSpawner {
         }
         self.next_tick += PATROL_DELAY + random.next_i32_bound(PATROL_DELAY_SPREAD);
         bright_outside && random.next_i32_bound(PATROL_ONE_IN) == 0
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PhantomSpawner {
+    pub next_tick: i32,
+}
+
+impl PhantomSpawner {
+    pub fn due(&mut self, random: &mut dyn RandomSource) -> bool {
+        self.next_tick -= 1;
+        if self.next_tick > 0 {
+            return false;
+        }
+        self.next_tick += (PHANTOM_DELAY + random.next_i32_bound(PHANTOM_DELAY_SPREAD)) * 20;
+        true
     }
 }
 
@@ -329,6 +353,37 @@ mod tests {
                 .patrols
                 .is_none()
         );
+    }
+
+    #[test]
+    fn the_phantom_spawner_looks_at_once_then_every_one_to_two_minutes() {
+        let mut spawner = PhantomSpawner::default();
+        let mut random = LegacyRandom::new(5);
+        assert!(spawner.due(&mut random), "it looks at once");
+        assert!((1199..=2379).contains(&spawner.next_tick));
+        assert_eq!((spawner.next_tick + 1) % 20, 0, "{}", spawner.next_tick);
+        let mut waits = Vec::new();
+        let mut wait = 0;
+        while waits.len() < 200 {
+            wait += 1;
+            if spawner.due(&mut random) {
+                waits.push(wait);
+                wait = 0;
+            }
+        }
+        assert!((1199..=2379).contains(&waits[0]), "{}", waits[0]);
+        for &wait in &waits[1..] {
+            assert!((1200..=2380).contains(&wait) && wait % 20 == 0, "{wait}");
+        }
+        assert!(waits[1..].iter().any(|&wait| wait < 1400));
+        assert!(waits[1..].iter().any(|&wait| wait > 2200));
+        let overworld = CustomSpawners::for_dimension("minecraft:overworld");
+        assert_eq!(overworld.phantoms, Some(PhantomSpawner::default()));
+        assert!(overworld.spawn_phantoms);
+        for other in ["minecraft:the_nether", "minecraft:the_end"] {
+            assert!(CustomSpawners::for_dimension(other).phantoms.is_none());
+        }
+        assert!(CustomSpawners::default().phantoms.is_none());
     }
 
     #[test]

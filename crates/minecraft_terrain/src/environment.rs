@@ -74,6 +74,9 @@ const MOON_PHASES: [&str; 8] = [
 
 /// `ClientLevelData.voidDarknessOnsetRange` outside flat worlds.
 const VOID_DARKNESS_ONSET_RANGE: f32 = 32.0;
+const SKY_FLASH_TICKS: i32 = 2;
+const SKY_FLASH_COLOR: Vec3 = Vec3::new(0.8, 0.8, 1.0);
+const SKY_FLASH_MIX: f32 = 0.22;
 
 pub struct DimensionEnvironment {
     system: EnvironmentSystem,
@@ -84,6 +87,7 @@ pub struct DimensionEnvironment {
     /// `AtmosphericFogEnvironment.rainFogMultiplier`.
     rain_fog: f32,
     end_flash: Option<EndFlash>,
+    sky_flash: i32,
 }
 
 /// What the camera sees this frame.
@@ -107,7 +111,11 @@ impl DimensionEnvironment {
         }
         let defaults: Vec<Value> = indices.iter().map(|&i| system.registry.attributes[i].default.clone()).collect();
         let end_flash = (presentation.skybox == Skybox::End).then(EndFlash::default);
-        Ok(Self { system, presentation, indices, last: defaults.clone(), current: defaults, rain_fog: 0.0, end_flash })
+        Ok(Self { system, presentation, indices, last: defaults.clone(), current: defaults, rain_fog: 0.0, end_flash, sky_flash: 0 })
+    }
+
+    pub fn flash_sky(&mut self) {
+        self.sky_flash = SKY_FLASH_TICKS;
     }
 
     /// `EnvironmentAttributeProbe.tick`: samples every used attribute at the
@@ -118,7 +126,13 @@ impl DimensionEnvironment {
         let own = noise_biome((camera[0].floor() as i32) >> 2, (camera[1].floor() as i32) >> 2, (camera[2].floor() as i32) >> 2);
         let clock = move |_: &str| clock_ticks;
         let sample = Sample { clock_ticks: &clock, rain_level, thunder_level, biome_weights: Some(&weights), biome: own };
-        let values: Vec<Value> = self.indices.iter().map(|&i| self.system.value(i, &sample)).collect();
+        let mut values: Vec<Value> = self.indices.iter().map(|&i| self.system.value(i, &sample)).collect();
+        self.sky_flash = (self.sky_flash - 1).max(0);
+        if self.sky_flash > 0 {
+            let sky = Vec3::from(values[Used::SkyColor as usize].as_rgb());
+            values[Used::SkyColor as usize] = Value::Rgb(joml_lerp(sky, SKY_FLASH_COLOR, SKY_FLASH_MIX).to_array());
+            values[Used::SkyLightFactor as usize] = Value::Float(1.0);
+        }
         self.last = if first { values.clone() } else { std::mem::replace(&mut self.current, values.clone()) };
         self.current = values;
         if first && self.end_flash.is_some() {
@@ -319,6 +333,36 @@ mod tests {
         assert_eq!(nether.presentation.skybox, Skybox::None);
         let end = DimensionEnvironment::load(&registries, "minecraft:the_end").unwrap();
         assert_eq!(end.presentation.skybox, Skybox::End);
+    }
+
+    #[test]
+    fn a_sky_flash_brightens_the_sky_and_lights_the_world_for_two_ticks() {
+        let Some(registries) = registries() else { return };
+        let plains = registries.biomes.id("minecraft:plains").unwrap().0;
+        let mut env = DimensionEnvironment::load(&registries, "minecraft:overworld").unwrap();
+        let view = |partial_tick| View { partial_tick, forward: Vec3::Z, camera_y: 80.0, render_distance: 16, rain_level: 0.0, thunder_level: 0.0, darkness: 0.0 };
+        let step = |env: &mut DimensionEnvironment, first| {
+            env.tick(18_000, 0.0, 0.0, [0.5, 80.0, 0.5], |_, _, _| plains, first, false);
+            env.sky_state(&view(1.0))
+        };
+        let close = |a: Vec3, b: Vec3| (a - b).abs().max_element() < 1e-5;
+        let night = step(&mut env, true);
+        assert!(night.sky_light_factor < 0.5, "midnight is dark: {}", night.sky_light_factor);
+        let lit = joml_lerp(night.sky, Vec3::new(0.8, 0.8, 1.0), 0.22);
+        for tick in 0..2 {
+            env.flash_sky();
+            let flashed = step(&mut env, false);
+            assert!(close(flashed.sky, lit), "tick {tick}: {:?} toward pale blue {:?}", flashed.sky, lit);
+            assert!((flashed.sky_light_factor - 1.0).abs() < 1e-5, "tick {tick}: the world is lit as by day");
+        }
+        let after = step(&mut env, false);
+        assert!(close(after.sky, night.sky) && (after.sky_light_factor - night.sky_light_factor).abs() < 1e-5, "dark again once no bolt is lit");
+        let fading = env.sky_state(&view(0.5)).sky_light_factor;
+        assert!(fading > night.sky_light_factor + 0.1 && fading < 0.99, "frames blend out of the flash as the probe lerps: {fading}");
+        env.flash_sky();
+        step(&mut env, false);
+        let unrenewed = step(&mut env, false);
+        assert!((unrenewed.sky_light_factor - night.sky_light_factor).abs() < 1e-5, "a flash nobody renews lasts one tick");
     }
 
     fn sky_in(registries: &Registries, dimension: &str, biome: &str, clock_ticks: i64) -> SkyState {

@@ -151,6 +151,13 @@ macro_rules! family_group {
                 None
             }
 
+            pub fn thunder_hit(&mut self, key: u8, id: u64, bolt: &$crate::world::Bolt) -> Option<bool> {
+                $($(#[$attr])* if key == <$ty as $crate::world::families::Family>::KEY {
+                    return self.$field.thunder_hit(id, bolt);
+                })*
+                None
+            }
+
             pub fn traits(&self, key: u8, id: u64) -> Option<$crate::world::families::MobTraits> {
                 $($(#[$attr])* if key == <$ty as $crate::world::families::Family>::KEY {
                     return self.$field.traits(id);
@@ -618,6 +625,10 @@ pub trait Family: Clone + Send + Sized + 'static {
         hazards::fire_immune(mob.core.kind)
     }
 
+    fn thunder_hit(_mob: &mut FamilyMob<Self>, _bolt: &Bolt) -> bool {
+        false
+    }
+
     fn breathes_water(mob: &FamilyMob<Self>) -> bool {
         crate::wither::is_undead(mob.core.kind)
     }
@@ -802,6 +813,10 @@ impl<S: Family> FamilyStore<S> {
 
     pub fn deflect(&mut self, id: u64, projectile: &str) -> Option<bool> {
         self.get_mut(id).map(|mob| S::deflect(mob, projectile))
+    }
+
+    pub fn thunder_hit(&mut self, id: u64, bolt: &Bolt) -> Option<bool> {
+        self.get_mut(id).map(|mob| S::thunder_hit(mob, bolt))
     }
 
     pub fn effects_mut(&mut self, id: u64) -> Option<(&mut MobEffects, bool, bool)> {
@@ -1221,6 +1236,10 @@ impl Families {
             return false;
         };
         any_group!(self.deflect(key, id, projectile)).unwrap_or(false)
+    }
+
+    pub fn thunder_hit(&mut self, key: u8, id: u64, bolt: &Bolt) -> Option<bool> {
+        any_group!(self.thunder_hit(key, id, bolt))
     }
 
     pub fn effects_mut(&mut self, id: u64) -> Option<(&mut MobEffects, bool, bool)> {

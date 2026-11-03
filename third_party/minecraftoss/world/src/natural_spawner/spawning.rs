@@ -1536,6 +1536,11 @@ impl CreatureSpawns {
                 }
                 finalize_mob(&mut tag, &mut RandomRef(level.random()));
             }
+            Some("minecraft:witch") => {
+                set(&mut tag, "CanJoinRaid", byte(true));
+                level.random().next_f32();
+                finalize_mob(&mut tag, &mut RandomRef(level.random()));
+            }
             Some(_) => finalize_mob(&mut tag, &mut RandomRef(level.random())),
             None => {}
         }

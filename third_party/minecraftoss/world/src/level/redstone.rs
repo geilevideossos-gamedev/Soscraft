@@ -1077,6 +1077,7 @@ impl Level<'_> {
         self.lightning_rod_update(state, pos);
         let block = self.block_id(state);
         self.schedule_block_tick_priority(pos, block, 8, priority::NORMAL);
+        self.level_events.push((super::lightning::ELECTRIC_SPARK, pos, self.facing(state).axis() as i32));
     }
 
     /// `LightningRodBlock.updateNeighbours`: around the block behind it.

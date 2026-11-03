@@ -724,6 +724,11 @@ pub fn tick(
         &mut events,
     );
     events.written.extend(written);
+    if let Some(entities) = entities.as_mut() {
+        for player in &sleepers {
+            entities.set_time_since_rest(&player.uuid, player.time_since_rest);
+        }
+    }
     if let (Some(total), Some(clock)) = (morning.clock, clock) {
         globals.set_clock(clock, total);
     }

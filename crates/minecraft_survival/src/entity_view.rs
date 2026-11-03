@@ -43,6 +43,7 @@ pub struct EntityView {
     pub(crate) swirls: Vec<minecraft_terrain::spell_particles::SwirlView>,
     pub(crate) tridents: Vec<minecraft_terrain::trident::TridentView>,
     pub(crate) crystals: Vec<minecraft_terrain::end_crystal::CrystalView>,
+    pub(crate) bolts: crate::lightning::Bolts,
     pub(crate) gateways: minecraft_terrain::end_gateway::ClientGateways,
     pub(crate) dragons: Vec<minecraft_terrain::ender_dragon::DragonView>,
     pub(crate) dragon_fireballs: Vec<minecraft_terrain::dragon_fireball::FireballView>,
@@ -100,6 +101,7 @@ impl EntityView {
             swirls: Vec::new(),
             tridents: Vec::new(),
             crystals: Vec::new(),
+            bolts: Default::default(),
             gateways: Default::default(),
             dragons: Vec::new(),
             dragon_fireballs: Vec::new(),
@@ -177,6 +179,7 @@ impl EntityView {
                 }
             }
             self.eyes.tick(&mut self.portal);
+            self.bolts.tick(orb_target, &mut self.random, &mut self.sounds);
             for blaze in self.world.blazes() {
                 if let Some(mob) = self
                     .client
@@ -417,6 +420,7 @@ impl EntityView {
         self.swirls = std::mem::take(&mut snapshot.swirls);
         self.tridents = std::mem::take(&mut snapshot.tridents);
         self.crystals = std::mem::take(&mut snapshot.crystals);
+        self.bolts.receive(std::mem::take(&mut snapshot.lightning));
         self.gateways
             .receive(std::mem::take(&mut snapshot.gateways), self.ticks);
         self.dragons = std::mem::take(&mut snapshot.dragons);
@@ -477,6 +481,10 @@ impl EntityView {
 
     pub fn ticks(&self) -> u64 {
         self.ticks
+    }
+
+    pub fn sky_flash(&self) -> bool {
+        self.bolts.flashing()
     }
 
     pub fn animate_tick<S: Scene + minecraftoss_player::World + ?Sized>(
@@ -1018,6 +1026,7 @@ impl EntityView {
             light,
             partial,
         );
+        creeper_render::append_creeper_power(&mut out.additive, w.creepers().iter(), poses, atlas, partial);
         spider_render::append_spiders(
             &mut out.models,
             w.spiders().iter(),
@@ -1120,6 +1129,7 @@ impl EntityView {
             partial,
         );
         end_crystal_render::append_crystals(&mut out.models, &self.crystals, atlas, light, partial);
+        self.bolts.append(&mut out.additive, atlas, camera);
         let drawn_dragons = self.drawn_dragons.views();
         dragon_render::append_dragons(&mut out.models, &drawn_dragons, atlas, light, partial);
         dragon_render::append_beams(

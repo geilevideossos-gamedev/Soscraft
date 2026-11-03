@@ -290,7 +290,7 @@ pub fn tracking_range(kind: &str) -> i32 {
     }
     match kind.strip_prefix("minecraft:").unwrap_or(kind) {
         "player" => 32,
-        "end_crystal" => 16,
+        "end_crystal" | "lightning_bolt" => 16,
         "cow" | "mooshroom" | "horse" | "donkey" | "sheep" | "pig" | "chicken" | "wolf" | "ocelot"
         | "villager" | "iron_golem" | "ghast" | "slime" | "strider" | "shulker"
         | "ender_dragon" | "tnt" | "falling_block" | "item_frame" | "glow_item_frame"

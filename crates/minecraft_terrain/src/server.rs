@@ -77,6 +77,7 @@ pub struct ServerSim {
     tridents: Vec<crate::trident::ThrownTrident>,
     next_trident: i32,
     players_struck: Vec<crate::thrown::PlayerStruck>,
+    players_lightning: Vec<crate::lightning::PlayerStrike>,
     players_pushed: Vec<(u64, glam::DVec3)>,
     thrown_hits: Vec<crate::thrown::ThrownHit>,
     worldgen: &'static WorldGen,
@@ -355,6 +356,7 @@ pub struct EntitySnapshot {
     pub tridents: Vec<crate::trident::TridentView>,
     pub eyes: crate::eye_of_ender::EyeSnapshot,
     pub crystals: Vec<crate::end_crystal::CrystalView>,
+    pub lightning: Vec<crate::lightning::BoltView>,
     pub dragons: Vec<crate::ender_dragon::DragonView>,
     pub dragon_fireballs: Vec<crate::dragon_fireball::FireballView>,
     pub breath_bursts: Vec<glam::DVec3>,
@@ -477,6 +479,7 @@ impl ServerSim {
             tridents: Vec::new(),
             next_trident: TRIDENT_IDS,
             players_struck: Vec::new(),
+            players_lightning: Vec::new(),
             players_pushed: Vec::new(),
             thrown_hits: Vec::new(),
             worldgen,
@@ -1638,6 +1641,23 @@ impl ServerSim {
         }
     }
 
+    pub fn tick_phantom_spawner(&mut self, players: &[minecraftoss_entities::tempt::PlayerCandidate], rest: &[(u64, i32)]) {
+        let Some(natural) = self.level.natural_spawning.as_ref() else { return };
+        if !natural.spawn_mobs || !natural.spawn_monsters || !self.custom_spawners.spawn_phantoms {
+            return;
+        }
+        let Some(phantoms) = self.custom_spawners.phantoms.as_mut() else { return };
+        if !phantoms.due(&mut self.level.random) {
+            return;
+        }
+        let rest_of = |id: u64| rest.iter().find(|(player, _)| *player == id).map_or(0, |&(_, ticks)| ticks);
+        let feet = |p: glam::DVec3| minecraftoss_core::BlockPos::new(p.x.floor() as i32, p.y.floor() as i32, p.z.floor() as i32);
+        let players: Vec<(minecraftoss_core::BlockPos, bool, i32)> = players.iter().map(|p| (feet(p.position), p.spectator, rest_of(p.id))).collect();
+        for phantom in self.level.spawn_phantoms(&players) {
+            self.add_saved_entity(phantom);
+        }
+    }
+
     pub fn tick_trader_spawner(&mut self, players: &[minecraftoss_entities::tempt::PlayerCandidate]) {
         let spawn_mobs = self.level.natural_spawning.as_ref().is_some_and(|natural| natural.spawn_mobs);
         let rule = self.custom_spawners.spawn_wandering_traders;
@@ -2012,6 +2032,9 @@ impl ServerSim {
     /// `/summon` for a mob: the level makes its tag (`SummonCommand`), and
     /// it joins the entity world as a loaded mob would.
     pub fn summon(&mut self, kind: &str, position: [f64; 3], nbt: Option<&minecraftoss_core::nbt::Tag>, y_rot: f32) -> Result<(), String> {
+        if kind == crate::lightning::BOLT {
+            return crate::lightning::summon(&mut self.level, position);
+        }
         if let Some(def) = elden_boss::def(kind) {
             if self.level.difficulty == 0 {
                 return Err(crate::elden_save::PEACEFUL.to_owned());
@@ -3789,6 +3812,7 @@ impl ServerSim {
         }
         self.custom_spawners.spawn_wandering_traders = rules.bool("spawn_wandering_traders");
         self.custom_spawners.spawn_patrols = rules.bool("spawn_patrols");
+        self.custom_spawners.spawn_phantoms = rules.bool("spawn_phantoms");
         self.raids_rule = rules.bool("raids");
     }
 
@@ -3806,6 +3830,9 @@ impl ServerSim {
         self.drop_ominous_items();
         self.shoot_dispensed_rockets();
         self.explode_tnt();
+        for tag in crate::lightning::strike(&mut self.level, &mut self.mobs, &mut self.mob_tags, &self.states, &self.mob_tables, &self.blast_players, &mut self.players_lightning) {
+            self.add_saved_entity(tag);
+        }
         self.hear_bells();
         self.level.tick_spawners();
         self.level.unsupported.clear();
@@ -4488,6 +4515,7 @@ pub struct TickInput {
     /// Each of those players' health, effects and motion (witches pick
     /// their potions by them).
     pub mob_vitals: Vec<(u64, minecraftoss_entities::monster_ai::PlayerVitals)>,
+    pub rest: Vec<(u64, i32)>,
     /// `Level.isBrightOutside`.
     pub bright_outside: bool,
     /// The player's position and how far away it tracks mobs.
@@ -4534,6 +4562,7 @@ impl TickInput {
         self.heroes.retain(|(id, _)| *id != player);
         self.mob_views.retain(|(id, _)| *id != player);
         self.mob_vitals.retain(|(id, _)| *id != player);
+        self.rest.retain(|(id, _)| *id != player);
         self.player_hurts.retain(|(id, _, _)| *id != player);
         self.controls.retain(|controls| controls.id != player);
         self.omens.retain(|(id, _)| *id != player);
@@ -4581,6 +4610,7 @@ pub struct Output {
     pub potion_breaks: Vec<minecraftoss_entities::world::PotionBreak>,
     pub player_potions: Vec<crate::potions::PlayerPotionHit>,
     pub players_struck: Vec<crate::thrown::PlayerStruck>,
+    pub players_lightning: Vec<crate::lightning::PlayerStrike>,
     pub players_pushed: Vec<(u64, glam::DVec3)>,
     /// Creeper blasts this tick (`ClientboundExplodePacket`).
     pub explosions: Vec<minecraftoss_entities::creeper::CreeperExplosion>,
@@ -5228,6 +5258,7 @@ fn run_tick(sim: &mut ServerSim, input: &mut TickInput, normal: bool, out: &mut 
         out.trial_omens.extend(sim.tick_trial_spawners(&input.mob_players, &mut input.omens));
         sim.tick_vaults(&input.mob_players);
         sim.tick_catalysts();
+        sim.tick_phantom_spawner(&input.mob_players, &input.rest);
         sim.tick_patrol_spawner(&input.mob_players, input.bright_outside);
         sim.tick_custom_spawners(&input.mob_players);
         sim.tick_trader_spawner(&input.mob_players);
@@ -5294,6 +5325,7 @@ fn run_tick(sim: &mut ServerSim, input: &mut TickInput, normal: bool, out: &mut 
     out.player_potions.extend(sim.take_player_potions());
     out.player_splashes.extend(witch_splashes);
     out.players_struck.extend(sim.take_players_struck());
+    out.players_lightning.append(&mut sim.players_lightning);
     out.players_pushed.extend(sim.take_players_pushed());
     out.players_pushed.extend(sim.mobs.take_player_pushes());
     out.potion_breaks.extend(sim.take_potion_breaks());
@@ -5389,7 +5421,7 @@ fn finish_batch(sim: &mut ServerSim, input: &TickInput, out: &mut Output) {
     out.tracked.merge(tracked);
     out.weather = Some(sim.weather(input.players.first().filter(|p| p.alive).map(|p| p.feet)));
     out.weather_data = sim.weather_data();
-    out.entities = Some(EntitySnapshot { items: sim.items(), ominous_items: crate::trial_spawner::ominous_item_views(&sim.level), tnt: sim.primed_tnt(), falling: sim.falling_blocks(), orbs: sim.orbs(), thrown_views: sim.thrown_views().into_iter().chain(sim.rocket_views()).collect(), clouds: sim.cloud_views(), tridents: sim.trident_views(), eyes: sim.eye_snapshot(), crystals: sim.crystal_views(), dragons: sim.dragon_views(), dragon_fireballs: sim.dragon_fireballs.views(), breath_bursts: sim.dragon_fireballs.take_bursts(), vibrations: std::mem::take(&mut sim.vibration_bursts), sculk_souls: std::mem::take(&mut sim.level.catalyst_blooms).into_iter().map(crate::vibrations::soul_burst).collect(), sonic_booms: std::mem::take(&mut sim.sonic_booms), gateways: sim.gateway_views(), frames: sim.frame_views(), dragon_breath: std::mem::take(&mut sim.dragon_breath), dragon_explosions: std::mem::take(&mut sim.dragon_explosions), swirls: sim.swirl_views(), firework_bursts: std::mem::take(&mut sim.firework_bursts), mob_puffs: std::mem::take(&mut sim.mob_puffs) });
+    out.entities = Some(EntitySnapshot { items: sim.items(), ominous_items: crate::trial_spawner::ominous_item_views(&sim.level), tnt: sim.primed_tnt(), falling: sim.falling_blocks(), orbs: sim.orbs(), thrown_views: sim.thrown_views().into_iter().chain(sim.rocket_views()).collect(), clouds: sim.cloud_views(), tridents: sim.trident_views(), eyes: sim.eye_snapshot(), crystals: sim.crystal_views(), lightning: crate::lightning::views(&sim.level), dragons: sim.dragon_views(), dragon_fireballs: sim.dragon_fireballs.views(), breath_bursts: sim.dragon_fireballs.take_bursts(), vibrations: std::mem::take(&mut sim.vibration_bursts), sculk_souls: std::mem::take(&mut sim.level.catalyst_blooms).into_iter().map(crate::vibrations::soul_burst).collect(), sonic_booms: std::mem::take(&mut sim.sonic_booms), gateways: sim.gateway_views(), frames: sim.frame_views(), dragon_breath: std::mem::take(&mut sim.dragon_breath), dragon_explosions: std::mem::take(&mut sim.dragon_explosions), swirls: sim.swirl_views(), firework_bursts: std::mem::take(&mut sim.firework_bursts), mob_puffs: std::mem::take(&mut sim.mob_puffs) });
     let (solves, ms) = sim.level.light_solves.replace((0, 0.0));
     let total = out.tick_nanos.last().map_or(0.0, |&nanos| nanos as f64 / 1_000_000.0);
     out.tick_phases = Some((sim.level.last_tick_phases, (solves, ms), total));
@@ -6739,6 +6771,129 @@ mod tests {
         server.set_players(&[at], 0);
         assert!(server.summon("minecraft:zombie", at, None, 0.0).is_err(), "no monsters in peaceful");
         assert!(server.summon("minecraft:cow", at, None, 0.0).is_ok(), "animals come in peaceful");
+    }
+
+    #[test]
+    fn a_summoned_bolt_hurts_mobs_and_players_in_its_box() {
+        let Some((mut server, _)) = door_world() else { return };
+        let spot = [8.5, 200.0, 8.5];
+        server.summon("minecraft:cow", spot, None, 0.0).unwrap();
+        server.summon("minecraft:cow", [16.5, 200.0, 8.5], None, 0.0).unwrap();
+        server.summon(crate::lightning::BOLT, spot, None, 0.0).unwrap();
+        let mut input = TickInput { mob_players: vec![candidate(0, [9.5, 200.0, 8.5]), candidate(1, [20.5, 200.0, 8.5])], ..idle_input() };
+        let mut out = Output::default();
+        run_tick(&mut server, &mut input, true, &mut out);
+        assert_eq!(out.players_lightning, vec![crate::lightning::PlayerStrike { player: 0, at: spot }]);
+        let health: Vec<f32> = server.mobs.cows().iter().map(|cow| cow.cow.health).collect();
+        assert_eq!(health, vec![5.0, 10.0], "the cow under the bolt takes five, the far one nothing");
+        let blocks = &server.level.registries().blocks;
+        assert_eq!(Some(blocks.block_of(server.level.block(minecraftoss_core::BlockPos::new(8, 200, 8)))), blocks.block_by_name("minecraft:fire"), "its block catches fire");
+    }
+
+    #[test]
+    fn a_summoned_bolt_reaches_the_snapshot_with_its_seed_until_it_is_gone() {
+        use minecraftoss_world::level::entity::EntityKind;
+        let Some((mut server, _)) = door_world() else { return };
+        let spot = [8.5, 200.0, 8.5];
+        server.summon(crate::lightning::BOLT, spot, None, 0.0).unwrap();
+        let seed = server.level.entities.iter().find_map(|e| match &e.kind {
+            EntityKind::LightningBolt(data) => Some(data.seed),
+            _ => None,
+        });
+        let mut input = idle_input();
+        let mut shown = Vec::new();
+        for _ in 0..100 {
+            let mut out = Output::default();
+            run_tick(&mut server, &mut input, true, &mut out);
+            finish_batch(&mut server, &input, &mut out);
+            let bolts = out.entities.expect("a snapshot").lightning;
+            let Some(bolt) = bolts.first() else { break };
+            assert_eq!((bolts.len(), bolt.position), (1, glam::DVec3::from_array(spot)));
+            shown.push((bolt.seed, bolt.life));
+        }
+        assert_eq!(shown.first().map(|&(seed, _)| seed), seed, "drawn from the seed it was born with");
+        let lives: Vec<i32> = shown.iter().map(|&(_, life)| life).collect();
+        assert_eq!(lives[..2], [1, 0], "lit for its first two ticks");
+        assert_eq!(lives.last(), Some(&0), "gone the tick after its last flash");
+        let reflashes = lives[1..].iter().filter(|&&life| life == 1).count();
+        assert!((1..=3).contains(&reflashes), "one to three more flashes: {lives:?}");
+        let seeds: std::collections::BTreeSet<i64> = shown.iter().map(|&(seed, _)| seed).collect();
+        assert_eq!(seeds.len(), reflashes + 1, "each flash a new shape");
+        assert!(lives.len() < 100);
+    }
+
+    #[test]
+    fn a_struck_pig_becomes_a_persistent_zombified_piglin_with_a_golden_sword() {
+        use minecraftoss_entities::zombie::ZombieKind;
+        let spot = [8.5, 200.0, 8.5];
+        let baby = minecraftoss_core::snbt::parse_compound("{Age:-24000,CustomName:\"Babe\"}").unwrap();
+        let Some((mut server, _)) = door_world() else { return };
+        server.summon("minecraft:pig", spot, None, 0.0).unwrap();
+        server.summon("minecraft:pig", [9.5, 200.0, 8.5], Some(&baby), 0.0).unwrap();
+        server.summon(crate::lightning::BOLT, spot, None, 0.0).unwrap();
+        run_tick(&mut server, &mut idle_input(), true, &mut Output::default());
+        assert!(server.mobs.pigs().is_empty(), "both pigs turned");
+        let piglins: Vec<_> = server.mobs.zombies().iter().filter(|e| e.zombie.kind == ZombieKind::ZombifiedPiglin).collect();
+        assert_eq!(piglins.len(), 2);
+        for e in &piglins {
+            assert!(e.zombie.persistence_required);
+            assert!(matches!(e.zombie.main_hand.as_deref(), Some("minecraft:golden_sword" | "minecraft:golden_spear")), "{:?}", e.zombie.main_hand);
+            assert_eq!(e.zombie.health, 20.0, "the bolt's first hit turned the pig and did not hurt the piglin");
+        }
+        let babies: Vec<_> = piglins.iter().filter(|e| e.zombie.baby).map(|e| e.id).collect();
+        assert_eq!(babies.len(), 1, "the baby pig gives a baby");
+        let saved = crate::server_mobs::mob_tags(&server.mobs, |_| true, &server.mob_tags);
+        let (_, tag) = saved.iter().find(|(id, _)| *id == babies[0]).unwrap();
+        assert_eq!(tag.get("CustomName").and_then(minecraftoss_core::nbt::Tag::as_str), Some("Babe"));
+        assert_eq!(tag.get("PersistenceRequired").and_then(minecraftoss_core::nbt::Tag::as_i64), Some(1));
+
+        let Some((mut server, _)) = door_world() else { return };
+        server.summon("minecraft:pig", spot, None, 0.0).unwrap();
+        server.summon(crate::lightning::BOLT, spot, None, 0.0).unwrap();
+        run_tick(&mut server, &mut TickInput { difficulty: 0, ..idle_input() }, true, &mut Output::default());
+        assert_eq!(server.mobs.pigs().iter().map(|e| e.pig.health).collect::<Vec<_>>(), vec![5.0], "on Peaceful the pig is only hurt");
+        assert!(server.mobs.zombies().is_empty());
+    }
+
+    #[test]
+    fn a_struck_villager_becomes_a_persistent_witch() {
+        let spot = [8.5, 200.0, 8.5];
+        let Some((mut server, _)) = door_world() else { return };
+        server.summon("minecraft:villager", spot, None, 0.0).unwrap();
+        server.summon(crate::lightning::BOLT, spot, None, 0.0).unwrap();
+        run_tick(&mut server, &mut TickInput { difficulty: 1, ..idle_input() }, true, &mut Output::default());
+        assert!(server.mobs.villagers().is_empty(), "on Easy too");
+        let witch = &server.mobs.witches()[0];
+        assert!(witch.witch.persistence_required && witch.witch.raider.can_join_raid);
+        assert_eq!(witch.witch.health, 26.0);
+        let saved = crate::server_mobs::mob_tags(&server.mobs, |_| true, &server.mob_tags);
+        let (_, tag) = saved.iter().find(|(id, _)| *id == witch.id).unwrap();
+        assert!(tag.get("UUID").is_some() && tag.get("VillagerData").is_none());
+
+        let Some((mut server, _)) = door_world() else { return };
+        server.summon("minecraft:villager", spot, None, 0.0).unwrap();
+        server.summon(crate::lightning::BOLT, spot, None, 0.0).unwrap();
+        run_tick(&mut server, &mut TickInput { difficulty: 0, ..idle_input() }, true, &mut Output::default());
+        assert_eq!(server.mobs.villagers()[0].villager.health, 15.0, "on Peaceful the villager is only hurt");
+        assert!(server.mobs.witches().is_empty());
+    }
+
+    #[test]
+    fn a_struck_creeper_is_charged_hurt_and_saved_charged() {
+        let spot = [8.5, 200.0, 8.5];
+        let Some((mut server, _)) = door_world() else { return };
+        server.summon("minecraft:creeper", spot, None, 0.0).unwrap();
+        server.summon(crate::lightning::BOLT, spot, None, 0.0).unwrap();
+        run_tick(&mut server, &mut idle_input(), true, &mut Output::default());
+        let creeper = &server.mobs.creepers()[0];
+        assert!(creeper.creeper.powered);
+        assert_eq!(creeper.creeper.health, 15.0);
+        let saved = crate::server_mobs::mob_tags(&server.mobs, |_| true, &server.mob_tags);
+        let (_, tag) = saved.iter().find(|(id, _)| *id == creeper.id).unwrap();
+        assert_eq!(tag.get("powered").and_then(minecraftoss_core::nbt::Tag::as_i64), Some(1));
+        let mut loaded = minecraftoss_entities::world::EntityWorld::default();
+        let id = crate::server_mobs::spawn_saved(&mut loaded, tag).unwrap();
+        assert!(loaded.creeper_mut(id).unwrap().creeper.powered, "it loads charged");
     }
 
     /// A creeper sees the player across a platform, walks up, swells and
@@ -9906,14 +10061,14 @@ mod tests {
     }
 
     #[test]
-    fn live_shulkers_stay_far_from_players_while_dormant_monsters_go() {
+    fn live_shulkers_stay_far_from_players_while_other_monsters_go() {
         let Some((mut server, _)) = door_world() else { return };
         let fresh = minecraftoss_core::snbt::parse_compound("{}").unwrap();
         server.summon("minecraft:shulker", [8.5, 200.0, 8.5], Some(&fresh), 0.0).unwrap();
         server.summon("minecraft:phantom", [9.5, 200.0, 8.5], Some(&fresh), 0.0).unwrap();
-        let kinds = |server: &ServerSim| server.dormant.iter().map(|(group, _)| group[0].kind.clone()).collect::<Vec<_>>();
-        assert_eq!(kinds(&server), ["minecraft:phantom"]);
-        assert_eq!(server.mobs.shulkers().len(), 1, "shulkers are simulated");
+        let phantoms = |server: &ServerSim| server.mobs.family::<minecraftoss_entities::world::families::night::phantoms::Phantom>().len();
+        assert!(server.dormant.is_empty(), "phantoms are simulated");
+        assert_eq!((server.mobs.shulkers().len(), phantoms(&server)), (1, 1), "shulkers are simulated");
         let player = minecraftoss_entities::tempt::PlayerCandidate {
             id: 0,
             position: glam::DVec3::new(3008.5, 200.0, 8.5),
@@ -9935,9 +10090,14 @@ mod tests {
             attackable: true,
         };
         server.despawn_mobs(&[player], 2);
-        assert!(kinds(&server).is_empty());
+        assert_eq!(phantoms(&server), 0, "a live phantom far from every player goes");
         assert_eq!(server.mobs.shulkers().len(), 1);
-        server.despawn_mobs(&[player], 0);
+        server.summon("minecraft:phantom", [9.5, 200.0, 8.5], Some(&fresh), 0.0).unwrap();
+        let near = minecraftoss_entities::tempt::PlayerCandidate { position: glam::DVec3::new(8.5, 200.0, 11.5), ..player };
+        server.despawn_mobs(&[near], 2);
+        assert_eq!(phantoms(&server), 1, "a phantom near a player stays");
+        server.despawn_mobs(&[near], 0);
+        assert_eq!(phantoms(&server), 0, "phantoms are not allowed in peaceful");
         assert_eq!(server.mobs.shulkers().len(), 1, "shulkers are allowed in peaceful");
     }
 
@@ -11907,13 +12067,13 @@ mod tests {
                 server.level.set_block_entity_value(minecraftoss_core::BlockPos::new(pos.0, pos.1, pos.2), "normal_config", Tag::String(config.to_owned()));
             }
         };
-        let (zombies, breezes, empty, phantoms, far) = ((2, 200, 2), (6, 200, 2), (10, 200, 2), (14, 200, 2), (100, 200, 2));
+        let (zombies, breezes, empty, giants, far) = ((2, 200, 2), (6, 200, 2), (10, 200, 2), (14, 200, 2), (100, 200, 2));
         place(&mut server, zombies, Some("minecraft:trial_chamber/melee/zombie/normal"));
         place(&mut server, breezes, Some("minecraft:trial_chamber/breeze/normal"));
         place(&mut server, empty, None);
-        place(&mut server, phantoms, None);
-        let unsimulated = minecraftoss_core::snbt::parse_compound("{spawn_potentials:[{data:{entity:{id:\"minecraft:phantom\"}},weight:1}]}").unwrap();
-        server.level.set_block_entity_value(minecraftoss_core::BlockPos::new(phantoms.0, phantoms.1, phantoms.2), "normal_config", unsimulated);
+        place(&mut server, giants, None);
+        let unsimulated = minecraftoss_core::snbt::parse_compound("{spawn_potentials:[{data:{entity:{id:\"minecraft:giant\"}},weight:1}]}").unwrap();
+        server.level.set_block_entity_value(minecraftoss_core::BlockPos::new(giants.0, giants.1, giants.2), "normal_config", unsimulated);
         place(&mut server, far, Some("minecraft:trial_chamber/melee/zombie/normal"));
         server.take_block_entity_changes();
         server.take_changes();
@@ -11930,12 +12090,12 @@ mod tests {
         };
         assert_eq!(at(&server, zombies), ("waiting_for_players".to_owned(), Some(Some("minecraft:zombie".to_owned()))));
         assert_eq!(at(&server, breezes), ("waiting_for_players".to_owned(), Some(Some("minecraft:breeze".to_owned()))), "breezes are simulated");
-        assert_eq!(at(&server, phantoms), ("inactive".to_owned(), Some(Some("minecraft:phantom".to_owned()))), "phantoms are not simulated yet");
+        assert_eq!(at(&server, giants), ("inactive".to_owned(), Some(Some("minecraft:giant".to_owned()))), "giants are not simulated");
         assert_eq!(at(&server, empty), ("inactive".to_owned(), Some(None)), "the default config spawns nothing");
         assert_eq!(at(&server, far), ("inactive".to_owned(), None), "outside the simulation area nothing ticks");
-        let spawners = [zombies, breezes, empty, phantoms, far];
+        let spawners = [zombies, breezes, empty, giants, far];
         let changed: Vec<BlockPos> = server.take_block_entity_changes().into_iter().filter(|(pos, tag)| spawners.contains(pos) && tag.as_ref().is_some_and(|tag| tag.get("spawn_data").is_some())).map(|(pos, _)| pos).collect();
-        assert_eq!(changed, [zombies, breezes, empty, phantoms]);
+        assert_eq!(changed, [zombies, breezes, empty, giants]);
         let blocks: Vec<BlockPos> = server.take_changes().into_iter().map(|(pos, _)| pos).filter(|pos| spawners.contains(pos)).collect();
         assert_eq!(blocks, [zombies, breezes]);
         let before = server.level.chunk(ChunkPos::new(0, 0)).and_then(|chunk| chunk.block_entities.entities.get(&zombies)).cloned();
@@ -11945,7 +12105,7 @@ mod tests {
         }
         let after = server.level.chunk(ChunkPos::new(0, 0)).and_then(|chunk| chunk.block_entities.entities.get(&zombies)).cloned();
         assert_eq!(before, after, "a waiting spawner keeps its mob");
-        assert_eq!(at(&server, phantoms).0, "inactive");
+        assert_eq!(at(&server, giants).0, "inactive");
         assert!(server.take_block_entity_changes().iter().all(|(pos, _)| !spawners.contains(pos)));
     }
 
@@ -13659,6 +13819,7 @@ mod tests {
             heroes: Vec::new(),
             mob_views: Vec::new(),
             mob_vitals: Vec::new(),
+            rest: Vec::new(),
             bright_outside: true,
             tracking: ([8.5, 120.0, 8.5], 64.0),
             watchers: Vec::new(),
@@ -16252,6 +16413,79 @@ mod tests {
         let dropped: Vec<String> = server.items().into_iter().map(|item| item.item).collect();
         assert!(dropped.iter().any(|item| item == "minecraft:ominous_bottle"), "{dropped:?}");
         assert!(dropped.iter().any(|item| item == "minecraft:white_banner"), "{dropped:?}");
+    }
+
+    #[test]
+    fn a_sleepless_player_draws_phantoms_and_a_rested_one_does_not() {
+        use minecraftoss_entities::tempt::PlayerCandidate;
+        use minecraftoss_entities::world::families::night::phantoms::Phantom;
+        let Some((mut server, _)) = door_world() else { return };
+        let (me, friend) = (candidate(0, [8.5, 200.0, 8.5]), candidate(1, [-8.5, 200.0, -8.5]));
+        let feet = [me.position.to_array(), friend.position.to_array()];
+        server.set_players(&feet, 2);
+        let phantoms = |server: &ServerSim| server.mobs.family::<Phantom>().len();
+        let looks = |server: &mut ServerSim, players: &[PlayerCandidate], rest: &[(u64, i32)]| {
+            for _ in 0..100 {
+                if phantoms(server) > 0 {
+                    return;
+                }
+                server.custom_spawners.phantoms.as_mut().unwrap().next_tick = 1;
+                server.tick_phantom_spawner(players, rest);
+            }
+        };
+        let at_time = |server: &mut ServerSim, overworld: i64| {
+            server.set_clocks(ClockTicks { overworld, the_end: 0 });
+            server.level.update_sky_brightness();
+        };
+        let awake = 1_000_000;
+        at_time(&mut server, 6_000);
+        looks(&mut server, &[me], &[(0, awake)]);
+        assert_eq!(phantoms(&server), 0, "never by day");
+        at_time(&mut server, 18_000);
+        looks(&mut server, &[me, friend], &[(0, 72_000), (1, 0)]);
+        assert_eq!(phantoms(&server), 0, "three days awake are not enough and a rested player draws none");
+        looks(&mut server, &[me], &[]);
+        assert_eq!(phantoms(&server), 0, "a player without a clock is rested");
+        looks(&mut server, &[PlayerCandidate { spectator: true, ..me }], &[(0, awake)]);
+        assert_eq!(phantoms(&server), 0, "spectators draw none");
+        let mut rules = crate::game_rules::GameRules::default();
+        rules.set("spawn_phantoms", "false").unwrap();
+        server.apply_game_rules(&rules);
+        looks(&mut server, &[me], &[(0, awake)]);
+        assert_eq!(phantoms(&server), 0, "the rule turns them off");
+        rules.set("spawn_phantoms", "true").unwrap();
+        server.apply_game_rules(&rules);
+        server.set_players(&feet, 0);
+        looks(&mut server, &[me], &[(0, awake)]);
+        assert_eq!(phantoms(&server), 0, "none on Peaceful");
+        server.set_players(&feet, 2);
+        looks(&mut server, &[me, friend], &[(1, 0), (0, awake)]);
+        let came = server.mobs.family::<Phantom>();
+        assert!((1..=3).contains(&came.len()), "{}", came.len());
+        let at = came[0].core.body.position;
+        assert!((at.x - 8.5).abs() <= 10.0 && (at.z - 8.5).abs() <= 10.0, "only above the sleepless player: {at}");
+        assert!((220.0..=234.0).contains(&at.y), "{at}");
+        for phantom in came {
+            assert_eq!(phantom.core.body.position, at, "the group shares one spot");
+            assert_eq!(phantom.state.size, 0);
+            assert!(!phantom.core.persistent, "natural phantoms despawn");
+            let anchor = phantom.state.goals().and_then(|goals| goals.anchor);
+            assert_eq!(anchor, Some((at.x.floor() as i32, at.y as i32 + 5, at.z.floor() as i32)));
+        }
+        let Ok(paths) = DataPaths::discover() else { return };
+        let Ok(registries) = Registries::load(&paths) else { return };
+        let registries = Arc::new(registries);
+        let worldgen = Arc::new(WorldGen::for_dimension(Arc::new(TerrainGenerator::nether(registries.clone(), 0).unwrap()), "minecraft:the_nether").unwrap());
+        let states = Arc::new(BlockStates::new(registries.clone(), 0, 0, 256).unwrap());
+        let mut map = ChunkMap::with_worldgen(worldgen.clone(), 2, 4);
+        let mut nether = ServerSim::new(worldgen, states, "minecraft:the_nether");
+        nether.load_chunk(&map.load_now(ChunkPos::new(0, 0)));
+        nether.set_players(&[[8.5, 100.0, 8.5]], 2);
+        assert!(nether.custom_spawners.phantoms.is_none());
+        for _ in 0..100 {
+            nether.tick_phantom_spawner(&[candidate(0, [8.5, 100.0, 8.5])], &[(0, awake)]);
+        }
+        assert!(nether.mobs.family::<Phantom>().is_empty(), "never in the Nether");
     }
 
     #[test]

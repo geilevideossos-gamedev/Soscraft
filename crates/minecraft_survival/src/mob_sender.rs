@@ -19,6 +19,7 @@ const THROWN: &str = "minecraft:snowball";
 const PARTICLE_RANGE: f64 = 32.0;
 const CLOUDS: &str = "minecraft:area_effect_cloud";
 const CRYSTALS: &str = "minecraft:end_crystal";
+const LIGHTNING: &str = minecraft_terrain::lightning::BOLT;
 const FRAMES: &str = "minecraft:item_frame";
 
 #[derive(Default)]
@@ -193,6 +194,7 @@ pub fn near(
         crystals: filtered(&snapshot.crystals, |crystal| {
             keeps(CRYSTALS, crystal.position)
         }),
+        lightning: filtered(&snapshot.lightning, |bolt| keeps(LIGHTNING, bolt.position)),
         dragons: snapshot.dragons.clone(),
         dragon_fireballs: snapshot.dragon_fireballs.clone(),
         breath_bursts: snapshot.breath_bursts.clone(),
@@ -539,6 +541,34 @@ mod tests {
             .expect("a frame");
         let near: EntitySnapshot = minecraft_net::decode(Lane::State, &frame.entities.0).unwrap();
         assert_eq!(near.ominous_items, vec![ominous(1, 100.5)]);
+    }
+
+    #[test]
+    fn a_friend_gets_bolts_within_sixteen_chunks() {
+        let mut sender = MobSender::default();
+        let bolt = |id: i32, x: f64| minecraft_terrain::lightning::BoltView {
+            id,
+            position: DVec3::new(x, 64.0, 0.5),
+            seed: i64::from(id) * 31,
+            life: 1,
+        };
+        let snapshot = EntitySnapshot {
+            lightning: vec![bolt(1, 250.5), bolt(2, 260.5), bolt(3, 150.5)],
+            ..EntitySnapshot::default()
+        };
+        let sent = |sender: &mut MobSender, view_distance: i32, has: fn(ChunkXz) -> bool| {
+            let around = (DVec3::new(0.5, 64.0, 0.5), view_distance);
+            let frame = sender
+                .frame(0, Some(&[]), Some(&snapshot), around, has)
+                .expect("a frame");
+            let near: EntitySnapshot = minecraft_net::decode(Lane::State, &frame.entities.0).unwrap();
+            near.lightning.iter().map(|bolt| bolt.id).collect::<Vec<_>>()
+        };
+        assert_eq!(sent(&mut sender, 32, |_| true), vec![1, 3], "sixteen chunks, as vanilla tracks a bolt");
+        assert_eq!(sent(&mut sender, 10, |_| true), vec![3], "never past the friend's view distance");
+        assert_eq!(sent(&mut sender, 32, |chunk| chunk.0 < 10), vec![3], "only in chunks the friend has");
+        let near: EntitySnapshot = minecraft_net::decode(Lane::State, &minecraft_net::encode(Lane::State, &snapshot).unwrap()).unwrap();
+        assert_eq!(near.lightning, snapshot.lightning, "seed and life cross the state lane");
     }
 
     #[test]
