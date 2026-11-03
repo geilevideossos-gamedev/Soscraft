@@ -263,3 +263,24 @@ After e6d68f7c. The adversarial review of `r10-e3a-base..e6d68f7c` (3a70396d..e6
   2. **Ravager riders** take no share of the ravager's fall (the state doc line above).
   3. **Fall-immune mobs that take fall damage:** snow golems (`snow_golems.rs:163-167`) and blazes (`blazes.rs:173-177`) are hurt by their own landings, though both are in `#fall_damage_immune`. A creeper's landing does not add `fallDistance * 1.5` to its swell (`Creeper.causeFallDamage`).
 - **Owner's steps:** none (log only). No kit line.
+
+## Final verification of segment e3a
+
+After d35e1abf (2026-11-03). No fix commit: nothing new failed or warned.
+
+- **Clippy:**
+  - `clippy -p minecraft_terrain -p minecraft_survival -p render_anim -p hud -p render_frame --locked --all-targets '--' -A clippy::approx_constant`: exit 0. `minecraft_terrain` and `minecraft_survival` have no warning at all; `hud` lib 61 and lib test 61 (61 duplicates), `render_anim` lib 77 and lib test 77 (77 duplicates), none in a `minecraft_*` file; `render_frame` lib 2 and lib test 2 (2 duplicates), both in `packing.rs` (`:65` `collapsible_if`, `:259` `too_many_arguments`), not in `retained.rs`.
+  - `scripts\clippy-vendored.ps1 +target=D:\iw4l-wt\track-e3 entities`: exit 0, the counts of run 1 above (entities lib 69, lib test 76 with 67 duplicates, player lib 20). The files the track touched have three, all on lines older than the track (`git blame` gives the base 3a70396d): `world.rs:3518` and `:4585` `unwrap_or_default`, `world/equines.rs:1215` `assert_eq!` with a bool.
+  - `skate-core` and `skate-host` are not workspace members, so clippy builds them with plain rustc; their one-line patches build without a warning.
+- **Tests:**
+  - `test -p minecraft_survival -p render_anim -p hud -p render_frame -p minecraftoss-entities --locked`: `hud` 206, `minecraft_survival` 844 and `tests/vanilla_world.rs` 1, `minecraftoss-entities` 620 (its bins 0), `render_anim` 226, `render_frame` 0; no failure, none ignored, doc-tests 0, and the build printed no warning.
+  - `test -p minecraft_terrain --locked`: 1818 passed, 0 failed, 3 ignored (lib; doc-tests 0), in 384 s.
+  - `test -p skate-core --locked` (it runs from the root): 604 passed, 1 failed, `physics::board_world::broadphase_tests::predictive_contacts_and_retention_match_full_scan_for_every_primitive` (`board_world/tests.rs:232`, a contact list where one side has `-0.0` and the other `0.0`). It fails the same with the base's `buffers.rs` (`fetch_update`) put back for the run and restored afterwards, so it is older than the track and not in the code the track touched (the animation storage owner counter). The full suite does not run it, as `skate-core` is not a workspace member. For the orchestrator to place.
+  - `test -p skate-host --locked` does not build its lib test: `physics.rs:401` `mod map_startup;` needs `src/tests/map_startup.rs`, which the vendored copy has never had (not at the base either). Older than the track; `check -p skate-host --locked` stays green.
+- **Owner's steps:** every commit above has its steps or says it has none; the segment's steps are e3-9-1 to e3-9-8 and e3h01 to e3h04.
+
+**Segment e3a, combined kit** (all the steps of the segment; 25 stacks, as `writable_book*2` and `saddle*3` take a slot per item):
+
+```
+IW4L_MINECRAFT_KIT=minecraft:water_bucket,minecraft:lava_bucket,minecraft:cow_spawn_egg*2,minecraft:wheat*16,minecraft:villager_spawn_egg,minecraft:composter,minecraft:iron_sword,minecraft:grass_block*16,minecraft:oak_leaves*16,minecraft:oak_fence*16,minecraft:cobblestone*64,minecraft:cooked_beef*32,minecraft:iron_helmet,minecraft:iron_chestplate,minecraft:chest,minecraft:crafting_table,minecraft:writable_book*2,minecraft:saddle*3,minecraft:strider_spawn_egg*2,minecraft:warped_fungus_on_a_stick,minecraft:wind_charge*16,minecraft:golden_apple*8
+```
