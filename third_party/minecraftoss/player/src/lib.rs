@@ -99,6 +99,7 @@ pub trait World {
         self.set_block(pos, None);
         true
     }
+    fn destroy_effect(&mut self, _pos: Pos) {}
     /// The item entities whose boxes meet the box from `min` to `max`
     /// (`getEntitiesOfClass(ItemEntity.class, box)`), in the level's order.
     /// Worlds without item entities have none.

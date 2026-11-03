@@ -267,6 +267,18 @@ impl PlayerWorld for MobWorld<'_> {
         self.level.borrow_mut().destroy_block_drops(minecraftoss_core::BlockPos::new(x, y, z), true, update::LIMIT)
     }
 
+    fn destroy_effect(&mut self, (x, y, z): (i32, i32, i32)) {
+        let pos = minecraftoss_core::BlockPos::new(x, y, z);
+        let mut level = self.level.borrow_mut();
+        let state = level.block(pos);
+        if level.registries().blocks.is_air(state) {
+            return;
+        }
+        if let Some(destroyed) = level.destroyed.as_mut() {
+            destroyed.push((pos, state));
+        }
+    }
+
     fn block_in_tag(&self, pos: (i32, i32, i32), tag: &str) -> bool {
         let state = self.state(pos);
         let level = self.level.borrow();
@@ -2415,6 +2427,56 @@ mod tests {
             sky.weather.thunder_level = 1.0;
             assert_eq!(weather(&mut level), (false, false), "{dimension} has no weather");
         }
+    }
+
+    #[test]
+    fn a_destroy_effect_shows_the_break_burst_and_keeps_the_block() {
+        struct Bare(Vec<(i32, i32, i32)>);
+        impl PlayerWorld for Bare {
+            fn block(&self, _: (i32, i32, i32)) -> Option<PlayerBlock> {
+                Some(PlayerBlock::new("minecraft:snow"))
+            }
+            fn set_block(&mut self, pos: (i32, i32, i32), _: Option<PlayerBlock>) {
+                self.0.push(pos);
+            }
+        }
+        let mut bare = Bare(Vec::new());
+        bare.destroy_effect((1, 64, 1));
+        assert!(bare.0.is_empty(), "the default shows nothing and changes nothing");
+        let Ok(paths) = minecraftoss_core::registries::DataPaths::discover() else { return };
+        let Ok(registries) = Registries::load(&paths) else { return };
+        let registries = std::sync::Arc::new(registries);
+        let Ok(terrain) = minecraftoss_generator::terrain::TerrainGenerator::overworld(registries.clone(), 0) else { return };
+        let Ok(gen) = minecraftoss_world::chunk_map::WorldGen::for_dimension(std::sync::Arc::new(terrain), "minecraft:overworld") else { return };
+        let gen: &'static minecraftoss_world::chunk_map::WorldGen = Box::leak(Box::new(gen));
+        let states = BlockStates::new(registries, 0, -64, 384).unwrap();
+        let mut level = Level::new(&gen.library, -64, 384);
+        level.set_dimension("minecraft:overworld").unwrap();
+        let mut chunk = minecraftoss_core::Chunk::new(ChunkPos::new(0, 0), -64, 384, minecraftoss_core::BiomeId(0));
+        chunk.status = minecraftoss_core::chunk::ChunkStatus::Full;
+        level.insert_chunk(chunk);
+        let at = |x: i32, y: i32, z: i32| minecraftoss_core::BlockPos::new(x, y, z);
+        let stone = level.registries().blocks.parse_state("minecraft:stone").unwrap();
+        let snow = level.registries().blocks.parse_state("minecraft:snow[layers=1]").unwrap();
+        level.set_block(at(2, 63, 3), stone, update::ALL, update::LIMIT);
+        level.set_block(at(2, 64, 3), snow, update::ALL, update::LIMIT);
+        let tables = MobTables::new(&level, &states);
+        level.destroyed = None;
+        {
+            let mut world = MobWorld { level: RefCell::new(&mut level), states: &states, tables: &tables };
+            world.destroy_effect((2, 64, 3));
+        }
+        assert_eq!(level.destroyed, None, "a level that keeps no breaks");
+        level.destroyed = Some(Vec::new());
+        {
+            let mut world = MobWorld { level: RefCell::new(&mut level), states: &states, tables: &tables };
+            world.destroy_effect((2, 64, 3));
+            world.destroy_effect((2, 65, 3));
+            world.destroy_effect((2, 63, 3));
+            assert_eq!(world.block((2, 64, 3)).map(|block| block.id), Some("minecraft:snow".to_owned()), "the snow stays");
+        }
+        assert_eq!(level.block(at(2, 64, 3)), snow);
+        assert_eq!(level.destroyed, Some(vec![(at(2, 64, 3), snow), (at(2, 63, 3), stone)]), "air shows nothing");
     }
 
     fn strider_tag(fields: &str) -> Tag {

@@ -38,6 +38,7 @@ Files under `third_party/minecraftoss` this track patched or added.
 - Changed again (foxes-live 3): `world/src/natural_spawner/families/land.rs` (the fox spawn test and its `creatures` helper; no row).
 - foxes-drawn 1: no vendored file (game code only).
 - foxes-drawn 2: no vendored file (game code only).
+- Patched (foxes-hunt 1, hook): `player/src/lib.rs` (`World::destroy_effect`). Game code: `crates/minecraft_terrain/src/server_mobs.rs` (`MobWorld::destroy_effect` and its test).
 
 ## Hooks
 
@@ -58,6 +59,7 @@ Root hooks this track added (M10, "Hooks this track adds").
 - **H4 "Minecraft mobs know when it rains and thunders"** (pandas-thunder 1): `World::raining()` and `World::thundering()` (`player/src/lib.rs`, right after `rain_at`, false by default) answer vanilla's `Level.isRaining` and `Level.isThundering`. The server's `MobWorld` answers them right after its `rain_at` (`server_mobs.rs`) through the level's `is_raining` (now `pub`) and the new `is_thundering` beside it (`level/fire.rs`): a level that can have weather, with the rain level above 0.2, or the thunder level times the rain level above 0.9 (`getThunderLevel(1)` is thunder times rain, so thunder needs rain). There is no `EntityWorld` field and no `world.rs` or `server.rs` line: goals and family ticks see the `World` and ask it where they need it. Pandas use it now (`isScared`), foxes and bees later. The spawner's own `thundering` (`level/spawning.rs:162`) stays M3's to correct; neither touches the other's line.
 - **"Registered Minecraft mobs can be spared by the blocks they walk through"** (foxes-live 1): `Family::spared_blocks(mob) -> &'static [&'static str]` (root `families.rs`, beside `fire_immune`, `&[]` by default) and a defaulted `Exposed::spared_blocks` beside `fire_immune` (`hazards.rs`), which the generic `impl Exposed for FamilyMob<S>` answers from the family. `blocks_act` passes it to `inside_blocks::block_effects`, which now takes `spared: &[&str]` and skips the `entityInside` of a spared block (vanilla `SweetBerryBushBlock.entityInside` returns at once for `EntityTypes.FOX` and `EntityTypes.BEE`: no `makeStuckInBlock`, no prick); the block still counts as visited and still advances the effect step, as vanilla's walk does. The player's own walk (`survival.rs`) passes `&[]`. Foxes use it now, bees later.
 - `LookControl::tick_from(.., reset_pitch)` (foxes-live 2, in the fox commit, as M10 names it): `look.rs`, beside `tick_limited`, which now calls it with `true`, so every other mob looks as before. With `false` the tick does not set the pitch to 0 first (vanilla `LookControl.resetXRotOnTick`), which `FoxLookControl` turns off while the fox pounces, crouches, is interested or lies faceplanted. M2's frogs can use it.
+- **"Mobs can show a block's break effect without breaking it"** (foxes-hunt 1): `World::destroy_effect(pos)` (`player/src/lib.rs`, right after `destroy_block`, nothing by default) is vanilla's `levelEvent(2001, pos, Block.getId(state))`. The server's `MobWorld` answers it right after its `destroy_block` (`server_mobs.rs`): the state at `pos`, unless it is air, goes into `level.destroyed`, the list a real break fills, so host and friends get the same burst of block bits and the break sound at `(volume + 1) / 2` and `pitch * 0.8` (vanilla `LevelEventHandler` 2001) while the block stays. A level that keeps no break list (`destroyed: None`) shows nothing. Foxes use it now (the faceplant); the rabbit's carrot nibble and the turtle's digging can use it with one line each.
 
 ## Protocol
 
@@ -78,7 +80,7 @@ For the orchestrator to copy at the merge of segment m1a (rabbits done):
 ## Left for later
 
 - The hop's dust (entity event 1, `spawnSprintParticle`): `ClientFx` has no block particles (M1-1).
-- A rabbit's bite on a carrot: level event 2001 (the crumbs and the break sound) waits for foxes' `World::destroy_effect` (M1-4). The `block_change` game event for W's vibrations is one line where the rabbit's tick applies the bite, added by whichever of W and M1 merges second (rabbits-behaviour 1).
+- A rabbit's bite on a carrot: level event 2001 (the crumbs and the break sound) is now one `World::destroy_effect` line in the rabbit's tick (the hook landed with foxes-hunt 1, after 6ef1a2d9); it was left out of foxes-hunt, whose commits are the foxes'. The `block_change` game event for W's vibrations is one line where the rabbit's tick applies the bite, added by whichever of W and M1 merges second (rabbits-behaviour 1).
 - Polar bears (M1-2): `mustReach` (ported nowhere, so a bear may take a target it cannot path to), the 0.98 water slow-down, the standing bear's taller client box and freeze immunity. The old `AngerTime` key is not read.
 - The shared `FloatGoal` uses a fixed 0.4 water height; vanilla's `getFluidJumpThreshold` is 0 for an eye below 0.4 (a baby rabbit, a silverfish). The rabbit's own jump uses the right threshold.
 - Pandas (M1-3): eggs read `CanPickUpLoot` as false (`spawning.rs` serves eggs and `/summon` alike), so egg pandas pick up nothing; vanilla eggs keep the constructor's true (fork-wide, the steps use `{CanPickUpLoot:1b}`). Dispensers filling a panda's paw and the pickup's flight animation. D0's `monster_ai_step` adds `Monster`'s +2 idle in light for every goal family, creatures included (D0's fix). Sneaking players are not seen at 0.8 of the range by the breed goal's look search (the fork's look goals ignore it too). From pandas-eating: a damageable item a panda drops on death keeps its wear (pandas only ever pick up bamboo and cake); the 2% input drift on the tick the sit goal sits a panda down (decision in pandas-eating 3); friends see crumbs only for bamboo and cake. From pandas-moods: the sneeze cloud does not drift down towards the feet of a player within 2 blocks (`PlayerCloudParticle.tick`; the ambient particles have no players), and its motion is the client mob's last tick of movement rather than the synced motion.
@@ -1239,3 +1241,21 @@ One line for both commits' steps (`foxes-drawn` 1 and 2), 7 stacks. The friend's
 ```
 IW4L_MINECRAFT_KIT=minecraft:fox_spawn_egg*16,minecraft:oak_planks*64,minecraft:oak_log*16,minecraft:lead*2,minecraft:spawner,minecraft:iron_sword,minecraft:cooked_beef*16
 ```
+
+### Group foxes-hunt
+
+#### 1. Mobs can show a block's break effect without breaking it
+
+After 6ef1a2d9.
+
+- **javap this round:** `Fox.tick`'s server part (`isEffectiveAi`): while faceplanted, `level().getRandom().nextFloat() < 0.2F` posts `level().levelEvent(2001, blockPosition(), Block.getId(getBlockState(blockPosition())))`. `LevelEventHandler` on 2001: for a state that is not air, the state's break sound (`SoundSource.BLOCKS`, volume `(volume + 1) / 2`, pitch `pitch * 0.8`), then `ClientLevel.addDestroyBlockEffect(pos, state)` (no bits for air, whose shape is empty). Nothing changes in the level. `Level.destroyBlock` posts the same 2001 for a real break (`destroy_block_drops` already pushes into `level.destroyed`, which the host and friends turn into that burst and sound: `minecraft_world.rs` and `minecraft_levels.rs`, `BREAK_EVENT` for friends).
+- **Changed (vendored player crate):** `player/src/lib.rs`: `World::destroy_effect(pos)` right after `destroy_block`, doing nothing by default (authored worlds and tests show no effects).
+- **Changed (game code, `minecraft_terrain`):** `server_mobs.rs`: `MobWorld::destroy_effect` right after its `destroy_block`: the state at `pos` goes into `level.destroyed` unless it is air or the level keeps no list; the block is not touched.
+- **Tests added:** `server_mobs::tests::a_destroy_effect_shows_the_break_burst_and_keeps_the_block` (the default changes nothing; on a real level, a snow layer and the stone under it are pushed with their states, the air above is not, the snow stays; a level with no break list keeps none). It needs the 26.3 data (`MINECRAFTOSS_ROOT`, which `cargo-slot.ps1` sets) and returns early without it, as the weather test beside it does.
+- **Decisions:**
+  - Decision 3 as recommended: the faceplant bursts go through `World::destroy_effect` into `level.destroyed`, so they reach friends the way real breaks do, with no new message.
+  - The hook skips air on the server, as the client skips the sound for air and draws no bits for it, so no empty event travels to friends.
+- **Protocol:** no message or codec change; `level.destroyed` already travels as `BREAK_EVENT`.
+- **Runs:** `test -p minecraft_terrain --locked --lib a_destroy_effect` (passed, with the 26.3 data), `test -p minecraftoss-player --locked --tests` with `full-suite.ps1`'s two stand-in scenario files (208 passed; the files are removed again), `test -p minecraft_terrain --locked --lib` (1850 passed, 3 ignored), `check -p launcher --locked` (green; only the old warnings), all on this commit alone.
+- **Test steps:** nothing new to see in-game; no mob shows break effects until the next commit, whose steps cover it.
+- **Kit:** none.
