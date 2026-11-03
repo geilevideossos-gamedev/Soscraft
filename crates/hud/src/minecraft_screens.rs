@@ -884,6 +884,7 @@ pub(crate) fn draw_highlight(p: &mut Painter<'_>, s: &Screen<'_>, front: bool) {
     );
 }
 
+#[allow(clippy::large_enum_variant)]
 enum SlotDraw {
     Hidden,
     Empty(&'static str),

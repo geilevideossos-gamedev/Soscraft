@@ -42,6 +42,7 @@ pub const MENU_INPUTS: usize = 256;
 pub const RECIPE_ID_LIMIT: usize = 256;
 
 #[derive(Clone, Debug)]
+#[allow(clippy::large_enum_variant)]
 pub enum Open {
     Inventory,
     Table(BlockPos),

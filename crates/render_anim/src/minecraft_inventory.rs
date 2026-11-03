@@ -445,7 +445,7 @@ impl InventoryUi {
         self.creative.refresh(ui, &inventory.recipes, self.language.as_ref());
         let language = self
             .language
-            .get_or_insert_with(|| minecraft_terrain::item_icons::language(packs).unwrap_or_default());
+            .get_or_insert_with(|| minecraft_terrain::item_icons::language(packs).unwrap_or_else(|_| HashMap::new()));
         let mut stacks = Vec::new();
         let water = minecraft_terrain::bottle::is_water_bottle;
         let water_name = language

@@ -101,3 +101,37 @@ After c1b6ecd6. Gap code-2, parts 2 and 3.
 ```
 IW4L_MINECRAFT_KIT=minecraft:water_bucket,minecraft:lava_bucket,minecraft:cow_spawn_egg*2,minecraft:wheat*16,minecraft:villager_spawn_egg,minecraft:composter,minecraft:iron_sword,minecraft:grass_block*16,minecraft:oak_leaves*16,minecraft:oak_fence*16,minecraft:cobblestone*64,minecraft:cooked_beef*16
 ```
+
+## Group tool-lints-fork
+
+Before the group (at aa83c8d2):
+- `clippy -p minecraft_survival -p render_anim -p hud --locked --all-targets`: exit 0. `minecraft_survival` lib 1 warning, lib test 1 (1 duplicate): `large_enum_variant` on `menus.rs:45` `Open`. `hud` lib 62, lib test 62 (62 duplicates): 1 in `minecraft_screens.rs:887` `SlotDraw`, 61 in the upstream MW2 files. `render_anim` lib 82, lib test 82 (82 duplicates): 5 in `minecraft_*` files (`minecraft_world.rs:149` and `:2306` `too_many_arguments`, `minecraft_host.rs:516` `unwrap_or_default`, `minecraft_inventory.rs:448` and `minecraft_sounds.rs:75` the disallowed `unwrap_or_default`), 77 in the other files.
+- `test -p minecraft_survival -p render_anim -p hud --locked`: `hud` 206 passed; `minecraft_survival` 843 passed and `tests/vanilla_world.rs` 1; `render_anim` 226; no failure, none ignored, doc-tests 0 for each crate. The build printed the four old rustc warnings: `skate-core` `fetch_update`, `skate-host` `Settings` and `Runtime` (`private_interfaces`) and `render_frame` `must_use` on a static.
+
+### 4. The fork's Minecraft files in survival, render_anim and hud pass clippy
+
+After aa83c8d2. Gap code-2, part 4.
+
+- **Why:** the fork's Minecraft files in `minecraft_survival`, `hud` and `render_anim` still had the seven older clippy warnings listed above, so a track could not tell a new warning there from an old one.
+- **Changed** (one line per site, no comments, no other line touched):
+  - `minecraft_survival/src/menus.rs:45` `enum Open` and `hud/src/minecraft_screens.rs:887` `enum SlotDraw`: `#[allow(clippy::large_enum_variant)]` (under the derive for `Open`).
+  - `render_anim/src/minecraft_world.rs:149` `place_inventory_puppet` and `:2306` `draw_body_gear` (Bevy systems with 8 and 9 parameters): `#[allow(clippy::too_many_arguments)]` directly above the `fn`, as `update` (`:470`) and `stream_around_spawn` (`:1934`) carry. The doc lines above `place_inventory_puppet` stay.
+  - `render_anim/src/minecraft_host.rs:516`: `host.edit_books.remove(&session.client).into_iter().flatten().collect()`, as `clicks` does above it (`edits` is `BookEdits`, a `Vec`).
+  - `render_anim/src/minecraft_inventory.rs:448` item language: `unwrap_or_else(|_| HashMap::new())`, as the same file does at `:432`.
+  - `render_anim/src/minecraft_sounds.rs:51`: the `.map(|sounds| ..)` becomes `.map_or_else(Vec::new, |sounds| ..)`, and the `.unwrap_or_default()` line (`:75`) goes.
+- **Decisions:**
+  - Allow, not box: there is one `Open` per player and one `SlotDraw` per slot per frame. Boxing the merchant or mount variant of `Open` would change 33 match and build sites across survival, render_anim and hud, next to M2's nautilus lines.
+  - Left out, outside this group's crates: `assets/src/minecraft_setup.rs:69` has one disallowed `Result::unwrap_or_default` (an upstream file the fork extended). The `minecraft_*` sentence in `docs/MINECRAFT-SURVIVAL.md` names only `render_anim` and `hud`, so it stays true. `render_anim`'s 77 remaining warnings include 5 in `skate.rs` and `skate/rails.rs` (upstream files the fork extended): they count with the upstream ones, as the brief's "about 77" does.
+- **Tests:** no new tests (nothing changes in behaviour).
+  - `clippy -p minecraft_survival -p render_anim -p hud --locked --all-targets`: exit 0. `minecraft_survival` has no warning at all. `hud` lib 61, lib test 61 (61 duplicates); `render_anim` lib 77, lib test 77 (77 duplicates); none of them in a `minecraft_*` file.
+  - `test -p minecraft_survival -p render_anim -p hud --locked`: `hud` 206, `minecraft_survival` 843 and 1, `render_anim` 226, no failure: the same counts as before the group.
+  - `check -p launcher --locked`: green; its only warnings are the four old `render_frame` and skate ones the next commit removes.
+- **Owner's steps.** Release build, survival, Normal, a new world in a plains, by day. Nothing should look or behave differently from the release before. Name the screenshots `e3-9-5.png` and so on.
+  1. Put on the iron helmet and chestplate and open the inventory: the character in the inventory wears them and turns towards the mouse. In third person (F5) the MW2 body wears them too. **e3-9-5**
+  2. Place the chest and open it. With the left button held, drag the stack of 64 cobblestone over four empty slots: while you drag, each slot shows 16, and the counts stay when you let go. Hover over the cobblestone: its name shows. Open the crafting table: it works as before. **e3-9-6**
+  3. Place the composter and use the villager egg beside it. Once it is a farmer, right-click it: the trading screen opens and closes as before. You hear steps, the chest opening and the villager's voice.
+  4. Write two pages in a book and quill, press Done and open it again: the pages are kept. Optional, with two windows (`scripts\mp-local.ps1`): the friend does the same with the second book and quill, and their pages are kept too (this is the host path the commit edits). **e3-9-7**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:iron_helmet,minecraft:iron_chestplate,minecraft:chest,minecraft:crafting_table,minecraft:cobblestone*64,minecraft:writable_book*2,minecraft:villager_spawn_egg,minecraft:composter,minecraft:cooked_beef*16
+```

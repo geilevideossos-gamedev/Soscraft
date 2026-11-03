@@ -146,6 +146,7 @@ impl Drop for Runtime {
 /// window shows, facing the camera, turned and aiming towards the mouse,
 /// and drawn with the card in the view model's depth band so no wall comes
 /// between.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn place_inventory_puppet(
     ui: Res<frame::MinecraftUi>,
     mut puppet: ResMut<frame::InventoryPuppet>,
@@ -2303,6 +2304,7 @@ pub(crate) fn mc_vitals(vitals: minecraft_survival::survival::Vitals) -> frame::
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn draw_body_gear(
     mut view: ResMut<MinecraftWorldView>,
     mut runtime: NonSendMut<Runtime>,
