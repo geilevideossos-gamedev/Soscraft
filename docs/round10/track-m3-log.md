@@ -55,6 +55,7 @@ For the orchestrator to copy at the merge of segment m3a:
 For the orchestrator to copy at the merge of segment m3b:
 
 - Under World simulation in `docs/MINECRAFT-SURVIVAL.md`, after the lightning-drawn line (lightning-weather 1): "Thunderstorms strike lightning like vanilla's: while it rains and thunders, each chunk inside the simulation distance near a player has a one in 100000 chance a tick. The bolt goes to the nearest lightning rod (of any copper age, waxed or not) within 128 blocks that is the top block of its column; without one, to a random living mob or player under open sky near the struck column (spectators too); otherwise to the ground. No bolt falls where it does not rain: deserts, snowy biomes and under glass. One strike in about 70 on Normal (more on Hard, never with `spawn_mobs` off or above a rod) is a skeleton trap: the bolt is only seen and a trap skeleton horse waits at its foot (dormant until skeleton horses are simulated). Storms now need rain as well as thunder, as in vanilla, which also corrects the darkness check for monster spawning in storms."
+- Under World simulation in `docs/MINECRAFT-SURVIVAL.md`, after the storm line (lightning-weather 2): "A trident with Channeling calls down lightning in a thunderstorm: on a mob or player it hits under open sky (at their feet, after the trident's own damage), and on a lightning rod it hits under open sky, each with the trident's thunderclap. Nothing happens in rain alone, under a roof or on other blocks. Friends' tridents do the same."
 
 ## Left for later
 
@@ -74,6 +75,7 @@ For the orchestrator to copy at the merge of segment m3b:
 - Phantom flaps (phantoms-drawn 2): the flap sound stays where the phantom flapped instead of following it (`EntityBoundSoundInstance`), and wing specks are not thinned by camera distance or a particle setting.
 
 - Natural lightning (lightning-weather 1): rods in unloaded chunks are not found (vanilla's POI storage reads unloaded sections from disk); a mob in its 20-tick death fall can still draw a bolt (the census carries no alive flag); ties between rods at the same distance, and the order of the living targets, follow the scan and the census, not vanilla's POI and entity section order. The trap horse stays dormant until `undead-horses-live` (m3d) and is sprung from `skeleton-trap` (also m3d). The rod's idle storm sparks (lightning-glow 2) are still left: this group adds the server's strikes only.
+- Channeling (lightning-weather 2): a Channeling trident that hits a creative or invulnerable player still calls the bolt (the player's hurt is applied later on the survival side); end crystals and item frames struck in a storm call none; a silent victim still sounds the thunder; the `channeled_lightning` advancement and the bolt's cause wait for advancements.
 
 ## Segment m3a
 
@@ -569,6 +571,42 @@ After 519b8ddf ("Round 10 progress: M2's m2a and M3's m3a are merged, fish and c
 
 ```
 IW4L_MINECRAFT_KIT=minecraft:lightning_rod*4,minecraft:weathered_copper*16,minecraft:redstone_lamp*2,minecraft:stone_bricks*16,minecraft:cow_spawn_egg*8,minecraft:water_bucket,minecraft:cooked_beef*16
+```
+
+#### 2. Minecraft tridents with Channeling call down lightning in thunderstorms
+
+After 623ec53b ("Minecraft thunderstorms strike lightning, drawn to lightning rods").
+
+- **javap and data (26.3 `client.jar`):**
+  - `enchantment/channeling.json`: `post_attack` (enchanted the attacker, affected the victim) when `weather_check` thundering, the victim (`this`) `can_see_sky` at its position and the direct attacker is a `minecraft:trident`; `hit_block` when thundering, `this` is a trident and the location's block is in `#lightning_rods` and `can_see_sky`. Both run `summon_entity minecraft:lightning_bolt` and then `play_sound minecraft:item.trident.thunder` at volume 5.0 and pitch 1.0.
+  - `ThrownTrident.onHitEntity`: `hurtOrSimulate(trident damage, 8)`; only when that lands, `EnchantmentHelper.doPostAttackEffectsWithItemSourceOnBreak` with the trident's own item (26.3 has no enderman exception any more), then knockback and the hit sound. `hitBlockEnchantmentEffects`: `EnchantmentHelper.onHitBlock` at `getBlockPos().clampLocationWithin(getLocation())`.
+  - `BlockPos.clampLocationWithin`: each axis clamped between `(float) corner + 1.0E-5f` and `corner + 1 - 9.999999747378752E-6`.
+  - `SummonEntityEffect.apply`: in spawnable bounds, `entityTypes().getRandomElement(level.getRandom())` (`Util.getRandomSafe`: one `nextInt(1)`), `EntityType.spawn(level, BlockPos.containing(position), TRIGGERED)` (its `create` draws the yaw `level.getRandom().nextFloat()`), the bolt's `setCause` for a player owner, then `snapTo(position)`. `PlaySoundEffect.apply`: nothing for a silent entity; else the sound at the position with the entity's sound source.
+- **Changed (terrain):**
+  - `lightning.rs`: `CHANNELING`, `CHANNEL_SOUND`; `feet_of(targets, id)` (a target's feet from its box); `channel(level, trident, victim)` (thundering, Channeling on the trident, the victim's block under open sky: the bolt at the victim's feet); `channel_at_rod(level, trident, pos, at)` (thundering, Channeling, the struck block in `#lightning_rods` and under open sky: the bolt at the hit point clamped inside that block); `call_down` draws the summon's `nextInt(1)` and yaw `nextFloat` from the level random, adds the bolt through `Level::add_lightning` and the thunder sound to `Level::sounds`.
+  - `server.rs` `tick_tridents`: the player hit arm calls `channel` after queuing the hit; the mob hit arm calls it when `hurt_by` lands; the existing `TridentEvent::Block` arm calls `channel_at_rod` after the block's own reaction (`projectile_struck`), vanilla's order.
+- **Tests added** (terrain `server::tests`, a full trident flight each):
+  - `a_channeling_trident_calls_lightning_on_a_mob_under_open_sky_in_thunder`: in a thunderstorm the cow takes the trident's 8, then a bolt stands at its feet with one `item.trident.thunder` at volume 5 and pitch 1; no bolt and no sound in rain alone, in thunder without rain, without Channeling or under a stone block two above the cow (it is still hit for 8 each time); a struck player draws the bolt too.
+  - `a_channeling_trident_calls_lightning_on_a_lightning_rod`: thrown down onto a rod in a storm, one bolt and the sound at the rod's top, inside its block; the next server tick the bolt powers the rod. Nothing without thunder, without Channeling or on stone.
+- **Decisions:**
+  - No new `TridentEvent` variant (the brief's "one block-hit TridentEvent for rods"): `TridentEvent::Block` already carries the struck block and the hit point, so the rod check happens in `lightning::channel_at_rod`, called from that arm; `trident.rs` is unchanged.
+  - E2's `ti1-targets-and-hurt` rename (`hurt_by` to `hurt_for_player`) is not on `minecraft-survival`; the lines sit beside today's arms.
+  - The bolt's position: the victim's feet (vanilla `victim.position()`), from the target box the trident was tested against this tick, before the hit's knockback moves anything.
+  - A player hit draws the bolt when the hit is queued: the survival side applies it later and does not report back whether it landed, so a creative or invulnerable player still draws the bolt (vanilla's `hurtOrSimulate` would fail). A mob draws it only when `hurt_by` reports the hit landed.
+  - Drowned tridents carry no enchantments in the fork (`ThrownTrident::thrown_by_mob`), so the mob-thrown arm is not touched. End crystals and item frames struck by a Channeling trident in a storm draw no bolt (left for later); the End has no weather.
+  - `setCause` only feeds the `channeled_lightning` advancement, which the fork lacks. A silent victim still plays the thunder (`MobCore` has no silent flag in the trident path).
+  - No game event: `SummonEntityEffect` and `PlaySoundEffect` post none; the bolt's own `lightning_strike` comes from its tick.
+- **Runs:** `test -p minecraft_terrain --locked --lib --no-fail-fast` (1900 passed, 3 ignored; it also covers the previous commit's `SpawnPlayer` line), `check -p launcher --locked` (green; only the old render_frame and skate warnings).
+- **Test steps:** release build, survival, Normal, flat open plains, by day, the kit below, the host is op. Natural bolts also fall during `/weather thunder`; each step's bolt comes the moment the trident hits. Name each screenshot by its label.
+  1. Use a cow egg 8 blocks away in the open, `/weather thunder`, and throw the Channeling trident at the cow: it is hit, and at once a bolt strikes it with a loud thunderclap; the cow burns. **m3w-channel-1**
+  2. `/weather rain` and throw it at another cow: the cow is hit, no bolt. **m3w-channel-2**
+  3. `/weather thunder`. Build a 3 x 3 cobblestone roof 3 blocks high on four corner pillars, use a cow egg under it and throw the trident at the cow from the side: the cow is hit, no bolt. Throw the plain trident at a cow in the open: no bolt either. **m3w-channel-3**
+  4. Stand a pillar of 2 stone bricks with a lightning rod on top 8 blocks away and throw the Channeling trident at the rod's tip: a bolt strikes the rod with the thunderclap and sparks dart along the rod. Throw it at a stone brick in the open: no bolt. **m3w-channel-4**
+  5. Friend, two windows (`scripts\mp-local.ps1`), during `/weather thunder`: the friend throws a Channeling trident at a cow; both windows see the bolt and hear the thunderclap. **m3w-channel-friend**
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:trident+channeling=1,minecraft:trident,minecraft:cow_spawn_egg*8,minecraft:lightning_rod*2,minecraft:stone_bricks*16,minecraft:cobblestone*32,minecraft:water_bucket,minecraft:cooked_beef*16
 ```
 
 ## Combined kit

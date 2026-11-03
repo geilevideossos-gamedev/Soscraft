@@ -2518,12 +2518,20 @@ impl ServerSim {
                     }
                     TridentEvent::Struck { target, velocity } if trident.mob_owner.is_some() => self.mob_trident_struck(trident.mob_owner.unwrap_or(0), target, velocity),
                     TridentEvent::Struck { target, velocity } => match crate::thrown::struck_player(target) {
-                        Some(player) => self.players_struck.push(crate::thrown::PlayerStruck { player, by: trident.owner, damage: crate::trident::DAMAGE, kind: crate::trident::DAMAGE_TYPE, velocity }),
+                        Some(player) => {
+                            self.players_struck.push(crate::thrown::PlayerStruck { player, by: trident.owner, damage: crate::trident::DAMAGE, kind: crate::trident::DAMAGE_TYPE, velocity });
+                            crate::lightning::channel(&mut self.level, &trident.stack, crate::lightning::feet_of(&targets, target));
+                        }
                         None => {
-                            crate::thrown::hurt_by(&mut self.mobs, target, crate::trident::DAMAGE, crate::trident::DAMAGE_TYPE, velocity, trident.owner);
+                            if crate::thrown::hurt_by(&mut self.mobs, target, crate::trident::DAMAGE, crate::trident::DAMAGE_TYPE, velocity, trident.owner) {
+                                crate::lightning::channel(&mut self.level, &trident.stack, crate::lightning::feet_of(&targets, target));
+                            }
                         }
                     },
-                    TridentEvent::Block { pos, at, velocity } => self.acting((trident.mob_owner.is_none() && trident.owner != crate::trident::UNKNOWN_OWNER).then_some(trident.owner), |sim| sim.projectile_struck(pos, at, velocity)),
+                    TridentEvent::Block { pos, at, velocity } => {
+                        self.acting((trident.mob_owner.is_none() && trident.owner != crate::trident::UNKNOWN_OWNER).then_some(trident.owner), |sim| sim.projectile_struck(pos, at, velocity));
+                        crate::lightning::channel_at_rod(&mut self.level, &trident.stack, pos, at);
+                    }
                     TridentEvent::Sound { event, at, volume, pitch } => {
                         self.level.sounds.push(minecraftoss_world::level::burning::LevelSound { event, pos: at.to_array(), volume, pitch });
                     }
@@ -9113,6 +9121,97 @@ mod tests {
         let struck = server.take_players_struck();
         assert_eq!(struck.len(), 1);
         assert_eq!((struck[0].player, struck[0].by, struck[0].damage, struck[0].kind), (2, 0, 8.0, "minecraft:trident"));
+    }
+
+    fn channeling_trident(eye: [f64; 3], yaw: f32, pitch: f32, enchanted: bool) -> crate::trident::ThrownTrident {
+        let mut random = minecraftoss_player::rng::LegacyRandom::new(5);
+        let mut stack = minecraftoss_player::inventory::ItemStack::new(crate::trident::ITEM, 1);
+        stack.components = enchanted.then(|| serde_json::json!({"minecraft:enchantments": {"minecraft:channeling": 1}}));
+        let components = stack.components.clone();
+        let throw = crate::thrown::Throw { owner: 0, item: crate::trident::ITEM, components: components.as_ref(), eye: glam::DVec3::from_array(eye), yaw, pitch, motion: glam::DVec3::ZERO, on_ground: true };
+        crate::trident::ThrownTrident::launch(&throw, stack, false, &mut random)
+    }
+
+    fn weather_levels(server: &mut ServerSim, rain: f32, thunder: f32) {
+        let sky = server.level.sky.as_mut().expect("the overworld has weather");
+        sky.weather.rain_level = rain;
+        sky.weather.thunder_level = thunder;
+    }
+
+    fn channeled(server: &ServerSim) -> (Vec<[f64; 3]>, Vec<([f64; 3], f32, f32)>) {
+        use minecraftoss_world::level::entity::EntityKind;
+        let bolts = server.level.entities.iter().filter(|e| matches!(e.kind, EntityKind::LightningBolt(_))).map(|e| e.pos).collect();
+        let sounds = server.level.sounds.iter().filter(|s| s.event == crate::lightning::CHANNEL_SOUND).map(|s| (s.pos, s.volume, s.pitch)).collect();
+        (bolts, sounds)
+    }
+
+    #[test]
+    fn a_channeling_trident_calls_lightning_on_a_mob_under_open_sky_in_thunder() {
+        let cow_at = [8.5, 200.0, 8.5];
+        let throw_at_cow = |rain: f32, thunder: f32, enchanted: bool, roof: bool| {
+            let (mut server, _) = door_world()?;
+            server.summon("minecraft:cow", cow_at, None, 0.0).ok()?;
+            if roof {
+                server.player_edit_block((8, 202, 8), Some(&Block::new("minecraft:stone")), PlayerEdit::Place);
+            }
+            weather_levels(&mut server, rain, thunder);
+            server.throw_trident(channeling_trident([3.5, 200.7, 8.5], -90.0, 0.0, enchanted));
+            let away = [player_at(0, [-10.5, 200.0, 8.5], true)];
+            for _ in 0..10 {
+                server.tick_tridents(&away);
+            }
+            Some((cow_health(&server, 8.5), channeled(&server)))
+        };
+        let Some((health, (bolts, sounds))) = throw_at_cow(1.0, 1.0, true, false) else { return };
+        assert_eq!(health, Some(2.0), "the trident hits first");
+        assert_eq!(bolts, vec![cow_at], "a bolt at the cow's feet");
+        assert_eq!(sounds, vec![(cow_at, 5.0, 1.0)], "with the trident's thunder");
+        for (rain, thunder, enchanted, roof, why) in [(1.0, 0.0, true, false, "rain alone"), (0.0, 1.0, true, false, "thunder without rain"), (1.0, 1.0, false, false, "no Channeling"), (1.0, 1.0, true, true, "under a roof")] {
+            let (health, (bolts, sounds)) = throw_at_cow(rain, thunder, enchanted, roof).expect("the same world");
+            assert_eq!(health, Some(2.0), "{why}");
+            assert!(bolts.is_empty() && sounds.is_empty(), "{why}: {bolts:?} {sounds:?}");
+        }
+
+        let Some((mut server, _)) = door_world() else { return };
+        weather_levels(&mut server, 1.0, 1.0);
+        server.throw_trident(channeling_trident([3.5, 200.7, 8.5], -90.0, 0.0, true));
+        let players = [player_at(0, [-10.5, 200.0, 8.5], true), player_at(2, cow_at, true)];
+        for _ in 0..10 {
+            server.tick_tridents(&players);
+        }
+        assert_eq!(server.take_players_struck().len(), 1);
+        assert_eq!(channeled(&server).0, vec![cow_at], "a struck player draws the bolt too");
+    }
+
+    #[test]
+    fn a_channeling_trident_calls_lightning_on_a_lightning_rod() {
+        let rod = minecraftoss_core::BlockPos::new(8, 200, 8);
+        let throw_at = |block: &str, thunder: f32, enchanted: bool| {
+            let (mut server, _) = door_world()?;
+            server.player_edit_block((8, 200, 8), Some(&Block::new(block)), PlayerEdit::Place);
+            weather_levels(&mut server, 1.0, thunder);
+            server.throw_trident(channeling_trident([8.5, 204.0, 8.5], 0.0, 90.0, enchanted));
+            let away = [player_at(0, [30.5, 200.0, 8.5], true)];
+            for _ in 0..10 {
+                server.tick_tridents(&away);
+            }
+            Some(server)
+        };
+        let Some(mut server) = throw_at("minecraft:lightning_rod", 1.0, true) else { return };
+        let (bolts, sounds) = channeled(&server);
+        let [bolt] = bolts.as_slice() else { panic!("one bolt: {bolts:?}") };
+        assert_eq!(bolt.map(f64::floor), [8.0, 200.0, 8.0], "inside the rod's block");
+        assert!(bolt[1] > 200.999, "at the rod's top: {bolt:?}");
+        assert_eq!(sounds, vec![(*bolt, 5.0, 1.0)]);
+        let mut input = idle_input();
+        run_tick(&mut server, &mut input, true, &mut Output::default());
+        let blocks = &server.level.registries().blocks;
+        assert_eq!(blocks.property(server.level.block(rod), "powered"), Some("true"), "the bolt powers the rod");
+        for (block, thunder, enchanted, why) in [("minecraft:lightning_rod", 0.0, true, "no thunder"), ("minecraft:lightning_rod", 1.0, false, "no Channeling"), ("minecraft:stone", 1.0, true, "not a rod")] {
+            let server = throw_at(block, thunder, enchanted).expect("the same world");
+            let (bolts, sounds) = channeled(&server);
+            assert!(bolts.is_empty() && sounds.is_empty(), "{why}: {bolts:?}");
+        }
     }
 
     #[test]

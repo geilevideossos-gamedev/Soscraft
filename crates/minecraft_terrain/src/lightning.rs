@@ -2,10 +2,16 @@ use crate::server_mobs::{MobTables, MobWorld};
 use crate::terrain::BlockStates;
 use crate::thrown::PlayerBody;
 use glam::DVec3;
+use minecraftoss_core::BlockPos;
 use minecraftoss_core::nbt::Tag;
+use minecraftoss_core::random::RandomSource;
+use minecraftoss_entities::potion::PotionTarget;
 use minecraftoss_entities::tempt::PlayerCandidate;
 use minecraftoss_entities::world::{Bolt, EntityWorld, ThunderOutcome};
+use minecraftoss_player::Pos;
+use minecraftoss_player::inventory::ItemStack;
 use minecraftoss_world::level::Level;
+use minecraftoss_world::level::burning::LevelSound;
 use minecraftoss_world::level::entity::EntityKind;
 use minecraftoss_world::level::lightning::LightningHit;
 use minecraftoss_world::natural_spawner::SpawnLevel;
@@ -14,6 +20,12 @@ use std::collections::{BTreeMap, HashMap};
 
 pub const BOLT: &str = "minecraft:lightning_bolt";
 pub const DAMAGE: f32 = minecraftoss_world::level::lightning::DAMAGE;
+pub const CHANNELING: &str = "minecraft:channeling";
+pub const CHANNEL_SOUND: &str = "minecraft:item.trident.thunder";
+const CHANNEL_VOLUME: f32 = 5.0;
+const LIGHTNING_RODS: &str = "minecraft:lightning_rods";
+const OPEN_SKY: i32 = 15;
+const INSIDE: f32 = 1.0e-5;
 const ZOMBIFIED_PIGLIN: &str = "minecraft:zombified_piglin";
 const WITCH: &str = "minecraft:witch";
 const CARRIED: [&str; 7] = [
@@ -171,6 +183,72 @@ pub fn turned_tag(saved: &Tag, into: &str, held: Option<&str>) -> Tag {
         map.insert("equipment".to_owned(), Tag::Compound(slots));
     }
     turned
+}
+
+pub fn feet_of(targets: &[PotionTarget], id: u64) -> Option<DVec3> {
+    let target = targets.iter().find(|target| target.id == id)?;
+    let middle = (target.min + target.max) / 2.0;
+    Some(DVec3::new(middle.x, target.min.y, middle.z))
+}
+
+pub fn channel(level: &mut Level<'static>, trident: &ItemStack, victim: Option<DVec3>) {
+    let Some(at) = victim else {
+        return;
+    };
+    if channels(level, trident) && open_sky(level, block_at(at)) {
+        call_down(level, at);
+    }
+}
+
+pub fn channel_at_rod(level: &mut Level<'static>, trident: &ItemStack, pos: Pos, at: DVec3) {
+    let block = BlockPos::new(pos.0, pos.1, pos.2);
+    if channels(level, trident) && is_rod(level, block) && open_sky(level, block) {
+        call_down(level, clamp_within(block, at));
+    }
+}
+
+fn channels(level: &Level<'_>, trident: &ItemStack) -> bool {
+    crate::trident::enchantment(trident, CHANNELING) > 0 && level.is_thundering()
+}
+
+fn open_sky(level: &mut Level<'static>, block: BlockPos) -> bool {
+    level.sky_light(block) >= OPEN_SKY
+}
+
+fn is_rod(level: &Level<'_>, block: BlockPos) -> bool {
+    let registries = level.registries();
+    let rods = registries.block_tags.id(LIGHTNING_RODS);
+    rods.is_some_and(|rods| registries.block_in_tag(level.block(block), rods))
+}
+
+fn block_at(at: DVec3) -> BlockPos {
+    let floor = at.floor();
+    BlockPos::new(floor.x as i32, floor.y as i32, floor.z as i32)
+}
+
+fn clamp_within(block: BlockPos, at: DVec3) -> DVec3 {
+    let clamp = |value: f64, corner: i32| {
+        let low = f64::from(corner as f32 + INSIDE);
+        let high = f64::from(corner) + 1.0 - f64::from(INSIDE);
+        if value < low { low } else { value.min(high) }
+    };
+    DVec3::new(
+        clamp(at.x, block.x),
+        clamp(at.y, block.y),
+        clamp(at.z, block.z),
+    )
+}
+
+fn call_down(level: &mut Level<'static>, at: DVec3) {
+    let _kind = level.random.next_i32_bound(1);
+    let _yaw = level.random.next_f32();
+    level.add_lightning(at.to_array(), false);
+    level.sounds.push(LevelSound {
+        event: CHANNEL_SOUND,
+        pos: at.to_array(),
+        volume: CHANNEL_VOLUME,
+        pitch: 1.0,
+    });
 }
 
 pub fn players_in(hit: &LightningHit, players: &[PlayerCandidate]) -> Vec<PlayerStrike> {
