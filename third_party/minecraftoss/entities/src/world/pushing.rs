@@ -191,7 +191,7 @@ impl EntityWorld {
     }
 
     /// The mob as the hazards see it, to take cramming damage.
-    fn exposed_mut(&mut self, key: EntityKey) -> Option<&mut dyn Exposed> {
+    pub(super) fn exposed_mut(&mut self, key: EntityKey) -> Option<&mut dyn Exposed> {
         match key {
             EntityKey::Zombie(id) => self.zombies.iter_mut().find(|e| e.id == id).map(|e| e as &mut dyn Exposed),
             EntityKey::Skeleton(id) => self.skeletons.iter_mut().find(|e| e.id == id).map(|e| e as &mut dyn Exposed),

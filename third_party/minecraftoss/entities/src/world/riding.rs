@@ -1,4 +1,5 @@
 use super::*;
+use crate::inside_blocks::Hazard;
 use crate::strider::{self, Strider};
 use crate::strider_ai::StriderGoalEffect;
 
@@ -172,6 +173,39 @@ pub fn horse_dismount_spot(
         }
     }
     p
+}
+
+fn fall_damage_immune(kind: &str) -> bool {
+    matches!(
+        kind,
+        "minecraft:copper_golem"
+            | "minecraft:iron_golem"
+            | "minecraft:snow_golem"
+            | "minecraft:shulker"
+            | "minecraft:allay"
+            | "minecraft:bat"
+            | "minecraft:bee"
+            | "minecraft:blaze"
+            | "minecraft:cat"
+            | "minecraft:chicken"
+            | "minecraft:ghast"
+            | "minecraft:happy_ghast"
+            | "minecraft:phantom"
+            | "minecraft:magma_cube"
+            | "minecraft:ocelot"
+            | "minecraft:parrot"
+            | "minecraft:wither"
+            | "minecraft:breeze"
+    )
+}
+
+fn falls_hostile(key: EntityKey, kind: &str) -> bool {
+    match key {
+        EntityKey::Zombie(_) | EntityKey::Skeleton(_) | EntityKey::Creeper(_) | EntityKey::Spider(_) | EntityKey::Enderman(_) | EntityKey::Witch(_) | EntityKey::Illager(_) | EntityKey::Ravager(_) | EntityKey::Blaze(_) | EntityKey::Piglin(_) => true,
+        EntityKey::Hoglin(_) => kind == "minecraft:zoglin",
+        EntityKey::Family(family, _) => families::category(family, kind) == Some("monster"),
+        _ => false,
+    }
 }
 
 impl EntityWorld {
@@ -681,24 +715,51 @@ impl EntityWorld {
     }
 
     pub fn take_rider_falls(&mut self) -> Vec<(u64, f64, f32)> {
+        std::mem::take(&mut self.rider_falls)
+    }
+
+    pub(super) fn share_vehicle_falls(&mut self, world: &impl World, game_time: i64) {
         let falls: Vec<(u64, (f64, f32))> = self
             .cows
             .iter_mut()
             .filter_map(|e| Some((e.id, e.horse.as_mut()?.pending_fall.take()?)))
             .collect();
-        let world = &*self;
-        falls
-            .into_iter()
-            .flat_map(|(vehicle, (distance, multiplier))| {
-                world
-                    .passengers_of(vehicle)
-                    .iter()
-                    .filter_map(move |rider| match rider {
-                        Rider::Player(player) => Some((*player, distance, multiplier)),
-                        Rider::Mob(_) => None,
-                    })
-            })
-            .collect()
+        for (vehicle, (distance, multiplier)) in falls {
+            let mut carriers = vec![vehicle];
+            while let Some(carrier) = carriers.pop() {
+                for rider in self.passengers_of(carrier).to_vec() {
+                    match rider {
+                        Rider::Player(player) => self.rider_falls.push((player, distance, multiplier)),
+                        Rider::Mob(id) if self.share_fall(id, distance, multiplier, world, game_time) => carriers.push(id),
+                        Rider::Mob(_) => {}
+                    }
+                }
+            }
+        }
+    }
+
+    fn share_fall(&mut self, id: u64, distance: f64, multiplier: f32, world: &impl World, game_time: i64) -> bool {
+        let Some(kind) = self.entity_type(id).filter(|kind| !fall_damage_immune(kind)) else {
+            return false;
+        };
+        let damage = ((distance + 1.0e-6 - 3.0) * f64::from(multiplier)).floor() as i32;
+        let Some(key) = self.order.iter().copied().find(|key| key.id() == id).filter(|_| damage > 0) else {
+            return true;
+        };
+        let event = match (falls_hostile(key, kind), damage > 4) {
+            (true, false) => "entity.hostile.small_fall",
+            (true, true) => "entity.hostile.big_fall",
+            (false, false) => "entity.generic.small_fall",
+            (false, true) => "entity.generic.big_fall",
+        };
+        if let Some(mob) = self.exposed_mut(key) {
+            let at = mob.body().position;
+            mob.voices().push((Voice::Event(event, 1.0, 1.0), at));
+            if mob.alive() {
+                mob.hurt_hazard(Hazard::Fall, damage as f32, world, game_time);
+            }
+        }
+        true
     }
 
     pub fn eject_passengers(&mut self, vehicle: u64, world: &impl World) {
@@ -1326,6 +1387,161 @@ mod tests {
         assert_eq!(entities.player_carriers(), expected);
         assert!(entities.dismount_player(0, 0.0, &world).is_some());
         assert_eq!(entities.player_carriers(), vec![other]);
+    }
+
+    const FALL_SOUNDS: [&str; 4] = [
+        "entity.hostile.small_fall",
+        "entity.hostile.big_fall",
+        "entity.generic.small_fall",
+        "entity.generic.big_fall",
+    ];
+
+    fn horse_at(entities: &mut EntityWorld, at: DVec3) -> u64 {
+        let mut cow = crate::cow::Cow::new(at);
+        let mut horse = crate::horse::HorseState::new(crate::horse::HorseKind::Horse);
+        horse.max_health = 20.0;
+        cow.health = 20.0;
+        entities.spawn_horse(cow, horse, false)
+    }
+
+    fn husk_at(entities: &mut EntityWorld, at: DVec3) -> u64 {
+        let mut husk = Zombie::new(at);
+        husk.kind = ZombieKind::Husk;
+        entities.spawn_zombie_active(husk, 0.0)
+    }
+
+    fn land(entities: &mut EntityWorld, world: &mut Blocks) -> Vec<MobSound> {
+        let mut sounds = Vec::new();
+        for _ in 0..60 {
+            entities.tick_with_players(world, &[]);
+            sounds.extend(entities.take_sounds());
+        }
+        sounds
+    }
+
+    fn heard(sounds: &[MobSound], event: &str) -> usize {
+        sounds.iter().filter(|s| s.event == event).count()
+    }
+
+    fn fall_sounds(sounds: &[MobSound]) -> usize {
+        FALL_SOUNDS.iter().map(|event| heard(sounds, event)).sum()
+    }
+
+    #[test]
+    fn a_husk_riding_a_horse_fifteen_blocks_down_takes_twelve_with_the_big_fall_sound() {
+        let mut world = floor("minecraft:stone", 4);
+        let mut entities = EntityWorld::default();
+        let horse = horse_at(&mut entities, DVec3::new(0.5, 79.0, 0.5));
+        let husk = husk_at(&mut entities, DVec3::new(3.5, 64.0, 0.5));
+        assert!(entities.start_riding(Rider::Mob(husk), horse, &world));
+        let sounds = land(&mut entities, &mut world);
+        assert_eq!(entities.cow_mut(horse).unwrap().cow.health, 16.0, "the horse takes 4");
+        assert_eq!(
+            entities.zombie_mut(husk).unwrap().zombie.health,
+            8.0,
+            "the husk takes 12, and its armour does not soften it"
+        );
+        assert_eq!(heard(&sounds, "entity.hostile.big_fall"), 1);
+        assert_eq!(fall_sounds(&sounds), 1, "no other fall sound");
+        assert_eq!(entities.vehicle_of(Rider::Mob(husk)), Some(horse), "it rides on");
+        assert!(entities.take_rider_falls().is_empty(), "no player rides");
+    }
+
+    #[test]
+    fn a_mob_rider_takes_nothing_when_its_horse_takes_nothing() {
+        let mut world = floor("minecraft:stone", 4);
+        let mut entities = EntityWorld::default();
+        let horse = horse_at(&mut entities, DVec3::new(0.5, 71.0, 0.5));
+        let husk = husk_at(&mut entities, DVec3::new(3.5, 64.0, 0.5));
+        assert!(entities.start_riding(Rider::Mob(husk), horse, &world));
+        let sounds = land(&mut entities, &mut world);
+        assert_eq!(entities.cow_mut(horse).unwrap().cow.health, 20.0);
+        assert_eq!(
+            entities.zombie_mut(husk).unwrap().zombie.health,
+            20.0,
+            "seven blocks hurt a husk on foot, not on a horse that takes nothing"
+        );
+        assert_eq!(fall_sounds(&sounds), 0);
+    }
+
+    #[test]
+    fn a_player_rider_s_share_is_queued_once() {
+        let mut world = floor("minecraft:stone", 4);
+        let mut entities = EntityWorld::default();
+        let horse = horse_at(&mut entities, DVec3::new(0.5, 74.0, 0.5));
+        let state = entities.cow_mut(horse).unwrap().horse.as_mut().unwrap();
+        state.tame = true;
+        state.saddled = true;
+        assert!(entities.start_riding(Rider::Player(0), horse, &world));
+        entities.set_player_controls(&[crate::controls::PlayerControls {
+            id: 0,
+            ..Default::default()
+        }]);
+        land(&mut entities, &mut world);
+        let falls = entities.take_rider_falls();
+        assert_eq!(falls.len(), 1, "{falls:?}");
+        let (player, distance, multiplier) = falls[0];
+        assert!(
+            player == 0 && (distance - 10.0).abs() < 1.0e-5 && multiplier == 1.0,
+            "{falls:?}"
+        );
+        assert!(entities.take_rider_falls().is_empty(), "handed on once");
+        land(&mut entities, &mut world);
+        assert!(entities.take_rider_falls().is_empty(), "standing hands nothing on");
+    }
+
+    #[test]
+    fn a_registered_mob_riding_a_horse_takes_the_fall_through_its_family() {
+        use crate::world::families::pests::probe;
+        let mut world = floor("minecraft:stone", 4);
+        let mut entities = EntityWorld::default();
+        let horse = horse_at(&mut entities, DVec3::new(0.5, 72.0, 0.5));
+        let rider = entities
+            .spawn_family_kind(probe::KIND, DVec3::new(3.5, 64.0, 0.5))
+            .unwrap();
+        assert!(entities.start_riding(Rider::Mob(rider), horse, &world));
+        let sounds = land(&mut entities, &mut world);
+        assert_eq!(entities.cow_mut(horse).unwrap().cow.health, 19.0, "the horse takes 1");
+        assert_eq!(
+            entities.family_core(rider).unwrap().1.health,
+            probe::MAX_HEALTH - 5.0,
+            "eight blocks take 5"
+        );
+        assert_eq!(heard(&sounds, "entity.hostile.big_fall"), 1, "a monster's voice");
+        assert_eq!(fall_sounds(&sounds), 1);
+    }
+
+    #[test]
+    fn a_chicken_riding_a_horse_is_spared_and_a_rider_on_a_rider_shares_the_fall() {
+        let mut world = floor("minecraft:stone", 4);
+        let mut entities = EntityWorld::default();
+        let horse = horse_at(&mut entities, DVec3::new(0.5, 79.0, 0.5));
+        let strider = strider_at(&mut entities, DVec3::new(3.5, 64.0, 0.5));
+        let piglin = zombified_piglin(&mut entities, DVec3::new(-3.5, 64.0, 0.5));
+        assert!(entities.start_riding(Rider::Mob(strider), horse, &world));
+        assert!(entities.start_riding(Rider::Mob(piglin), strider, &world));
+        let sounds = land(&mut entities, &mut world);
+        assert_eq!(entities.strider_mut(strider).unwrap().strider.health, 8.0);
+        assert_eq!(
+            entities.zombie_mut(piglin).unwrap().zombie.health,
+            8.0,
+            "the strider's rider shares the horse's fall too"
+        );
+        assert_eq!(heard(&sounds, "entity.generic.big_fall"), 1, "the strider");
+        assert_eq!(heard(&sounds, "entity.hostile.big_fall"), 1, "the piglin");
+        assert_eq!(fall_sounds(&sounds), 2);
+        let mut entities = EntityWorld::default();
+        let horse = horse_at(&mut entities, DVec3::new(0.5, 79.0, 0.5));
+        let chicken = entities.spawn_chicken(crate::chicken::Chicken::new(DVec3::new(3.5, 64.0, 0.5)), false);
+        assert!(entities.start_riding(Rider::Mob(chicken), horse, &world));
+        let sounds = land(&mut entities, &mut world);
+        assert_eq!(entities.cow_mut(horse).unwrap().cow.health, 16.0);
+        assert_eq!(
+            entities.chicken_mut(chicken).unwrap().chicken.health,
+            4.0,
+            "chickens are fall_damage_immune"
+        );
+        assert_eq!(fall_sounds(&sounds), 0);
     }
 
     #[test]

@@ -1694,7 +1694,7 @@ mod tests {
             let (mut world, id, _) = fall_ridden(HorseKind::Horse, height, ground);
             let (left, fall) = health_and_fall(&mut world, id);
             assert_eq!(left, health, "{height} onto {ground}");
-            assert!(fall.is_some(), "the fall waits for its riders");
+            assert!(fall.is_none(), "the tick hands the fall to its riders");
             let falls = world.take_rider_falls();
             assert_eq!(falls.len(), 1, "{height} onto {ground}: {falls:?}");
             let (rider, fallen, multiplier) = falls[0];
@@ -1836,7 +1836,7 @@ mod tests {
         assert_eq!(heard(&sounds, "block.stone.fall"), [(0.5, 0.75)]);
         let (health, fall) = health_and_fall(&mut world, id);
         assert_eq!(health, 18.0, "a llama takes a horse's fall");
-        assert!(fall.is_some());
+        assert!(fall.is_none(), "the tick hands it on");
         assert_eq!(
             world.take_rider_falls().len(),
             1,

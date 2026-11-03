@@ -2658,6 +2658,7 @@ pub struct EntityWorld {
     departed: Vec<(u64, &'static str, Body)>,
     passengers: std::collections::BTreeMap<u64, Vec<Rider>>,
     player_dismounts: Vec<(u64, u64, Option<DVec3>)>,
+    rider_falls: Vec<(u64, f64, f32)>,
     ride_jumps: HashMap<u64, crate::horse::RideJump>,
     leashes: std::collections::BTreeMap<u64, Leash>,
     knots: std::collections::BTreeMap<minecraftoss_player::Pos, i32>,
@@ -2775,6 +2776,7 @@ impl Default for EntityWorld {
             departed: Vec::new(),
             passengers: std::collections::BTreeMap::new(),
             player_dismounts: Vec::new(),
+            rider_falls: Vec::new(),
             ride_jumps: HashMap::new(),
             leashes: std::collections::BTreeMap::new(),
             knots: std::collections::BTreeMap::new(),
@@ -5872,6 +5874,7 @@ impl EntityWorld {
             departed: Vec::new(),
             passengers: self.passengers.clone(),
             player_dismounts: Vec::new(),
+            rider_falls: Vec::new(),
             ride_jumps: self.ride_jumps.clone(),
             leashes: self.leashes.clone(),
             knots: self.knots.clone(),
@@ -8200,6 +8203,7 @@ impl EntityWorld {
         if let Some(tick) = riding.take() {
             self.end_ride_tick(tick, &*world);
         }
+        self.share_vehicle_falls(&*world, game_time);
         self.bats
             .retain(|entity| entity.bat.damage.death_ticks < 20);
         self.zombies

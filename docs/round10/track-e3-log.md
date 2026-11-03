@@ -10,7 +10,9 @@ Nothing yet.
 
 ## State doc changes
 
-Nothing yet. E3-1's tooling groups edit `CLAUDE.md`, `docs/MINECRAFT-SURVIVAL.md` and `.claude/workflows/track-runner.js` directly (E3-0 "Docs"); their changes are listed in their entries below.
+E3-1's tooling groups edit `CLAUDE.md`, `docs/MINECRAFT-SURVIVAL.md` and `.claude/workflows/track-runner.js` directly (E3-0 "Docs"); their changes are listed in their entries below. For the orchestrator to copy at round end:
+
+- `docs/round10/release-2-tests.md:565` (and any state doc that repeats it): "A rider hears no block fall sound, and a mob riding a horse takes no share of its fall." becomes "A rider hears no block fall sound (vanilla)." (rider-falls, E3-2). `docs/round10/track-e1-log.md:477`'s note that a wind charge's impulse does not shorten a rider's share is resolved by the same group.
 
 ## Segment e3a
 
@@ -157,3 +159,41 @@ After 70a8016a. Gap code-2, parts 5 and 6.
   - `test -p minecraft_survival -p render_anim -p hud --locked`: `hud` 206, `minecraft_survival` 843 and 1, `render_anim` 226, no failure: the same counts as before the group, and the build printed no warning.
 - **Owner's steps.** The same release build and world as the steps above; nothing should change. The kit is the one above (skating needs no item).
   5. Press **J**: you skate as before. Bail off a ledge: you get back on the board. **e3-9-8**
+
+## Group rider-falls
+
+Gaps horses-4 and horses-7 (E3-2). Anchors re-checked at ce609a5c: `take_rider_falls` is `riding.rs:683`, the tick's last `end_ride_tick` `world.rs:8200-8202`, `player_dismounts` `world.rs:2660`, `:2777` and `:5874`, `exposed_mut` `pushing.rs:194`, the strider landing `striders.rs:442-449`, `rider_fall` `survival.rs:540` and its caller `minecraft_players.rs:864-865`.
+
+### 6. Minecraft mobs riding a horse share its fall
+
+After ce609a5c. Gap horses-4, horse half.
+
+- **Why:** `take_rider_falls` drained each horse's `pending_fall` for its player riders only and mapped mob riders to nothing, so a husk riding a horse off a cliff landed unhurt.
+- **Changed:**
+  - `entities/src/inside_blocks.rs`: `Hazard::Fall` between `Cramming` and `Freeze`. `bypasses_armor` includes it and `damage_type` is `minecraft:fall`; `is_fire` and `panics` do not (26.3's `#bypasses_armor` has `minecraft:fall`; `#panic_causes` and `#panic_environmental_causes` do not).
+  - `crates/minecraft_survival/src/death.rs`: `damage_type` and `message_id` get the `Hazard::Fall` arm beside `Cramming` (`minecraft:fall`, `fall`, the words of `Self::Fall`). Players never take it: they fall through `DamageCause::Fall`.
+  - `entities/src/world/pushing.rs:194`: `exposed_mut` is `pub(super)`, so `riding.rs` can hurt any mob by key.
+  - `entities/src/world.rs`: `EntityWorld.rider_falls: Vec<(u64, f64, f32)>` beside `player_dismounts` (declaration, `Default` and `clone_where`'s copy, which starts empty), and one line after the tick's last `end_ride_tick`: `self.share_vehicle_falls(&*world, game_time);`.
+  - `entities/src/world/riding.rs`:
+    - `share_vehicle_falls(world, game_time)` takes every horse's `pending_fall` (set by `horse_fall` only when the horse itself is hurt, as `AbstractHorse.causeFallDamage`) and walks its riders: a player rider is queued in `rider_falls` as `(player, distance, multiplier)`; a mob rider takes its share in `share_fall` and then hands the same fall to its own riders (`Entity.propagateFallToPassengers` runs inside every passenger's `causeFallDamage`).
+    - `share_fall`: a rider whose type is in 26.3's `#fall_damage_immune` takes nothing and passes nothing on (`Entity.causeFallDamage` returns before propagating, and `LivingEntity.calculateFallDamage` gives 0). Otherwise `floor((distance + 1e-6 - 3) * multiplier)`; above 0 it pushes `entity.hostile.small_fall`/`big_fall` (big above 4) at the rider for the stores whose own landings pass `hostile` (zombies, skeletons, creepers, spiders, endermen, witches, illagers, ravagers, blazes, piglins), zoglins, and registry families whose `families::category` is `monster`, `entity.generic.*` for the rest, then `exposed_mut(key).hurt_hazard(Hazard::Fall, damage, world, game_time)` while the rider lives. No block fall sound (vanilla: 0.2 below the rider's feet is the air above its mount).
+    - `take_rider_falls` is now `std::mem::take(&mut self.rider_falls)`, so `server.rs:5237` is unchanged.
+  - `entities/src/world/equines.rs` tests: `a_ridden_horse_falling_ten_blocks_takes_two_and_hands_its_rider_the_fall` and `a_llama_landing_makes_no_land_sound` asserted that `pending_fall` still waited after the tick; the tick now hands it on, so they assert it is gone (their rider-fall checks are unchanged).
+  - Vendored files: 5 patched (`inside_blocks.rs`, `world.rs`, `world/pushing.rs`, `world/riding.rs`, `world/equines.rs` tests), none new.
+- **Decisions:**
+  - `#fall_damage_immune` is a names list in `riding.rs` (`fall_damage_immune`, the 18 ids of the 26.3 tag), like `hazards::fire_immune`: `EntityWorld` holds no entity tags. The brief did not name it; without it a chicken or a golem riding a horse would take the fall.
+  - A mob rider uses the default safe distance 3 and multiplier 1 (the brief), not its own type's attributes; no mob that can ride today has others.
+  - A dying rider still voices the fall and passes it on, but is not hurt (vanilla plays the sound before `hurt`, which a dying mob refuses).
+  - The share happens at the end of the tick, after every rider has ticked, not inside the horse's own tick as in vanilla; the damage, sound and order of riders are the same.
+- **Tests:**
+  - `world::riding::tests`: `a_husk_riding_a_horse_fifteen_blocks_down_takes_twelve_with_the_big_fall_sound` (horse 20 to 16, husk 20 to 8 though its armour is 2, one `entity.hostile.big_fall` and no other fall sound, the husk rides on, no player fall), `a_mob_rider_takes_nothing_when_its_horse_takes_nothing` (7 blocks), `a_player_rider_s_share_is_queued_once` (10 blocks: one `(0, 10, 1)`, then none, and none after standing 60 more ticks), `a_registered_mob_riding_a_horse_takes_the_fall_through_its_family` (D0's probe on a horse falling 8: horse 19, probe 10 to 5, one `entity.hostile.big_fall`), `a_chicken_riding_a_horse_is_spared_and_a_rider_on_a_rider_shares_the_fall` (horse, strider, zombified piglin 15 blocks: strider and piglin 20 to 8 with one generic and one hostile big fall; a chicken on a horse keeps its 4 health and no fall sound plays).
+  - `inside_blocks::tests::a_shared_fall_is_minecraft_fall_bypasses_armour_and_panics_nothing`.
+  - `minecraftoss-entities`: 618 passed, 0 failed (lib; bins and doc-tests 0), no warning.
+  - `minecraft_survival`: 843 passed and `tests/vanilla_world.rs` 1, no failure. `check -p launcher --locked`: green, no warning.
+- **Owner's steps** (release build, survival, a new world, by day on flat grass, the group's kit at the end of this group; full health before each drop). Name the screenshots as the brief does: `e3h01.png` to `e3h04.png`.
+  1. Build a 3-high pillar and stand on it: `/fill ~2 ~ ~ ~2 ~2 ~ cobblestone`, then `/tp @s ~2 ~3 ~`.
+  2. `/summon minecraft:horse ~4 ~12 ~ {Passengers:[{id:"minecraft:husk"}]}`: the horse falls 15 blocks with the husk on it.
+     - On landing you hear the horse's thud and a heavy fall crunch from the husk, and both flash red.
+     - The husk rides on (it lost 12 of its 20).
+     - **Screenshot e3h01**, just after the landing.
+  3. `/summon minecraft:horse ~4 ~22 ~ {Passengers:[{id:"minecraft:husk"}]}` (25 blocks): the horse flashes red and lives, and the husk dies on landing. **Screenshot e3h02.** Before this build both husks rode on unhurt. Kill the survivors with the sword.
