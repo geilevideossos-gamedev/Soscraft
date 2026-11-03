@@ -197,3 +197,28 @@ After ce609a5c. Gap horses-4, horse half.
      - The husk rides on (it lost 12 of its 20).
      - **Screenshot e3h01**, just after the landing.
   3. `/summon minecraft:horse ~4 ~22 ~ {Passengers:[{id:"minecraft:husk"}]}` (25 blocks): the horse flashes red and lives, and the husk dies on landing. **Screenshot e3h02.** Before this build both husks rode on unhurt. Kill the survivors with the sword.
+
+### 7. Minecraft strider riders share its fall
+
+After 310cd4bf. Gap horses-4, strider half.
+
+- **Why:** a strider landed through `living::fall_damage` and recorded nothing for its riders, and the share walked only the cow store's horses. Vanilla's `Strider` does not override `causeFallDamage`, so `LivingEntity.causeFallDamage` hands every landing on to its passengers (`Entity.causeFallDamage`, offset 67) before and whatever its own damage.
+- **Changed:**
+  - `entities/src/world/striders.rs`: `StriderEntity.pending_fall: Option<(f64, f32)>` beside `last_damage_tick`, `None` in `spawn_strider` (the only constructor, so on load too). A landing out of lava with `fallen > 0` records `(fallen * reduction, multiplier)` from `living::landed_block`, as `Block.fallOn` passes it (a bed halves the distance, hay gives 0.2, slime 0), before the strider's own damage. A landing in lava records nothing (`Strider.checkFallDamage` resets the fall in lava).
+  - `entities/src/world/riding.rs` `share_vehicle_falls`: takes the striders' `pending_fall` after the horses', so a player rider is queued in `rider_falls` (the player's `rider_fall` gives 0 up to 3 blocks) and a strider jockey takes its share as a horse's mob rider does.
+  - Vendored files: 2 patched (`world/striders.rs`, `world/riding.rs`), none new.
+- **Decisions:**
+  - A dying strider's landing (`dying_travel`) passes nothing on, as a dying horse's does not before mount-odds; a dead strider's rider is let down within a second anyway.
+  - A strider that steps down a block hands its rider a fall under 3 blocks, which hurts nobody; vanilla does the same, and the share stays on the host (no message).
+- **Tests:**
+  - `world::riding::tests::a_strider_dropping_six_blocks_hands_its_rider_six`: a saddled strider with the player and a strider with a zombified piglin each drop 6 blocks onto netherrack. Both striders 20 to 17 with `entity.generic.small_fall`; one `(0, 6, 1)` for the player, then none after 60 more ticks; the piglin 20 to 17 with `entity.hostile.small_fall`.
+  - `world::riding::tests::a_strider_landing_in_lava_hands_nothing_on`: 6 blocks into a lava sea with the player on: the strider keeps its 20, no rider fall and no fall sound.
+  - `minecraftoss-entities` lib: 620 passed, 0 failed. `minecraft_terrain`: 1818 passed, 0 failed, 3 ignored (lib; doc-tests 0), the counts before the group, so no server test changed with the shared falls of commits 6 and 7. `check -p launcher --locked`: green, no warning.
+- **Owner's steps** (as above, in the Nether or the Overworld; the steps go on from step 3):
+  4. Strider: at a fresh spot, run `/fill ~3 ~ ~-3 ~9 ~5 ~3 netherrack` (6 high), then `/tp @s ~6 ~6 ~`.
+     - Use a strider egg on the top, saddle the strider and get on.
+     - Hold the warped fungus on a stick and ride off the edge.
+     - You lose 1.5 hearts and hear your fall; the strider loses 1.5 of its 10 mount hearts.
+     - **Screenshot e3h03**, right after landing.
+  5. Repeat from 4 high (`/fill ~3 ~ ~-3 ~9 ~3 ~3 netherrack`, `/tp @s ~6 ~4 ~`): you lose half a heart. From 3 high you lose nothing.
+  7. Friend (two windows, `scripts\mp-local.ps1`): F does step 4 on F's own strider. F loses 1.5 hearts, and the host hears F land. **Screenshot e3h04**, F's window.

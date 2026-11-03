@@ -723,6 +723,7 @@ impl EntityWorld {
             .cows
             .iter_mut()
             .filter_map(|e| Some((e.id, e.horse.as_mut()?.pending_fall.take()?)))
+            .chain(self.striders.iter_mut().filter_map(|e| Some((e.id, e.pending_fall.take()?))))
             .collect();
         for (vehicle, (distance, multiplier)) in falls {
             let mut carriers = vec![vehicle];
@@ -1541,6 +1542,57 @@ mod tests {
             4.0,
             "chickens are fall_damage_immune"
         );
+        assert_eq!(fall_sounds(&sounds), 0);
+    }
+
+    #[test]
+    fn a_strider_dropping_six_blocks_hands_its_rider_six() {
+        let mut world = floor("minecraft:netherrack", 12);
+        let mut entities = EntityWorld::default();
+        let mut ridden = Strider::new(DVec3::new(0.5, 70.0, 0.5));
+        ridden.saddled = true;
+        let ridden = entities.spawn_strider(ridden, false);
+        assert!(entities.start_riding(Rider::Player(0), ridden, &world));
+        entities.set_player_controls(&[crate::controls::PlayerControls {
+            id: 0,
+            ..Default::default()
+        }]);
+        let jockey = strider_at(&mut entities, DVec3::new(-3.5, 70.0, 3.5));
+        let piglin = zombified_piglin(&mut entities, DVec3::new(3.5, 64.0, -3.5));
+        assert!(entities.start_riding(Rider::Mob(piglin), jockey, &world));
+        let sounds = land(&mut entities, &mut world);
+        for strider in [ridden, jockey] {
+            assert_eq!(
+                entities.strider_mut(strider).unwrap().strider.health,
+                strider::MAX_HEALTH - 3.0,
+                "six blocks take 3"
+            );
+        }
+        let falls = entities.take_rider_falls();
+        assert_eq!(falls.len(), 1, "{falls:?}");
+        let (player, distance, multiplier) = falls[0];
+        assert!(
+            player == 0 && (distance - 6.0).abs() < 1.0e-5 && multiplier == 1.0,
+            "{falls:?}"
+        );
+        assert_eq!(
+            entities.zombie_mut(piglin).unwrap().zombie.health,
+            17.0,
+            "the strider jockey takes 3"
+        );
+        assert_eq!(heard(&sounds, "entity.generic.small_fall"), 2, "both striders");
+        assert_eq!(heard(&sounds, "entity.hostile.small_fall"), 1, "the piglin");
+        land(&mut entities, &mut world);
+        assert!(entities.take_rider_falls().is_empty(), "handed on once");
+    }
+
+    #[test]
+    fn a_strider_landing_in_lava_hands_nothing_on() {
+        let mut sea = lava_sea(6);
+        let (mut entities, id) = ridden_strider(&sea, 70.0, false, 0.0);
+        let sounds = land(&mut entities, &mut sea);
+        assert_eq!(entities.strider_mut(id).unwrap().strider.health, strider::MAX_HEALTH);
+        assert!(entities.take_rider_falls().is_empty());
         assert_eq!(fall_sounds(&sounds), 0);
     }
 

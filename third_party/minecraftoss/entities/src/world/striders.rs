@@ -22,6 +22,7 @@ pub struct StriderEntity {
     pub no_action_time: i32,
     pub last_damage_source: Option<DamageSourceKind>,
     pub last_damage_tick: i32,
+    pub pending_fall: Option<(f64, f32)>,
     pub fluid: FluidFrame,
     pub jumping: bool,
     pub no_jump_delay: i32,
@@ -443,6 +444,10 @@ impl StriderEntity {
                 self.strider.body.fall_distance = 0.0;
                 None
             } else {
+                if let Some(fallen) = landed.filter(|&fallen| fallen > 0.0) {
+                    let (reduction, multiplier) = super::living::landed_block(&self.strider.body, world);
+                    self.pending_fall = Some((fallen * reduction, multiplier));
+                }
                 landed.and_then(|fallen| {
                     fall_damage(&self.strider.body, world, fallen, false, &mut self.voices)
                 })
@@ -527,6 +532,7 @@ impl EntityWorld {
             no_action_time: 0,
             last_damage_source: None,
             last_damage_tick: 0,
+            pending_fall: None,
             fluid: FluidFrame::default(),
             jumping: false,
             no_jump_delay: 0,
