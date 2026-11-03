@@ -649,6 +649,7 @@ pub struct MobDeath {
     /// Equipment the kill shook loose (`Mob.dropCustomDeathLoot`), dropped
     /// after the loot.
     pub equipment: Vec<ItemStack>,
+    pub always_drops: Vec<ItemStack>,
     /// The experience it leaves (`LivingEntity.dropExperience`).
     pub experience: i32,
     pub reward: i32,
@@ -663,7 +664,7 @@ const STONE_SWORD_DURABILITY: u32 = 131;
 fn death_of(id: u64, damage: &mut DamageState, kind: &'static str, table: Option<&'static str>, context: EntityLootContext) -> Option<(u64, MobDeath)> {
     let Death { order, position, killed_by_player, on_fire, attacker, direct, charged_creeper } = damage.death.take()?;
     let context = EntityLootContext { this_type: Some(kind), on_fire, killed_by_player, attacker, has_direct_attacker: direct, ..context };
-    Some((order, MobDeath { id, table, position, context, charged_creeper, equipment: Vec::new(), experience: 0, reward: 0 }))
+    Some((order, MobDeath { id, table, position, context, charged_creeper, equipment: Vec::new(), always_drops: Vec::new(), experience: 0, reward: 0 }))
 }
 
 /// A sound a mob made, for the client to play: its event, where, volume,

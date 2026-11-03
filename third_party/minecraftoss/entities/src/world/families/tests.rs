@@ -364,6 +364,38 @@ fn a_registered_mob_feeds_sculk_catalysts_without_mob_drops() {
 }
 
 #[test]
+fn a_registered_mob_drops_what_it_always_drops_even_without_mob_drops() {
+    let emerald = ItemStack::new("minecraft:emerald", 1);
+    let stick = ItemStack::new("minecraft:stick", 2);
+    for mob_drops in [true, false] {
+        let mut world = EntityWorld::default();
+        world.set_mob_drops(mob_drops);
+        let monster = probe_at(&mut world, KIND, at(0.5));
+        let baby = probe_at(&mut world, ANIMAL, at(10.5));
+        let plain = probe_at(&mut world, KIND, at(20.5));
+        probe_mut(&mut world, baby).core.baby = true;
+        for id in [monster, baby] {
+            let state = &mut probe_mut(&mut world, id).state;
+            state.drops = vec![stick.clone()];
+            state.always = vec![emerald.clone()];
+        }
+        for id in [monster, baby, plain] {
+            let near = world.body_of(id).unwrap().position - DVec3::Z;
+            assert!(world.player_attack(&attack(1, near, 100.0), id).died);
+        }
+        let deaths = world.take_deaths();
+        assert_eq!(deaths.iter().map(|d| d.id).collect::<Vec<_>>(), [monster, baby, plain]);
+        for death in &deaths[..2] {
+            assert_eq!(death.always_drops, [emerald.clone()], "mob_drops {mob_drops}");
+            let shaken = if mob_drops { vec![stick.clone()] } else { Vec::new() };
+            assert_eq!(death.equipment, shaken, "mob_drops {mob_drops}");
+        }
+        assert!(deaths[2].always_drops.is_empty() && deaths[2].equipment.is_empty());
+        assert!(probe(&world, monster).state.always.is_empty(), "taken once");
+    }
+}
+
+#[test]
 fn a_registered_mob_despawns_by_its_rule_leaves_with_its_chunk_and_is_copied_where_kept() {
     let mut world = EntityWorld::default();
     let monster = probe_at(&mut world, KIND, at(0.5));

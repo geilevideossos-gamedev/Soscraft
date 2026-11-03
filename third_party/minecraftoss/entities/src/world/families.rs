@@ -594,6 +594,10 @@ pub trait Family: Clone + Send + Sized + 'static {
         Vec::new()
     }
 
+    fn always_drops(_mob: &mut FamilyMob<Self>) -> Vec<ItemStack> {
+        Vec::new()
+    }
+
     fn despawn(mob: &FamilyMob<Self>) -> Despawn {
         Despawn::of_category(Self::category(mob.core.kind))
     }
@@ -889,6 +893,7 @@ impl<S: Family> FamilyStore<S> {
             if monster || !death.context.baby {
                 death.experience = S::experience(mob);
             }
+            death.always_drops = S::always_drops(mob);
             death.equipment = S::death_drops(mob);
             out.push((order, death));
         }

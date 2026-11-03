@@ -40,6 +40,7 @@ Files under `third_party/minecraftoss` this track patched or added.
 - foxes-drawn 2: no vendored file (game code only).
 - Patched (foxes-hunt 1, hook): `player/src/lib.rs` (`World::destroy_effect`). Game code: `crates/minecraft_terrain/src/server_mobs.rs` (`MobWorld::destroy_effect` and its test).
 - Changed again, no new file (foxes-hunt 2): `entities/src/world/families/land/foxes.rs` (`set_target_goals`, the strike, the bite sound, the crouch reset, the faceplant's break effect), `entities/src/world/families/land/foxes/ai.rs` (the stalk, pounce, faceplant, melee and leap goals, the prey target goals, `is_path_clear`), `entities/src/world/families/land/foxes/tests.rs` (its tests and the den's snow, stone, tag and effects).
+- Patched (foxes-items 1, hook): `entities/src/world.rs` (`MobDeath.always_drops` and its `Vec::new()` in `death_of`), `entities/src/loot.rs` (`death_drops` drops them first; its test), `entities/src/world/families.rs` (`Family::always_drops`, filled in `take_deaths`), `entities/src/world/families/pests/probe.rs` (the probe's `always`), `entities/src/world/families/tests.rs` (its test).
 
 ## Hooks
 
@@ -61,6 +62,7 @@ Root hooks this track added (M10, "Hooks this track adds").
 - **"Registered Minecraft mobs can be spared by the blocks they walk through"** (foxes-live 1): `Family::spared_blocks(mob) -> &'static [&'static str]` (root `families.rs`, beside `fire_immune`, `&[]` by default) and a defaulted `Exposed::spared_blocks` beside `fire_immune` (`hazards.rs`), which the generic `impl Exposed for FamilyMob<S>` answers from the family. `blocks_act` passes it to `inside_blocks::block_effects`, which now takes `spared: &[&str]` and skips the `entityInside` of a spared block (vanilla `SweetBerryBushBlock.entityInside` returns at once for `EntityTypes.FOX` and `EntityTypes.BEE`: no `makeStuckInBlock`, no prick); the block still counts as visited and still advances the effect step, as vanilla's walk does. The player's own walk (`survival.rs`) passes `&[]`. Foxes use it now, bees later.
 - `LookControl::tick_from(.., reset_pitch)` (foxes-live 2, in the fox commit, as M10 names it): `look.rs`, beside `tick_limited`, which now calls it with `true`, so every other mob looks as before. With `false` the tick does not set the pitch to 0 first (vanilla `LookControl.resetXRotOnTick`), which `FoxLookControl` turns off while the fox pounces, crouches, is interested or lies faceplanted. M2's frogs can use it.
 - **"Mobs can show a block's break effect without breaking it"** (foxes-hunt 1): `World::destroy_effect(pos)` (`player/src/lib.rs`, right after `destroy_block`, nothing by default) is vanilla's `levelEvent(2001, pos, Block.getId(state))`. The server's `MobWorld` answers it right after its `destroy_block` (`server_mobs.rs`): the state at `pos`, unless it is air, goes into `level.destroyed`, the list a real break fills, so host and friends get the same burst of block bits and the break sound at `(volume + 1) / 2` and `pitch * 0.8` (vanilla `LevelEventHandler` 2001) while the block stays. A level that keeps no break list (`destroyed: None`) shows nothing. Foxes use it now (the faceplant); the rabbit's carrot nibble and the turtle's digging can use it with one line each.
+- **"Registered Minecraft mobs can drop items on death even without mob loot"** (foxes-items 1, not in M10's table): `Family::always_drops(mob) -> Vec<ItemStack>` (root `families.rs`, beside `death_drops`, empty by default) fills the new `MobDeath.always_drops` (`world.rs`, `Vec::new()` in `death_of`, its one literal), which the `mob_drops` clear of `take_deaths` leaves alone; `EntityLootBook::death_drops` (`loot.rs`) drops them right after a charged creeper's head and before the loot table and the equipment. It is vanilla `Fox.dropAllDeathLoot`, whose mouth item drops before `shouldDropLoot` (not a baby, `mob_drops` on) is asked. Foxes use it from the next commit; a later family with a drop that ignores the rules uses it the same way.
 
 ## Protocol
 
@@ -1326,3 +1328,23 @@ One line for both commits' steps (`foxes-hunt` 1 has none of its own), 6 stacks.
 ```
 IW4L_MINECRAFT_KIT=minecraft:fox_spawn_egg*8,minecraft:chicken_spawn_egg*16,minecraft:rabbit_spawn_egg*4,minecraft:snow*64,minecraft:snow*64,minecraft:cooked_beef*16
 ```
+
+### Group foxes-items
+
+#### 1. Registered Minecraft mobs can drop items on death even without mob loot
+
+After dcee586d.
+
+- **javap this round:** `Fox.dropAllDeathLoot` spawns the main hand (`spawnAtLocation`) and empties it whenever it holds something, then calls `Animal.dropAllDeathLoot`. `LivingEntity.dropAllDeathLoot` asks `shouldDropLoot` (not a baby and `mob_drops` on) only for the loot table and `dropCustomDeathLoot`; the fox's mouth item comes before that check, so it drops for cubs and with `mob_drops` off too. D0's `take_deaths` empties `MobDeath.equipment` when `mob_drops` is off, so `death_drops` cannot carry such a drop.
+- **Changed (vendored entities crate):**
+  - `world.rs`: `MobDeath.always_drops` after `equipment`, `Vec::new()` in `death_of` (its one literal). The `mob_drops` clear in `take_deaths` leaves it alone.
+  - `world/families.rs`: `Family::always_drops(mob)`, empty by default, beside `death_drops`; the root `take_deaths` fills `always_drops` from it before `equipment`.
+  - `loot.rs`: `EntityLootBook::death_drops` drops `always_drops` right after a charged creeper's head and before the loot table and the equipment, as `Fox.dropAllDeathLoot` drops the mouth item before `super`.
+  - `world/families/pests/probe.rs`: the probe's `always` list for the root test.
+- **Tests added:** `world::families::tests::a_registered_mob_drops_what_it_always_drops_even_without_mob_drops` (a monster and a baby animal drop their `always_drops` with and without `mob_drops`, their `death_drops` only with it, a plain probe neither, and the list is taken once), `loot::tests::a_death_drops_what_it_always_drops_before_its_loot_and_equipment` (the order and position of the drops, with and without equipment).
+- **Decisions:**
+  - A hook M10's table does not name (logged here as M10 asks): M1-4 planned the mouth item as `death_drops`, but D0's `take_deaths` clears `equipment` when `mob_drops` is off, so "always" needs a list the clear leaves alone. The alternative, the fox spawning its item in its own tick after it died, would drop it a tick late and at a moved spot.
+  - The new field has no literal outside `death_of`, so no other track's code breaks; a track that adds a `MobDeath` literal at a merge adds `always_drops: Vec::new()`.
+- **Runs:** `test -p minecraftoss-entities --locked --lib always_drops` (4 passed, the 2 new tests among them), `check -p launcher --locked` (green; only the old skate warnings).
+- **Test steps:** nothing new to see; foxes use the hook from the next commit, whose steps cover it.
+- **Kit:** none.

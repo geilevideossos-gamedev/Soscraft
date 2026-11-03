@@ -126,6 +126,7 @@ pub struct Probe {
     pub panicking: bool,
     pub knockback_resistance: f64,
     pub drops: Vec<ItemStack>,
+    pub always: Vec<ItemStack>,
     pub walks: Vec<(DVec3, f64)>,
     pub goals: bool,
     pub goal_allowed: bool,
@@ -162,6 +163,7 @@ impl Family for Probe {
                 panicking: false,
                 knockback_resistance: 0.0,
                 drops: Vec::new(),
+                always: Vec::new(),
                 walks: Vec::new(),
                 goals: false,
                 goal_allowed: false,
@@ -290,6 +292,10 @@ impl Family for Probe {
 
     fn death_drops(mob: &mut FamilyMob<Self>) -> Vec<ItemStack> {
         std::mem::take(&mut mob.state.drops)
+    }
+
+    fn always_drops(mob: &mut FamilyMob<Self>) -> Vec<ItemStack> {
+        std::mem::take(&mut mob.state.always)
     }
 
     fn monster(kind: &str) -> Option<&'static MonsterSpec> {

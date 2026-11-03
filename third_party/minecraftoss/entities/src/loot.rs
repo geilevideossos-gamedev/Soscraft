@@ -249,6 +249,7 @@ impl EntityLootBook {
                 }
                 drops.extend(at(heads));
             }
+            drops.extend(at(death.always_drops));
             if let Some(table) = death.table {
                 drops.extend(at(self.roll(table, death.context).unwrap_or_default()));
             }
@@ -760,6 +761,38 @@ mod tests {
             .unwrap();
         assert_eq!(first.len(), fresh.len());
         assert_eq!(first[0].count, fresh[0].count);
+    }
+
+    #[test]
+    fn a_death_drops_what_it_always_drops_before_its_loot_and_equipment() {
+        let mut book = EntityLootBook {
+            tables: HashMap::new(),
+            sequences: HashMap::new(),
+            world_seed: 0,
+            smelting: HashMap::new(),
+            item_tags: HashMap::new(),
+            entity_tags: HashMap::new(),
+            enchantments: HashMap::new(),
+            enchantment_tags: HashMap::new(),
+        };
+        let at = glam::DVec3::new(1.5, 64.0, 2.5);
+        let emerald = ItemStack::new("minecraft:emerald", 1);
+        let stick = ItemStack::new("minecraft:stick", 2);
+        let death = crate::world::MobDeath {
+            id: 7,
+            table: None,
+            position: at,
+            context: EntityLootContext::default(),
+            charged_creeper: None,
+            equipment: vec![stick.clone()],
+            always_drops: vec![emerald.clone()],
+            experience: 0,
+            reward: 0,
+        };
+        let drops = book.death_drops(vec![death.clone()]);
+        assert_eq!(drops, vec![(emerald.clone(), at), (stick, at)]);
+        let bare = crate::world::MobDeath { equipment: Vec::new(), ..death };
+        assert_eq!(book.death_drops(vec![bare]), vec![(emerald, at)]);
     }
 
     fn jar_book() -> Option<EntityLootBook> {
