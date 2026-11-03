@@ -67,10 +67,12 @@ None yet. The mob bucket posts `entity_place` at the block the mob comes out in 
 
 ## Combined kit
 
-Everything this track's test steps need so far (27 stacks; water-buckets 1 counted 24 where its line held 23). The kit is full, so squids-live 2's regression steps with the chicken and spider eggs keep their own kit line; squids-live 3's glass platform takes the glass up to 64. The squids' steps (squids-drawn 2 and 3) keep their own kit lines too; for a test of the whole segment m2a, run them after the steps of this line.
+27 stacks, for a test of the whole segment m2a. It holds everything the steps with something new to see need, in the host's and the friend's window: the mob buckets and the Nether portal (water-buckets 1, 1322d5fb), the dispensers (water-buckets 3, 48f5c4bb), and the squids and glow squids with their ink and sparkles (squids-drawn 2 and 3, 93f77e9b and 8809844c). Run them in that order: water-buckets 1 pours the first sulfur cube bucket and water-buckets 3 puts the second into a dispenser. Squids-drawn 2's cooked beef is left out to stay at 27 stacks; bring food, or `/give @s minecraft:cooked_beef 32`. The class loadout's M4A1 is used as well.
+
+The regression steps with nothing new to see (water-hooks 1 and 2, water-paths 1 and 2, water-buckets 2, squids-live 1 and 2, squids-drawn 1) use mobs and tools this kit lacks, such as the rabbit, polar bear, silverfish, zombie, drowned, cow, chicken and spider eggs and the iron shovel: use that commit's own kit line. Squids-live 3's steps need only the glass, which this kit holds.
 
 ```
-IW4L_MINECRAFT_KIT=minecraft:rabbit_spawn_egg*4,minecraft:polar_bear_spawn_egg*2,minecraft:silverfish_spawn_egg*2,minecraft:zombie_spawn_egg*2,minecraft:drowned_spawn_egg*2,minecraft:cow_spawn_egg*2,minecraft:water_bucket,minecraft:glass*64,minecraft:stone*64,minecraft:iron_shovel,minecraft:iron_sword,minecraft:cod_bucket,minecraft:salmon_bucket,minecraft:tropical_fish_bucket,minecraft:pufferfish_bucket,minecraft:axolotl_bucket,minecraft:tadpole_bucket,minecraft:sulfur_cube_bucket,minecraft:sulfur_cube_bucket,minecraft:lava_bucket,minecraft:bucket*16,minecraft:cauldron,minecraft:campfire,minecraft:obsidian*10,minecraft:flint_and_steel,minecraft:dispenser*2,minecraft:lever*2
+IW4L_MINECRAFT_KIT=minecraft:cod_bucket,minecraft:salmon_bucket,minecraft:tropical_fish_bucket,minecraft:pufferfish_bucket,minecraft:axolotl_bucket,minecraft:tadpole_bucket,minecraft:sulfur_cube_bucket,minecraft:sulfur_cube_bucket,minecraft:water_bucket,minecraft:lava_bucket,minecraft:bucket*16,minecraft:cauldron,minecraft:campfire,minecraft:obsidian*10,minecraft:flint_and_steel,minecraft:stone*64,minecraft:dispenser*2,minecraft:lever*2,minecraft:squid_spawn_egg*16,minecraft:glow_squid_spawn_egg*16,minecraft:iron_sword,minecraft:bow,minecraft:arrow*64,minecraft:lead*4,minecraft:golden_dandelion*4,minecraft:glass*64,minecraft:spawner
 ```
 
 ## Segment m2a
@@ -721,3 +723,14 @@ After 909e959d.
 - **Changed:** the loop is `for (other, texture) in TEXTURES.into_iter().enumerate()`, as the file's first test already loops, and the message names `texture`. The test checks the same regions as before.
 - **Runs:** `clippy -p minecraft_terrain --locked --all-targets -- -A clippy::approx_constant`: exits 0, and the warning is gone. `test -p minecraft_terrain --locked`: 1727 passed (3 ignored, as before). The staged file passes `rustfmt --check --edition 2021` with empty output.
 - **Test steps:** none in game (a test file only). No kit is needed.
+
+#### 2. Track M2 log records the final test run and the combined kit
+
+After 39943b65. Log only.
+
+- **Touched crates** (`git diff --stat r10-m2a-base..HEAD`): `minecraft_survival`, `minecraft_terrain`, `minecraftoss-entities`, `minecraftoss-world`.
+- **Clippy:** `clippy -p minecraft_survival -p minecraft_terrain -p minecraftoss-entities -p minecraftoss-world --locked --all-targets -- -A clippy::approx_constant` exits 0. Of its warnings only one pointed at a line this track added (every location checked against `git diff -U0 r10-m2a-base..909e959d`), fixed in 39943b65; the rest are on older lines of `diag`, `minecraft_survival` and `minecraft_terrain`, among them three each in `actions.rs` and `server.rs` that the track touched elsewhere. The two vendored crates show none.
+- **Tests** on the code of 39943b65, `test -p <crate> --locked` for each touched crate, all passed: `minecraft_terrain` 1727 (3 ignored), `minecraftoss-entities` 599 (every `check_*` bin builds), `minecraftoss-world` 148, `minecraft_survival` 819 + 1 (`tests/vanilla_world.rs`).
+- **Checks:** every `.rs` file the track added passes `git show HEAD:<path> | rustfmt --check` with empty output at its crate's edition (2021 for the terrain and vendored crates), and no added line of Rust holds a comment.
+- **Combined kit:** rewritten (see "Combined kit" above) to cover every step with something new to see, the squids' among them, at 27 stacks; the regression steps keep their own lines.
+- **Owner's test steps:** none new; the steps of each commit above stand, with the combined kit.
