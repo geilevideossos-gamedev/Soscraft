@@ -1,23 +1,31 @@
 use crate::client_mobs::ClientMobs;
-use crate::families::{FamilyDraw, FamilyShow, TerrainFamily};
+use crate::families::{ClientFx, FamilyDraw, FamilyShow, TerrainFamily};
 use crate::item_nbt::stack_tag;
 use crate::keyframes;
 use crate::lighting::SkyLight;
 use crate::mesh::Atlas;
 use crate::piglin_save::stack_of;
+use glam::{DVec3, Vec3};
 use minecraftoss_core::nbt::Tag;
 use minecraftoss_entities::age::Age;
+use minecraftoss_entities::enderman::view_vector;
 use minecraftoss_entities::gossip::{uuid_from_ints, uuid_to_ints};
 use minecraftoss_entities::world::families::FamilyMob;
 pub use minecraftoss_entities::world::families::land::foxes::Fox;
 use minecraftoss_entities::world::families::land::foxes::{
     self, CROUCHING, FoxVariant, SITTING, SLEEPING,
 };
+use minecraftoss_player::mth;
+use minecraftoss_player::rng::LegacyRandom;
 use std::collections::BTreeMap;
 
 mod render;
 
 pub const SHADOW_RADIUS: f32 = 0.4;
+pub const EAT_VALUE: usize = 0;
+pub const CRUMBS: usize = 8;
+pub const CRUMB_BURSTS: i32 = 4;
+const DEGREES: f32 = 0.017453292;
 const MAINHAND: &str = "mainhand";
 const SAVED_FLAGS: [(&str, u8); 3] = [
     ("Sleeping", SLEEPING),
@@ -36,6 +44,42 @@ fn uuid_of(tag: &Tag) -> Option<u128> {
 
 fn uuid_tag(uuid: u128) -> Tag {
     Tag::IntArray(uuid_to_ints(uuid).to_vec())
+}
+
+fn x_rot(v: DVec3, angle: f32) -> DVec3 {
+    let (cos, sin) = (
+        f64::from(mth::cos(f64::from(angle))),
+        f64::from(mth::sin(f64::from(angle))),
+    );
+    DVec3::new(v.x, v.y * cos + v.z * sin, v.z * cos - v.y * sin)
+}
+
+fn y_rot(v: DVec3, angle: f32) -> DVec3 {
+    let (cos, sin) = (
+        f64::from(mth::cos(f64::from(angle))),
+        f64::from(mth::sin(f64::from(angle))),
+    );
+    DVec3::new(v.x * cos + v.z * sin, v.y, v.z * cos - v.x * sin)
+}
+
+pub fn eating_crumbs(
+    item: &str,
+    position: DVec3,
+    (pitch, yaw): (f32, f32),
+    random: &mut LegacyRandom,
+) -> (String, DVec3, Vec<Vec3>) {
+    let look = view_vector(pitch, yaw);
+    let at = DVec3::new(position.x + look.x / 2.0, position.y, position.z + look.z / 2.0);
+    let velocities = (0..CRUMBS)
+        .map(|_| {
+            let x = (f64::from(random.next_float()) - 0.5) * 0.1;
+            let y = f64::from(random.next_float()) * 0.1 + 0.1;
+            let pitched = x_rot(DVec3::new(x, y, 0.0), -pitch * DEGREES);
+            let v = y_rot(pitched, -yaw * DEGREES);
+            Vec3::new(v.x as f32, (v.y + 0.05) as f32, v.z as f32)
+        })
+        .collect();
+    (item.to_owned(), at, velocities)
 }
 
 impl TerrainFamily for Fox {
@@ -122,14 +166,17 @@ impl TerrainFamily for Fox {
     }
 
     fn show(mob: &FamilyMob<Self>) -> FamilyShow {
-        FamilyShow {
+        let mut show = FamilyShow {
             flags: u32::from(mob.state.flags()),
             ..FamilyShow::default()
-        }
+        };
+        show.values[EAT_VALUE] = mob.state.eat_events.unwrap_or(0) as i32;
+        show
     }
 
     fn show_on(mob: &mut FamilyMob<Self>, show: &FamilyShow) {
         mob.state.goals_mut().flags = show.flags as u8;
+        mob.state.eat_events = Some(show.values[EAT_VALUE] as u32);
         mob.state.step_angles();
     }
 
@@ -144,6 +191,25 @@ impl TerrainFamily for Fox {
         let walk = render::baby_walk(keyframes::shared());
         let shown = mobs.iter().filter(|mob| !mob.core.removed);
         render::append_foxes(out, shown, poses, atlas, light, partial, walk.as_deref());
+    }
+
+    fn client_effects(mobs: &[FamilyMob<Self>], poses: &ClientMobs, fx: &mut ClientFx<'_>) {
+        for mob in mobs.iter().filter(|mob| !mob.core.removed) {
+            let Some(events) = mob.state.eat_events else {
+                continue;
+            };
+            let last = fx.seen.insert(mob.core.id, events as i32);
+            let bursts = last.map_or(0, |last| (events as i32).wrapping_sub(last));
+            let held = mob.state.held.as_ref();
+            let (Some(held), Some(shown)) = (held, poses.get(mob.core.id)) else {
+                continue;
+            };
+            let turns = (shown.x_rot, shown.y_rot);
+            for _ in 0..bursts.clamp(0, CRUMB_BURSTS) {
+                let crumbs = eating_crumbs(&held.id, shown.position, turns, fx.random);
+                fx.item_crumbs.push(crumbs);
+            }
+        }
     }
 }
 
@@ -406,5 +472,111 @@ mod tests {
             "it runs from the player: {}",
             mob.core.body.position
         );
+    }
+
+    fn fox_mut(world: &mut EntityWorld, id: u64) -> &mut FamilyMob<Fox> {
+        world.family_mob_mut::<Fox>(id).unwrap()
+    }
+
+    struct Viewer {
+        ambient: crate::ambient_particles::AmbientParticles,
+        spell: crate::spell_particles::SpellParticles,
+        portal: crate::portal_particles::PortalParticles,
+        poof: crate::poof_particles::PoofParticles,
+        item_crumbs: Vec<(String, DVec3, Vec<Vec3>)>,
+        sounds: Vec<(String, DVec3, f32, f32)>,
+        random: minecraftoss_player::rng::LegacyRandom,
+        seen: HashMap<u64, i32>,
+    }
+
+    impl Viewer {
+        fn new(seed: u64) -> Self {
+            Self {
+                ambient: crate::ambient_particles::AmbientParticles::new(seed),
+                spell: crate::spell_particles::SpellParticles::new(seed),
+                portal: Default::default(),
+                poof: Default::default(),
+                item_crumbs: Vec::new(),
+                sounds: Vec::new(),
+                random: minecraftoss_player::rng::LegacyRandom::new(seed),
+                seen: HashMap::new(),
+            }
+        }
+
+        fn crumbs(
+            &mut self,
+            world: &EntityWorld,
+            poses: &ClientMobs,
+        ) -> Vec<(String, DVec3, Vec<Vec3>)> {
+            let mut fx = ClientFx {
+                ambient: &mut self.ambient,
+                spell: &mut self.spell,
+                portal: &mut self.portal,
+                poof: &mut self.poof,
+                item_crumbs: &mut self.item_crumbs,
+                sounds: &mut self.sounds,
+                random: &mut self.random,
+                seen: &mut self.seen,
+            };
+            crate::families::client_effects(world, poses, &mut fx);
+            std::mem::take(&mut self.item_crumbs)
+        }
+    }
+
+    #[test]
+    fn a_friend_sees_fox_crumbs() {
+        let mut host = EntityWorld::default();
+        let tag = parse(
+            "{id:\"minecraft:fox\",Pos:[1.5d,64.0d,2.5d],Rotation:[90.0f,0.0f],NoAI:1b,equipment:{mainhand:{id:\"minecraft:sweet_berries\",count:1}}}",
+        );
+        let id = spawn_saved(&mut host, &tag).unwrap();
+        let saved = saved_tag(&host, id, Some(tag));
+        let mut friend = EntityWorld::default();
+        assert!(spawn_tracked(&mut friend, id, &saved));
+        let mut poses = ClientMobs::default();
+        poses.spawn_missing(&crate::client_mobs::server_mobs(&host));
+        let mut viewers = [Viewer::new(3), Viewer::new(4)];
+        let mut fired = [Vec::new(), Vec::new()];
+        let events = [0, 0, 1, 1, 1, 2, 4, 4, 5];
+        for (step, events) in events.into_iter().enumerate() {
+            fox_mut(&mut host, id).state.eat_events = Some(events);
+            let show = shows(&host)[&id].family.unwrap();
+            assert_eq!(show.values[EAT_VALUE], events as i32);
+            Fox::show_on(fox_mut(&mut friend, id), &show);
+            for (index, world) in [&host, &friend].into_iter().enumerate() {
+                for (item, at, velocities) in viewers[index].crumbs(world, &poses) {
+                    fired[index].push(step);
+                    assert_eq!((item.as_str(), velocities.len()), ("minecraft:sweet_berries", CRUMBS));
+                    let look = view_vector(0.0, 90.0);
+                    let mouth = DVec3::new(1.5 + look.x / 2.0, 64.0, 2.5 + look.z / 2.0);
+                    assert!(at.distance(mouth) < 1e-9, "{at}");
+                    for v in velocities {
+                        assert!((0.15..=0.25).contains(&v.y), "{v}");
+                        assert!(v.z.abs() <= 0.05 && v.x.abs() <= 1e-3, "{v}");
+                    }
+                }
+            }
+        }
+        assert_eq!(fired[0], [2, 5, 6, 6, 8], "one burst for each event");
+        assert_eq!(fired[1], fired[0], "the friend sees the same bursts");
+
+        assert!(spawn_tracked(&mut friend, id, &saved), "a new look");
+        assert_eq!(fox(&friend, id).state.eat_events, None);
+        assert!(viewers[1].crumbs(&friend, &poses).is_empty(), "not shown yet");
+        let show = shows(&host)[&id].family.unwrap();
+        Fox::show_on(fox_mut(&mut friend, id), &show);
+        assert!(viewers[1].crumbs(&friend, &poses).is_empty(), "no old events again");
+        fox_mut(&mut host, id).state.eat_events = Some(6);
+        let show = shows(&host)[&id].family.unwrap();
+        Fox::show_on(fox_mut(&mut friend, id), &show);
+        assert_eq!(viewers[1].crumbs(&friend, &poses).len(), 1);
+
+        fox_mut(&mut friend, id).state.held = None;
+        fox_mut(&mut friend, id).state.eat_events = Some(7);
+        assert!(viewers[1].crumbs(&friend, &poses).is_empty(), "an empty mouth");
+        fox_mut(&mut host, id).state.eat_events = Some(0);
+        assert!(viewers[0].crumbs(&host, &poses).is_empty(), "a reloaded fox");
+        fox_mut(&mut host, id).state.eat_events = Some(1);
+        assert_eq!(viewers[0].crumbs(&host, &poses).len(), 1);
     }
 }

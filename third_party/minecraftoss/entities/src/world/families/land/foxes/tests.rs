@@ -20,12 +20,34 @@ struct Den {
     snow: Vec<Pos>,
     walls: Vec<Pos>,
     effects: Vec<Pos>,
+    items: Vec<WorldItem>,
+    next_item: i32,
+    thrown: Vec<(i32, DVec3, i32)>,
 }
+
+const ITEM_SIZE: f64 = 0.25;
+const EMERALD: &str = "minecraft:emerald";
+const FEATHER: &str = "minecraft:feather";
+const SWEET_BERRIES: &str = "minecraft:sweet_berries";
+const GLOW_BERRIES: &str = "minecraft:glow_berries";
 
 impl Den {
     fn roofed(&self, x: i32, z: i32) -> bool {
         self.roof
             .is_some_and(|[x0, z0, x1, z1]| (x0..=x1).contains(&x) && (z0..=z1).contains(&z))
+    }
+
+    fn drop_item(&mut self, position: DVec3, item: &str, count: i32, pickup_delay: i32) -> i32 {
+        self.next_item += 1;
+        self.items.push(WorldItem {
+            id: self.next_item,
+            position,
+            item: item.to_owned(),
+            count,
+            components: None,
+            pickup_delay,
+        });
+        self.next_item
     }
 }
 
@@ -85,6 +107,36 @@ impl World for Den {
 
     fn destroy_effect(&mut self, pos: Pos) {
         self.effects.push(pos);
+    }
+
+    fn items_in(&self, min: DVec3, max: DVec3) -> Vec<WorldItem> {
+        let half = ITEM_SIZE / 2.0;
+        let touches = |p: DVec3| {
+            p.x + half > min.x
+                && p.x - half < max.x
+                && p.y + ITEM_SIZE > min.y
+                && p.y < max.y
+                && p.z + half > min.z
+                && p.z - half < max.z
+        };
+        let near = self.items.iter().filter(|item| touches(item.position));
+        near.cloned().collect()
+    }
+
+    fn item(&self, id: i32) -> Option<WorldItem> {
+        self.items.iter().find(|item| item.id == id).cloned()
+    }
+
+    fn take_item(&mut self, id: i32, count: i32) {
+        if let Some(item) = self.items.iter_mut().find(|item| item.id == id) {
+            item.count -= count;
+        }
+        self.items.retain(|item| item.count > 0);
+    }
+
+    fn spawn_item(&mut self, position: DVec3, stack: &ItemStack, velocity: DVec3, delay: i32) {
+        let id = self.drop_item(position, &stack.id, i32::from(stack.count), delay);
+        self.thrown.push((id, velocity, delay));
     }
 }
 
@@ -268,11 +320,12 @@ fn a_fox_is_small_with_ten_health_and_its_kind() {
     assert_eq!(adult.table, Some(KIND), "the empty entities/fox");
     assert!((1..=3).contains(&adult.experience), "{}", adult.experience);
     let held: Vec<_> = adult
-        .equipment
+        .always_drops
         .iter()
         .map(|stack| stack.id.as_str())
         .collect();
     assert_eq!(held, ["minecraft:emerald"], "the mouth item drops");
+    assert!(adult.equipment.is_empty());
     let cub = deaths.iter().find(|d| d.id == cub).unwrap();
     assert_eq!((cub.table, cub.experience), (None, 0));
 }
@@ -1107,4 +1160,253 @@ fn a_blocked_pounce_paths_instead() {
     assert!(melee, "it runs at its prey");
     assert!(chicken_health(&world, chicken) <= 0.0, "and bites it dead");
     assert_eq!(heard, 2, "two bites of two for a chicken of four");
+}
+
+fn idle_fox(world: &mut EntityWorld, position: DVec3, held: Option<&str>) -> u64 {
+    let id = fox_at(world, position);
+    let mob = fox_mut(world, id);
+    mob.state.ai.retain_goals(&[]);
+    mob.state.held = held.map(|item| ItemStack::new(item, 1));
+    id
+}
+
+fn sounds_of(world: &mut EntityWorld, event: &str) -> Vec<(f32, f32)> {
+    let sounds = world.take_sounds().into_iter();
+    let heard = sounds.filter(|sound| sound.event == event);
+    heard.map(|sound| (sound.volume, sound.pitch)).collect()
+}
+
+#[test]
+fn a_fox_picks_up_only_with_mob_griefing() {
+    let picks = |griefing: bool, loot: bool, delay: i32| {
+        let mut den = Den::default();
+        let mut world = EntityWorld::default();
+        world.set_mob_griefing(griefing);
+        let id = idle_fox(&mut world, at(0.5, 0.5), None);
+        fox_mut(&mut world, id).state.can_pick_up_loot = loot;
+        let emerald = den.drop_item(at(1.6, 0.5), EMERALD, 1, delay);
+        world.tick(&mut den);
+        let held = fox(&world, id).state.held.clone();
+        (held.map(|stack| (stack.id, stack.count)), den.item(emerald).is_some())
+    };
+    assert_eq!(picks(true, true, 0), (Some((EMERALD.to_owned(), 1)), false));
+    assert_eq!(picks(false, true, 0), (None, true), "no mob_griefing");
+    assert_eq!(picks(true, false, 0), (None, true), "CanPickUpLoot false");
+    assert_eq!(picks(true, true, 5), (None, true), "a pickup delay");
+
+    let mut den = Den::default();
+    let mut world = EntityWorld::default();
+    let id = idle_fox(&mut world, at(0.5, 0.5), None);
+    let wheat = den.drop_item(at(0.5, 1.4), "minecraft:wheat", 5, 0);
+    world.tick(&mut den);
+    let state = &fox(&world, id).state;
+    let held = state.held.as_ref().map(|stack| (stack.id.as_str(), stack.count));
+    assert_eq!(held, Some(("minecraft:wheat", 1)));
+    assert_eq!((state.drop_chance, state.ticks_since_eaten), (GUARANTEED_DROP, 0));
+    assert!(den.item(wheat).is_none(), "the picked stack is gone");
+    let [(rest, velocity, delay)] = den.thrown[..] else {
+        panic!("{:?}", den.thrown);
+    };
+    let rest = den.item(rest).unwrap();
+    assert_eq!((rest.item.as_str(), rest.count, delay), ("minecraft:wheat", 4, 0));
+    assert_eq!(rest.position, fox(&world, id).core.body.position);
+    assert_eq!(velocity.y, 0.2);
+    assert!(velocity.x.abs() <= 0.1 && velocity.z.abs() <= 0.1);
+    assert!(sounds_of(&mut world, SPIT_SOUND).is_empty(), "nothing to spit");
+
+    let mut den = Den::default();
+    let mut world = EntityWorld::default();
+    let id = fox_at(&mut world, at(0.5, 0.5));
+    let ai = &mut fox_mut(&mut world, id).state.ai;
+    ai.retain_goals(&["FoxSearchForItemsGoal"]);
+    let emerald = den.drop_item(at(5.5, 0.5), EMERALD, 1, 0);
+    let mut searched = false;
+    for _ in 0..200 {
+        world.tick(&mut den);
+        searched |= runs(&world, id, "FoxSearchForItemsGoal");
+        if den.item(emerald).is_none() {
+            break;
+        }
+    }
+    assert!(searched, "it goes for the emerald");
+    let held = fox(&world, id).state.held.as_ref().map(|stack| stack.id.as_str());
+    assert_eq!(held, Some(EMERALD), "and carries it");
+
+    let mut den = Den::default();
+    let mut world = EntityWorld::default();
+    let id = fox_at(&mut world, at(0.5, 0.5));
+    let mob = fox_mut(&mut world, id);
+    mob.state.ai.retain_goals(&["FoxSearchForItemsGoal"]);
+    mob.state.held = Some(ItemStack::new(FEATHER, 1));
+    den.drop_item(at(5.5, 0.5), EMERALD, 1, 0);
+    for _ in 0..200 {
+        world.tick(&mut den);
+        assert!(!runs(&world, id, "FoxSearchForItemsGoal"), "its mouth is full");
+    }
+}
+
+#[test]
+fn a_fox_spits_a_non_food_item_for_food() {
+    let mut den = Den::default();
+    let mut world = EntityWorld::default();
+    let id = idle_fox(&mut world, at(0.5, 0.5), Some(EMERALD));
+    let berries = den.drop_item(at(1.5, 0.5), SWEET_BERRIES, 3, 0);
+    world.tick(&mut den);
+    assert_eq!(sounds_of(&mut world, SPIT_SOUND), [(1.0, 1.0)]);
+    let mob = fox(&world, id);
+    let held = mob.state.held.as_ref().map(|stack| (stack.id.as_str(), stack.count));
+    assert_eq!(held, Some((SWEET_BERRIES, 1)), "food for the emerald");
+    assert!(den.item(berries).is_none());
+    let thrown: Vec<WorldItem> = den.thrown.iter().map(|&(item, _, _)| den.item(item).unwrap()).collect();
+    let delays: Vec<i32> = den.thrown.iter().map(|&(_, _, delay)| delay).collect();
+    assert_eq!(delays, [0, SPIT_DELAY], "the rest, then the spat emerald");
+    assert_eq!((thrown[0].item.as_str(), thrown[0].count), (SWEET_BERRIES, 2));
+    assert_eq!((thrown[1].item.as_str(), thrown[1].count), (EMERALD, 1));
+    let p = mob.core.body.position;
+    let look = view_vector(mob.core.look.pitch, mob.core.yaw);
+    let mouth = p + DVec3::new(look.x, 1.0, look.z);
+    assert!(thrown[1].position.distance(mouth) < 1e-9, "{}", thrown[1].position);
+    assert!((thrown[1].position - p).length() > 1.0);
+
+    let glow = den.drop_item(at(0.5, 1.2), GLOW_BERRIES, 1, 0);
+    let rest = den.thrown[0].0;
+    for _ in 0..5 {
+        world.tick(&mut den);
+        let held = fox(&world, id).state.held.as_ref().map(|stack| stack.id.as_str());
+        assert_eq!(held, Some(SWEET_BERRIES), "food is not spat for food");
+    }
+    assert!(den.item(glow).is_some() && den.item(rest).is_some());
+
+    let mut world = EntityWorld::default();
+    let id = idle_fox(&mut world, at(20.5, 0.5), Some(SWEET_BERRIES));
+    let mut den = Den::default();
+    let emerald = den.drop_item(at(20.5, 1.2), EMERALD, 1, 0);
+    world.tick(&mut den);
+    let held = fox(&world, id).state.held.as_ref().map(|stack| stack.id.as_str());
+    assert_eq!(held, Some(SWEET_BERRIES), "nor for an emerald");
+    assert!(den.item(emerald).is_some());
+
+    let mob = fox(&world, id);
+    let mut fresh = mob.state.clone();
+    fresh.held = Some(ItemStack::new(EMERALD, 1));
+    fresh.ticks_since_eaten = 0;
+    assert!(!fresh.can_hold_item(SWEET_BERRIES), "not on the tick it took one");
+    fresh.ticks_since_eaten = 1;
+    assert!(fresh.can_hold_item(SWEET_BERRIES) && !fresh.can_hold_item(FEATHER));
+    fresh.held = None;
+    assert!(fresh.can_hold_item(FEATHER), "an empty mouth takes anything");
+}
+
+#[test]
+fn a_fox_eats_its_food_after_600_ticks_with_crumbs_from_560() {
+    let mut den = Den::default();
+    let mut world = EntityWorld::default();
+    let foxes: Vec<u64> = (0..8)
+        .map(|i| idle_fox(&mut world, at(0.5 + 4.0 * f64::from(i), 0.5), Some(SWEET_BERRIES)))
+        .collect();
+    let mut chews = 0;
+    for tick in 1..=600 {
+        let before: Vec<u32> = foxes.iter().map(|&id| fox(&world, id).state.eat_events.unwrap_or(0)).collect();
+        world.tick(&mut den);
+        let after: Vec<u32> = foxes.iter().map(|&id| fox(&world, id).state.eat_events.unwrap_or(0)).collect();
+        let chewed: u32 = after.iter().zip(&before).map(|(a, b)| a - b).sum();
+        assert!(chewed == 0 || tick > 560, "tick {tick}");
+        let heard = sounds_of(&mut world, EAT_SOUND);
+        assert_eq!(heard.len() as u32, chewed, "tick {tick}");
+        assert!(heard.iter().all(|&sound| sound == (1.0, 1.0)));
+        chews += chewed;
+        for &id in &foxes {
+            assert!(fox(&world, id).state.held.is_some(), "still in its mouth at {tick}");
+        }
+    }
+    assert!((8..=60).contains(&chews), "{chews} chews in 40 ticks of 8 foxes");
+    world.tick(&mut den);
+    for &id in &foxes {
+        let state = &fox(&world, id).state;
+        assert_eq!((state.held.as_ref(), state.ticks_since_eaten), (None, 0), "eaten");
+    }
+    let eaten = sounds_of(&mut world, "entity.generic.eat");
+    assert_eq!(eaten.len(), 16, "two sounds a fox");
+    for pair in eaten.chunks(2) {
+        let [(volume, pitch), (full, swallow)] = pair else {
+            unreachable!()
+        };
+        assert!(*volume == 0.5 || *volume == 1.0);
+        assert!((0.8..=1.2).contains(pitch) && *full == 1.0);
+        assert!((0.6..=1.4).contains(swallow));
+    }
+
+    let finish = |held: &str, setup: &dyn Fn(&mut FamilyMob<Fox>)| {
+        let mut den = Den::default();
+        let mut world = EntityWorld::default();
+        let id = idle_fox(&mut world, at(0.5, 0.5), Some(held));
+        let mob = fox_mut(&mut world, id);
+        mob.state.ticks_since_eaten = 600;
+        setup(mob);
+        world.tick(&mut den);
+        let state = &fox(&world, id).state;
+        let left = state.held.as_ref().map(|stack| stack.id.clone());
+        let ticks = state.ticks_since_eaten;
+        (left, ticks, world.take_sounds())
+    };
+    let (left, _, sounds) = finish("minecraft:mushroom_stew", &|_: &mut FamilyMob<Fox>| {});
+    assert_eq!(left.as_deref(), Some("minecraft:bowl"), "the bowl stays");
+    assert_eq!(sounds.iter().filter(|s| s.event == "entity.generic.eat").count(), 2);
+    let (left, _, sounds) = finish("minecraft:honey_bottle", &|_: &mut FamilyMob<Fox>| {});
+    assert_eq!(left.as_deref(), Some("minecraft:glass_bottle"));
+    let drinks: Vec<f32> = sounds.iter().filter(|s| s.event == "item.honey_bottle.drink").map(|s| s.volume).collect();
+    assert_eq!(drinks, [0.5, 1.0]);
+    let (left, ticks, _) = finish(EMERALD, &|_: &mut FamilyMob<Fox>| {});
+    assert_eq!((left.as_deref(), ticks), (Some(EMERALD), 601), "an emerald is no food");
+    let hunting = |mob: &mut FamilyMob<Fox>| mob.state.ai.state.target = Some(Target::Player(1));
+    let (left, ticks, _) = finish(SWEET_BERRIES, &hunting);
+    assert_eq!((left.as_deref(), ticks), (Some(SWEET_BERRIES), 601), "not with a target");
+    let asleep = |mob: &mut FamilyMob<Fox>| mob.state.set_flag(SLEEPING, true);
+    let (left, _, _) = finish(SWEET_BERRIES, &asleep);
+    assert_eq!(left.as_deref(), Some(SWEET_BERRIES), "not asleep");
+    let still = |mob: &mut FamilyMob<Fox>| mob.core.no_ai = true;
+    let (left, ticks, _) = finish(SWEET_BERRIES, &still);
+    assert_eq!((left.as_deref(), ticks), (Some(SWEET_BERRIES), 600), "not without AI");
+    let two = |mob: &mut FamilyMob<Fox>| mob.state.held.as_mut().unwrap().count = 2;
+    let (left, _, _) = finish(SWEET_BERRIES, &two);
+    assert_eq!(left.as_deref(), Some(SWEET_BERRIES), "one of two eaten");
+}
+
+#[test]
+fn a_dead_fox_drops_what_it_held_even_without_mob_loot() {
+    for mob_drops in [true, false] {
+        let mut world = EntityWorld::default();
+        world.set_mob_drops(mob_drops);
+        let adult = fox_at(&mut world, at(0.5, 0.5));
+        let cub = cub_at(&mut world, at(10.5, 0.5));
+        let empty = fox_at(&mut world, at(20.5, 0.5));
+        fox_mut(&mut world, adult).state.held = Some(ItemStack::new(EMERALD, 1));
+        fox_mut(&mut world, cub).state.held = Some(ItemStack::new(FEATHER, 1));
+        for id in [adult, cub, empty] {
+            let attack = PlayerAttack {
+                player_id: 1,
+                position: fox(&world, id).core.body.position - DVec3::Z,
+                yaw: 0.0,
+                attack_damage: 100.0,
+                strength: 1.0,
+                sprinting: false,
+                can_critical: false,
+                can_sweep: false,
+            };
+            assert!(world.player_attack(&attack, id).died);
+        }
+        let deaths = world.take_deaths();
+        let death = |id: u64| deaths.iter().find(|d| d.id == id).unwrap();
+        let dropped = |id: u64| {
+            let always = death(id).always_drops.iter();
+            always.map(|stack| stack.id.as_str()).collect::<Vec<_>>()
+        };
+        assert_eq!(dropped(adult), [EMERALD], "mob_drops {mob_drops}");
+        assert_eq!(dropped(cub), [FEATHER], "a cub's too");
+        assert!(dropped(empty).is_empty());
+        for id in [adult, cub, empty] {
+            assert!(death(id).equipment.is_empty());
+            assert!(fox(&world, id).state.held.is_none(), "its mouth is empty");
+        }
+    }
 }

@@ -26,7 +26,7 @@ use crate::world::{MonsterStep, Voice};
 use glam::DVec3;
 use minecraftoss_player::path_type::PathType;
 use minecraftoss_player::rng::LegacyRandom;
-use minecraftoss_player::{Pos, World, jmath};
+use minecraftoss_player::{Pos, World, WorldItem, jmath};
 
 pub const SITTING: u8 = 1;
 pub const CROUCHING: u8 = 4;
@@ -91,6 +91,9 @@ pub const MELEE_SPEED: f64 = 1.2000000476837158;
 pub const LEAP_LIFT: f32 = 0.4;
 pub const LAND_INTERVAL: u32 = 10;
 pub const FISH_INTERVAL: u32 = 20;
+pub const SEARCH_INTERVAL: u32 = 10;
+pub const SEARCH_RANGE: f64 = 8.0;
+pub const FETCH_SPEED: f64 = 1.2000000476837158;
 pub const PLAYER: &str = "minecraft:player";
 pub const WOLF: &str = "minecraft:wolf";
 pub const POLAR_BEAR: &str = "minecraft:polar_bear";
@@ -104,7 +107,7 @@ pub const FISH_PREY: [&str; 3] = [
     "minecraft:tropical_fish",
 ];
 
-pub const GOAL_NAMES: [&str; 18] = [
+pub const GOAL_NAMES: [&str; 19] = [
     "FoxFloatGoal",
     "ClimbOnTopOfPowderSnowGoal",
     "FaceplantGoal",
@@ -121,6 +124,7 @@ pub const GOAL_NAMES: [&str; 18] = [
     "FoxStrollThroughVillageGoal",
     "LeapAtTargetGoal",
     "WaterAvoidingRandomStrollGoal",
+    "FoxSearchForItemsGoal",
     "FoxLookAtPlayerGoal",
     "PerchAndSearchGoal",
 ];
@@ -151,6 +155,7 @@ pub struct FoxGoals {
     pub crouch_amount: f32,
     pub uncrouched: bool,
     pub bit: bool,
+    pub holding: bool,
 }
 
 impl FoxGoals {
@@ -232,6 +237,7 @@ fn goals() -> GoalSelector<MonsterGoalContext> {
     selector.add(9, FoxStrollThroughVillageGoal::default());
     selector.add(10, LeapGoal::new(LEAP_LIFT));
     selector.add(11, StrollGoal::new(STROLL_SPEED, STROLL_PROBABILITY));
+    selector.add(11, FoxSearchForItemsGoal);
     selector.add(
         12,
         FoxLookAtPlayerGoal(LookAtPlayerGoal { range: LOOK_RANGE }),
@@ -1186,6 +1192,66 @@ impl Goal<MonsterGoalContext> for FoxStrollThroughVillageGoal {
         let x = block_of(p).0 - 8 + ctx.random.next_int(spread) as i32;
         let z = block_of(p).2 - 8 + ctx.random.next_int(spread) as i32;
         Self::walk_to(ctx, world, (x, 0, z));
+    }
+}
+
+pub fn items_near(world: &dyn World, body: &Body) -> Vec<WorldItem> {
+    let p = body.position;
+    let half = f64::from(body.width / 2.0) + SEARCH_RANGE;
+    let min = DVec3::new(p.x - half, p.y - SEARCH_RANGE, p.z - half);
+    let top = p.y + f64::from(body.height) + SEARCH_RANGE;
+    let max = DVec3::new(p.x + half, top, p.z + half);
+    let mut items = world.items_in(min, max);
+    items.retain(|item| item.count > 0 && item.pickup_delay <= 0);
+    items
+}
+
+#[derive(Clone)]
+struct FoxSearchForItemsGoal;
+
+impl FoxSearchForItemsGoal {
+    fn fetch(ctx: &mut MonsterGoalContext, world: &dyn World) {
+        let Some(item) = items_near(world, &ctx.body).into_iter().next() else {
+            return;
+        };
+        let profile = ctx.profile();
+        navigate_walk_to_entity(
+            &ctx.body,
+            &mut ctx.navigation,
+            world,
+            &profile,
+            ctx.fluid,
+            item.position,
+            FETCH_SPEED,
+            1,
+        );
+    }
+}
+
+impl Goal<MonsterGoalContext> for FoxSearchForItemsGoal {
+    fn controls(&self) -> Controls {
+        Controls::new(&[Control::Move])
+    }
+
+    fn can_start(&mut self, ctx: &mut MonsterGoalContext, world: &dyn World) -> bool {
+        let Some(goals) = fox(ctx) else {
+            return false;
+        };
+        if goals.holding || ctx.target.is_some() || ctx.hurt_by.is_some() || !goals.can_move() {
+            return false;
+        }
+        let interval = reduced_tick_delay(SEARCH_INTERVAL);
+        ctx.random.next_int(interval) == 0 && !items_near(world, &ctx.body).is_empty()
+    }
+
+    fn start_world(&mut self, ctx: &mut MonsterGoalContext, world: &dyn World) {
+        Self::fetch(ctx, world);
+    }
+
+    fn tick_world(&mut self, ctx: &mut MonsterGoalContext, world: &dyn World) {
+        if !fox(ctx).is_some_and(|goals| goals.holding) {
+            Self::fetch(ctx, world);
+        }
     }
 }
 

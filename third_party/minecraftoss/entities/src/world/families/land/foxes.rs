@@ -6,6 +6,7 @@ pub use self::ai::{
 };
 use self::ai::{SPEC, block_of, fox_ai_step, held_still};
 use crate::age::Age;
+use crate::enderman::view_vector;
 use crate::follow_parent::CowCandidate;
 use crate::health::DamageResult;
 use crate::monster_ai::{MonsterAi, MonsterKind, Target};
@@ -16,9 +17,10 @@ use crate::world::families::land::animal_goals::LAST_DAMAGE_TICKS;
 use crate::world::families::{Family, FamilyMob, Hurt, MobCore, MonsterSpec};
 use crate::world::{EntityWorld, PLAYER_TARGET, PlayerHitKind, Voice};
 use glam::DVec3;
-use minecraftoss_player::World;
+use minecraftoss_player::food;
 use minecraftoss_player::inventory::ItemStack;
 use minecraftoss_player::rng::LegacyRandom;
+use minecraftoss_player::{World, WorldItem};
 
 pub const KIND: &str = "minecraft:fox";
 pub const WIDTH: f32 = 0.6;
@@ -51,6 +53,17 @@ pub const SCREECH_SOUND: &str = "entity.fox.screech";
 pub const AGGRO_SOUND: &str = "entity.fox.aggro";
 pub const BITE_SOUND: &str = "entity.fox.bite";
 pub const FACEPLANT_BURST_CHANCE: f32 = 0.2;
+pub const GUARANTEED_DROP: f32 = 2.0;
+pub const PICKUP_REACH: f64 = 1.0;
+pub const SPIT_DELAY: i32 = 40;
+pub const SPIT_SOUND: &str = "entity.fox.spit";
+pub const EAT_SOUND: &str = "entity.fox.eat";
+pub const EAT_TICKS: i32 = 600;
+pub const CHEW_TICKS: i32 = 560;
+pub const CHEW_CHANCE: f32 = 0.1;
+pub const CONSUME_PARTICLE_DRAWS: usize = 16 * 4;
+pub const CONSUME_SOUNDS: [&str; 2] = ["entity.generic.eat", "item.honey_bottle.drink"];
+pub const DRINK: &str = "DRINK";
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum FoxVariant {
@@ -91,6 +104,7 @@ pub struct Fox {
     pub drop_chance: f32,
     pub can_pick_up_loot: bool,
     pub ticks_since_eaten: i32,
+    pub eat_events: Option<u32>,
     pub age: Age,
     pub in_love: i32,
     pub love_cause: Option<u128>,
@@ -148,6 +162,13 @@ impl Fox {
         self.goals_mut().hunts.get_or_insert(variant);
     }
 
+    pub fn can_hold_item(&self, item: &str) -> bool {
+        let Some(held) = self.held.as_ref() else {
+            return true;
+        };
+        self.ticks_since_eaten > 0 && is_consumable_food(item) && !is_consumable_food(&held.id)
+    }
+
     pub fn trusts(&self, uuid: u128) -> bool {
         self.trusted.contains(&uuid)
     }
@@ -190,6 +211,10 @@ pub fn set_baby(mob: &mut FamilyMob<Fox>, baby: bool) {
     ai.state.walk.height = height;
     ai.state.eye_height = eye;
     mob.state.goals_mut().baby = baby;
+}
+
+pub fn is_consumable_food(item: &str) -> bool {
+    food::catalog().contains_key(item)
 }
 
 fn touches(min: DVec3, max: DVec3, q: DVec3, width: f32, height: f32) -> bool {
@@ -333,8 +358,144 @@ fn screeches(random: &mut LegacyRandom, body: &Body, players: &[PlayerCandidate]
     random.next_float() < SCREECH_CHANCE && !player_within(body, players, SCREECH_REACH)
 }
 
+fn can_eat(mob: &FamilyMob<Fox>) -> bool {
+    let held = mob.state.held.as_ref();
+    let food = held.is_some_and(|held| is_consumable_food(&held.id));
+    let target = mob.state.ai.state.target;
+    food && target.is_none() && mob.core.body.on_ground && !mob.state.sleeping()
+}
+
+fn triangle(random: &mut LegacyRandom, mode: f32, deviation: f32) -> f32 {
+    let (a, b) = (random.next_float(), random.next_float());
+    mode + deviation * (a - b)
+}
+
+fn consume_sound(sound: &str) -> &'static str {
+    let known = CONSUME_SOUNDS.into_iter().find(|known| *known == sound);
+    known.unwrap_or(CONSUME_SOUNDS[0])
+}
+
+fn finish_eating(mob: &mut FamilyMob<Fox>) {
+    let FamilyMob { core, state } = mob;
+    let Some(held) = state.held.as_mut() else {
+        return;
+    };
+    let Some(eaten) = food::catalog().get(&held.id) else {
+        return;
+    };
+    let random = &mut core.random;
+    let quiet = random.next_boolean();
+    let eat_pitch = triangle(random, 1.0, 0.2);
+    let drink_pitch = random.next_float() * (1.0 - 0.9) + 0.9;
+    let (volume, pitch) = if eaten.animation == DRINK {
+        (0.5, drink_pitch)
+    } else {
+        (if quiet { 0.5 } else { 1.0 }, eat_pitch)
+    };
+    if eaten.particles {
+        for _ in 0..CONSUME_PARTICLE_DRAWS {
+            let _ = random.next_float();
+        }
+    }
+    let sound = consume_sound(&eaten.sound);
+    let at = core.body.position;
+    core.voices.push((Voice::Event(sound, volume, pitch), at));
+    let pitch = triangle(&mut core.random, 1.0, 0.4);
+    core.voices.push((Voice::Event(sound, 1.0, pitch), at));
+    held.count = held.count.saturating_sub(1);
+    if held.count == 0 {
+        state.held = eaten.remainder.clone();
+    }
+}
+
+fn eat(mob: &mut FamilyMob<Fox>) {
+    if !can_eat(mob) {
+        return;
+    }
+    if mob.state.ticks_since_eaten > EAT_TICKS {
+        finish_eating(mob);
+        mob.state.ticks_since_eaten = 0;
+    } else if mob.state.ticks_since_eaten > CHEW_TICKS
+        && mob.core.random.next_float() < CHEW_CHANCE
+    {
+        let voice = Voice::Event(EAT_SOUND, 1.0, 1.0);
+        mob.core.voices.push((voice, mob.core.body.position));
+        let events = mob.state.eat_events.get_or_insert(0);
+        *events = events.wrapping_add(1);
+    }
+}
+
+fn throw_item<W: World>(
+    world: &mut EntityWorld,
+    level: &mut W,
+    at: DVec3,
+    stack: &ItemStack,
+    pickup_delay: i32,
+) {
+    let x = world.level_random.next_double() * 0.2 - 0.1;
+    let z = world.level_random.next_double() * 0.2 - 0.1;
+    level.spawn_item(at, stack, DVec3::new(x, 0.2, z), pickup_delay);
+}
+
+fn stack_of(item: &WorldItem, count: i32) -> ItemStack {
+    let mut stack = ItemStack::new(item.item.clone(), count.clamp(1, 255) as u8);
+    stack.components = item.components.clone();
+    stack
+}
+
+fn pick_up_item<W: World>(world: &mut EntityWorld, level: &mut W, id: u64, item: &WorldItem) {
+    let Some(mob) = world.family_mob_mut::<Fox>(id) else {
+        return;
+    };
+    let position = mob.core.body.position;
+    let look = view_vector(mob.core.look.pitch, mob.core.yaw);
+    let spat = mob.state.held.replace(stack_of(item, 1));
+    mob.state.drop_chance = GUARANTEED_DROP;
+    mob.state.ticks_since_eaten = 0;
+    if spat.is_some() {
+        mob.core
+            .voices
+            .push((Voice::Event(SPIT_SOUND, 1.0, 1.0), position));
+    }
+    if item.count > 1 {
+        throw_item(world, level, position, &stack_of(item, item.count - 1), 0);
+    }
+    if let Some(spat) = spat {
+        let mouth = position + DVec3::new(look.x, 1.0, look.z);
+        throw_item(world, level, mouth, &spat, SPIT_DELAY);
+    }
+    level.take_item(item.id, item.count);
+}
+
+fn pick_up<W: World>(world: &mut EntityWorld, level: &mut W, id: u64) {
+    if !world.mob_griefing() {
+        return;
+    }
+    let foxes = world.family::<Fox>();
+    let Some(mob) = foxes.iter().find(|mob| mob.core.id == id) else {
+        return;
+    };
+    if !mob.state.can_pick_up_loot || !mob.core.alive() {
+        return;
+    }
+    let (min, max) = grown_box(&mob.core.body, PICKUP_REACH, 0.0);
+    for near in level.items_in(min, max) {
+        let Some(item) = level.item(near.id) else {
+            continue;
+        };
+        let Some(mob) = world.family_mob_mut::<Fox>(id) else {
+            return;
+        };
+        let ready = item.count > 0 && item.pickup_delay <= 0;
+        if ready && mob.state.can_hold_item(&item.item) {
+            pick_up_item(world, level, id, &item);
+        }
+    }
+}
+
 fn before_step(mob: &mut FamilyMob<Fox>) {
     mob.state.ticks_since_eaten += 1;
+    eat(mob);
     let ai = &mob.state.ai.state;
     let target = ai.target.and_then(|target| ai.info(target));
     if target.is_none_or(|target| !target.alive) {
@@ -457,6 +618,7 @@ impl Family for Fox {
                 drop_chance: DROP_CHANCE,
                 can_pick_up_loot: true,
                 ticks_since_eaten: 0,
+                eat_events: None,
                 age: Age::default(),
                 in_love: 0,
                 love_cause: None,
@@ -482,8 +644,9 @@ impl Family for Fox {
         };
         let bright = world.bright_outside;
         if let Some(mob) = world.family_mob_mut::<Self>(id) {
+            mob.state.eat_events.get_or_insert(0);
             ambient(mob, bright, players);
-            if base.alive {
+            if base.alive && !base.no_ai {
                 before_step(mob);
             }
         }
@@ -501,8 +664,10 @@ impl Family for Fox {
                     .filter(|&(_, at)| tick_count - at <= LAST_DAMAGE_TICKS)
                     .map(|(damage_type, _)| damage_type);
                 let (baby, age) = (mob.core.baby, mob.state.age.ticks);
+                let holding = mob.state.held.is_some();
                 let goals = mob.state.goals_mut();
                 goals.baby = baby;
+                goals.holding = holding;
                 goals.alertable = alertable;
                 goals.unwary = unwary;
                 goals.tame = tame;
@@ -529,6 +694,7 @@ impl Family for Fox {
                 after_step(mob);
             }
         }
+        pick_up(world, level, id);
         world.family_after_move::<Self, W>(id, level, base.game_time, ticks);
         let thundering = level.thundering();
         if let Some(mob) = world.family_mob_mut::<Self>(id) {
@@ -556,7 +722,7 @@ impl Family for Fox {
         result
     }
 
-    fn death_drops(mob: &mut FamilyMob<Self>) -> Vec<ItemStack> {
+    fn always_drops(mob: &mut FamilyMob<Self>) -> Vec<ItemStack> {
         mob.state.held.take().into_iter().collect()
     }
 
