@@ -2,7 +2,7 @@ use crate::client_mobs::{ClientMobs, MobPose, quadruped_legs};
 use crate::families::FamilyDraw;
 use crate::keyframes::{AnimationLibrary, DEGREES, Definition, Moved};
 use crate::lighting::SkyLight;
-use crate::mesh::{Atlas, ChunkMesh};
+use crate::mesh::{Atlas, ChunkMesh, HeldDisplay, HeldItem};
 use crate::pack::ResourceId;
 use crate::posed_cube::{Cube, Skin, append, part_pose};
 use glam::{Mat4, Vec3};
@@ -26,6 +26,13 @@ pub const SLEEPING_HEAD_YAW: f32 = -2.094_395_2;
 pub const CROUCH_TILT: f32 = 0.104_719_76;
 pub const LEG_MOTION_STEP: f32 = 0.67;
 pub const FRAMES_PER_TICK: f32 = 3.0;
+pub const BABY_ITEM_SCALE: f32 = 0.75;
+pub const HELD_AT: [[f32; 3]; 4] = [
+    [0.06, 0.27, -0.5],
+    [0.46, 0.26, 0.22],
+    [0.06, 0.26, -0.5],
+    [0.4, 0.26, 0.15],
+];
 
 pub const TEXTURES: [&str; 8] = [
     "minecraft:entity/fox/fox",
@@ -450,6 +457,27 @@ pub fn model_root(pose: &MobPose, flags: u8) -> Mat4 {
         * Mat4::from_scale(Vec3::new(-1.0, -1.0, 1.0))
 }
 
+pub fn held_at(baby: bool, sleeping: bool) -> Vec3 {
+    Vec3::from_array(HELD_AT[usize::from(baby) * 2 + usize::from(sleeping)])
+}
+
+pub fn held_pose(root: Mat4, model: &Model, parts: &[PartState], stance: &Stance) -> Mat4 {
+    let sleeping = stance.flag(SLEEPING);
+    let mut pose = root * Mat4::from_translation(parts[HEAD].offset / 16.0);
+    if model.baby {
+        pose *= Mat4::from_scale(Vec3::splat(BABY_ITEM_SCALE));
+    }
+    pose *= Mat4::from_rotation_z(stance.head_roll)
+        * Mat4::from_rotation_y(stance.y_rot.to_radians())
+        * Mat4::from_rotation_x(stance.x_rot.to_radians())
+        * Mat4::from_translation(held_at(model.baby, sleeping))
+        * Mat4::from_rotation_x(90.0_f32.to_radians());
+    if sleeping {
+        pose *= Mat4::from_rotation_z(90.0_f32.to_radians());
+    }
+    pose
+}
+
 pub fn stance(pose: &MobPose, fox: &Fox, partial: f32) -> Stance {
     let lerp = |old: f32, now: f32| old + partial * (now - old);
     Stance {
@@ -517,6 +545,15 @@ pub fn append_foxes<'a>(
         let parts = setup_anim(model, &stance, walk);
         let root = model_root(&pose, stance.flags);
         append_model(out.culled, root, model, &parts, &skin);
+        if let Some(stack) = fox.state.held.as_ref() {
+            out.held.push(HeldItem {
+                pose: held_pose(root, model, &parts, &stance),
+                light: pose.light_probe.as_vec3(),
+                id: stack.id.clone(),
+                display: HeldDisplay::Ground,
+                first_tint: None,
+            });
+        }
     }
     crate::cow_render::apply_overlays(out.culled, &marks);
 }
@@ -526,7 +563,6 @@ mod tests {
     use super::*;
     use crate::client_mobs::server_mobs;
     use crate::families::TerrainFamily;
-    use crate::mesh::HeldItem;
     use crate::mob_tracking::{shows, spawn_tracked};
     use crate::server_mobs::{mob_tags, spawn_saved};
     use glam::DVec3;
@@ -1083,6 +1119,122 @@ mod tests {
                 assert_eq!(seen.vertices[0].uv, mesh.vertices[0].uv, "{flags}");
             }
         }
+    }
+
+    fn held_items(held: &[HeldItem]) -> Vec<(String, Mat4, HeldDisplay)> {
+        held.iter()
+            .map(|item| (item.id.clone(), item.pose, item.display))
+            .collect()
+    }
+
+    #[test]
+    fn a_held_item_sits_at_the_mouth_turned_sideways_when_asleep() {
+        assert_eq!(held_at(false, false), Vec3::new(0.06, 0.27, -0.5));
+        assert_eq!(held_at(false, true), Vec3::new(0.46, 0.26, 0.22));
+        assert_eq!(held_at(true, false), Vec3::new(0.06, 0.26, -0.5));
+        assert_eq!(held_at(true, true), Vec3::new(0.4, 0.26, 0.15));
+        let at = |model: &Model, stance: &Stance| {
+            let parts = setup_anim(model, stance, None);
+            held_pose(Mat4::IDENTITY, model, &parts, stance)
+        };
+        let awake = at(&ADULT, &Stance::default());
+        let mouth = awake.transform_point3(Vec3::ZERO) * 16.0;
+        assert!(
+            close(mouth, Vec3::new(-0.04, 20.82, -11.0)),
+            "at the nose tip: {mouth}"
+        );
+        assert!(
+            close(awake.transform_vector3(Vec3::Y), Vec3::Z),
+            "laid flat"
+        );
+        let asleep = at(&ADULT, &with(SLEEPING));
+        let tucked = asleep.transform_point3(Vec3::ZERO) * 16.0;
+        assert!(close(tucked, Vec3::new(8.36, 23.65, 0.52)), "{tucked}");
+        assert!(
+            close(asleep.transform_vector3(Vec3::X), Vec3::Z),
+            "turned on its side"
+        );
+        let cub = at(&BABY, &Stance::default());
+        assert!(near(cub.transform_vector3(Vec3::X).length(), 0.75));
+        let small = cub.transform_point3(Vec3::ZERO) * 16.0;
+        assert!(close(small, Vec3::new(0.72, 21.245, -5.875)), "{small}");
+        let napping = at(&BABY, &with(SLEEPING)).transform_point3(Vec3::ZERO) * 16.0;
+        assert!(close(napping, Vec3::new(2.8, 24.045, -2.075)), "{napping}");
+        let looking = Stance {
+            x_rot: 10.0,
+            y_rot: 30.0,
+            head_roll: 0.2,
+            ..Stance::default()
+        };
+        let parts = setup_anim(&ADULT, &looking, None);
+        let head = part_poses(&ADULT, &parts)[HEAD];
+        let carried = at(&ADULT, &looking).transform_point3(Vec3::ZERO);
+        assert!(
+            close(carried, head.transform_point3(held_at(false, false))),
+            "it turns with the head"
+        );
+
+        let atlas = atlas();
+        let mut world = EntityWorld::default();
+        let tag = parse(
+            "{id:\"minecraft:fox\",Pos:[0.5d,64.0d,0.5d],equipment:{mainhand:{id:\"minecraft:emerald\",count:1}}}",
+        );
+        let id = spawn_saved(&mut world, &tag).unwrap();
+        let (_, held) = drawn(&world, &atlas, 0.0);
+        assert_eq!(held.len(), 1);
+        let item = &held[0];
+        assert_eq!(
+            (item.id.as_str(), item.display, item.first_tint),
+            ("minecraft:emerald", HeldDisplay::Ground, None)
+        );
+        assert!(item.light.abs_diff_eq(Vec3::new(0.5, 64.4, 0.5), 1e-5));
+        let spot = item.pose.transform_point3(Vec3::ZERO);
+        assert!(
+            spot.abs_diff_eq(Vec3::new(0.4975, 64.19975, 1.1875), 1e-3),
+            "in its mouth: {spot}"
+        );
+
+        let originals: HashMap<u64, Tag> = [(id, tag)].into_iter().collect();
+        let mut saved = mob_tags(&world, |_| true, &originals);
+        saved.retain(|(saved, _)| *saved == id);
+        let mut friend = EntityWorld::default();
+        assert!(spawn_tracked(&mut friend, id, &saved.remove(0).1));
+        let (_, seen) = drawn(&friend, &atlas, 0.0);
+        assert_eq!(held_items(&seen), held_items(&held), "the friend sees it");
+        world
+            .family_mob_mut::<Fox>(id)
+            .unwrap()
+            .state
+            .goals_mut()
+            .flags = SLEEPING;
+        let show = shows(&world)[&id].family.unwrap();
+        Fox::show_on(friend.family_mob_mut::<Fox>(id).unwrap(), &show);
+        let (_, sleeping) = drawn(&world, &atlas, 0.5);
+        let (_, seen) = drawn(&friend, &atlas, 0.5);
+        assert_eq!(held_items(&seen), held_items(&sleeping));
+        assert_ne!(
+            held_items(&sleeping),
+            held_items(&held),
+            "laid aside in its sleep"
+        );
+        world.family_mob_mut::<Fox>(id).unwrap().state.held = None;
+        assert!(
+            drawn(&world, &atlas, 0.0).1.is_empty(),
+            "nothing in its mouth"
+        );
+
+        let mut world = EntityWorld::default();
+        spawn_saved(
+            &mut world,
+            &parse(
+                "{id:\"minecraft:fox\",Pos:[0.5d,64.0d,0.5d],Age:-24000,equipment:{mainhand:{id:\"minecraft:feather\",count:1}}}",
+            ),
+        )
+        .unwrap();
+        let (_, held) = drawn(&world, &atlas, 0.0);
+        assert_eq!(held.len(), 1);
+        let size = held[0].pose.transform_vector3(Vec3::X).length();
+        assert!(near(size, 0.75), "a cub carries it smaller: {size}");
     }
 
     fn library() -> Option<AnimationLibrary> {
