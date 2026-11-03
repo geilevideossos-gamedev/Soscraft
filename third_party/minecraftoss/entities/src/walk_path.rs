@@ -43,6 +43,7 @@ pub struct WalkProfile {
     pub distance_xz: bool,
     pub flying: Option<crate::flying::Flight>,
     pub amphibious: Option<bool>,
+    pub home: Option<NodePos>,
     pub sea_level: i32,
 }
 
@@ -87,6 +88,7 @@ impl WalkProfile {
             distance_xz: false,
             flying: None,
             amphibious: None,
+            home: None,
             sea_level: 63,
         };
         profile.set_malus(PathType::FireInNeighbor, 16.0);
@@ -642,7 +644,9 @@ impl<'a, W: World + ?Sized> Evaluator<'a, W> {
         if let Some(&path_type) = self.static_types.get(&pos) {
             return path_type;
         }
-        let path_type = if self.fly.is_some() {
+        let path_type = if self.profile.home.is_some_and(|home| beyond_home(home, pos, self.block_pos())) {
+            PathType::Blocked
+        } else if self.fly.is_some() {
             fly_path_type(self.world, pos, self.block_pos())
         } else if self.profile.amphibious.is_some() {
             amphibious_path_type(self.world, pos)
@@ -733,6 +737,15 @@ pub fn static_floor_level<W: World + ?Sized>(world: &W, (x, y, z): NodePos) -> f
     let below = (x, y - 1, z);
     let top = world.collision_boxes(below).iter().map(|b| b[4]).fold(f64::NEG_INFINITY, f64::max);
     f64::from(below.1) + if top == f64::NEG_INFINITY { 0.0 } else { top }
+}
+
+pub fn beyond_home(home: NodePos, pos: NodePos, mob: NodePos) -> bool {
+    let distance = |(x, y, z): NodePos| {
+        let (dx, dy, dz) = (f64::from(x - home.0), f64::from(y - home.1), f64::from(z - home.2));
+        dx * dx + dy * dy + dz * dz
+    };
+    let at = distance(pos);
+    at > 1024.0 && at >= distance(mob)
 }
 
 /// `WalkNodeEvaluator.getPathTypeStatic`.

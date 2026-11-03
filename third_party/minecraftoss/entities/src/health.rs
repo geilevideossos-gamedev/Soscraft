@@ -142,6 +142,19 @@ impl DamageState {
         }
     }
 
+    pub fn die(&mut self) -> bool {
+        if self.dead {
+            return false;
+        }
+        self.dead = true;
+        self.death = Some(Death {
+            order: DEATHS.fetch_add(1, Ordering::Relaxed),
+            killed_by_player: self.player_memory > 0,
+            ..Death::default()
+        });
+        true
+    }
+
     /// Who an applied hit came from (`resolveMobResponsibleForDamage`,
     /// `resolvePlayerResponsibleForDamage`): a player's hit is remembered,
     /// and a killing hit names its source's entity.

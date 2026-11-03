@@ -8,12 +8,15 @@ use minecraftoss_core::chunk::HeightmapKind;
 use minecraftoss_core::nbt::Tag;
 
 pub(super) const PHANTOM: &str = "minecraft:phantom";
+pub(super) const CREAKING: &str = "minecraft:creaking";
 pub(super) const ANCHOR_UP: i32 = 5;
 const DARK_SKY: i32 = 5;
 const OPEN_SKY: i32 = 15;
 const SLEEPLESS: i32 = 72000;
 
-pub(super) const ROWS: &[FamilySpawn] = &[FamilySpawn {
+pub(super) const ROWS: &[FamilySpawn] = &[PHANTOM_ROW, CREAKING_ROW];
+
+const PHANTOM_ROW: FamilySpawn = FamilySpawn {
     kind: PHANTOM,
     info: TypeInfo {
         width: 0.9,
@@ -31,7 +34,27 @@ pub(super) const ROWS: &[FamilySpawn] = &[FamilySpawn {
     baby_chance: None,
     rule: Some(phantom_rule),
     finalize: Some(phantom_finalize),
-}];
+};
+
+const CREAKING_ROW: FamilySpawn = FamilySpawn {
+    kind: CREAKING,
+    info: TypeInfo {
+        width: 0.9,
+        height: 2.7,
+        placement: Placement::OnGround,
+        heightmap: HeightmapKind::MotionBlockingNoLeaves,
+        fire_immune: false,
+        rules: Rules::Family { creature: false },
+        walk: Walk::Neutral,
+        remove_far: true,
+        cluster: 4,
+    },
+    category: MobCategory::Monster,
+    follow_range: 32.0,
+    baby_chance: None,
+    rule: Some(creaking_rule),
+    finalize: None,
+};
 
 fn phantom_rule(
     spawns: &CreatureSpawns,
@@ -43,6 +66,20 @@ fn phantom_rule(
     spawner: bool,
 ) -> bool {
     spawner || spawns.mob_spawn_rules(level, kind, info, pos)
+}
+
+fn creaking_rule(
+    spawns: &CreatureSpawns,
+    level: &mut dyn SpawnLevel,
+    context: &SpawnContext,
+    kind: &str,
+    info: &TypeInfo,
+    pos: BlockPos,
+    spawner: bool,
+) -> bool {
+    context.difficulty != 0
+        && spawns.dark_enough(level, context, pos)
+        && (spawner || spawns.mob_spawn_rules(level, kind, info, pos))
 }
 
 fn phantom_finalize(
@@ -295,6 +332,57 @@ mod tests {
             None,
             "a summon with a tag is not finalized"
         );
+    }
+
+    #[test]
+    fn creakings_spawn_by_the_monster_rules_in_the_dark() {
+        let info = type_info(CREAKING).unwrap();
+        assert_eq!(
+            (info.width, info.height, info.placement, info.fire_immune),
+            (0.9, 2.7, Placement::OnGround, false)
+        );
+        assert!(matches!(
+            info.heightmap,
+            HeightmapKind::MotionBlockingNoLeaves
+        ));
+        assert_eq!(
+            (info.rules, info.walk, info.remove_far, info.cluster),
+            (Rules::Family { creature: false }, Walk::Neutral, true, 4)
+        );
+        assert_eq!(MobCategory::of_type(CREAKING), Some(MobCategory::Monster));
+        let row = super::super::row(CREAKING).unwrap();
+        assert_eq!((row.follow_range, row.baby_chance), (32.0, None));
+        assert!(row.finalize.is_none());
+        let Some((spawns, mut level)) = setup("minecraft:grass_block") else {
+            return;
+        };
+        let pos = BlockPos::new(0, 64, 0);
+        let players: [[f64; 3]; 0] = [];
+        let rule = |spawns: &CreatureSpawns, level: &mut Field, spawner: bool, difficulty: i32| {
+            let mut context = context(&players);
+            context.difficulty = difficulty;
+            super::super::rule(spawns, level, &context, CREAKING, &info, pos, spawner)
+        };
+        for _ in 0..20 {
+            assert!(!rule(&spawns, &mut level, false, 2), "not by day");
+            assert!(
+                !rule(&spawns, &mut level, true, 2),
+                "not from a spawner by day"
+            );
+        }
+        level.sky = 0;
+        assert!(rule(&spawns, &mut level, false, 2), "on grass in the dark");
+        assert!(rule(&spawns, &mut level, true, 2));
+        assert!(!rule(&spawns, &mut level, false, 0), "never on peaceful");
+        assert!(!rule(&spawns, &mut level, true, 0));
+        let (glass_spawns, mut glass) = setup("minecraft:glass").unwrap();
+        glass.sky = 0;
+        assert!(!rule(&glass_spawns, &mut glass, false, 2), "not on glass");
+        assert!(
+            rule(&glass_spawns, &mut glass, true, 2),
+            "a spawner skips the block"
+        );
+        assert!(level.notes.is_empty(), "{:?}", level.notes);
     }
 
     fn looks(
