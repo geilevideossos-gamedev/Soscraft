@@ -693,3 +693,18 @@ After 93f77e9b.
 ```
 IW4L_MINECRAFT_KIT=minecraft:squid_spawn_egg*8,minecraft:glow_squid_spawn_egg*4,minecraft:iron_sword,minecraft:bow,minecraft:arrow*32,minecraft:glass*64
 ```
+
+### Review of segment m2a
+
+The adversarial review of the five m2a groups (r10-m2a-base..8809844c). Each fix is its own commit below.
+
+#### 1. The swim probe's dying test keeps rustfmt's layout
+
+After 8809844c.
+
+- **Defect:** `third_party/minecraftoss/entities/src/world/families/water/tests.rs` is a new file of this track, but `git show :<path> | rustfmt --check --edition 2021`, run in the worktree with the repo's `rustfmt.toml` (style edition 2024), printed a diff. Squids-live 1 (2c0d74bf) had added `assert!(!Probe::OWN_DYING_TRAVEL, "the shared dying travel by default");`, whose arguments are wider than rustfmt's call width. The earlier checks of this file ran without the repo's config, where that line passes.
+- **Changed:** only that assertion, now split over four lines as rustfmt writes it. Nothing else changes.
+- **Checked:** every new `.rs` file of the track passes the check with empty output, both from the worktree and without the repo's config.
+- **Also found, not fixable here:** d11758b3's subject starts with a byte-order mark (noted under squids-drawn 2). Removing it means rewriting that commit, which a track run must not do; it is left for the owner to decide at the merge.
+- **Runs:** `test -p minecraftoss-entities --locked --lib world::families::water`: 19 passed. The staged file passes `rustfmt --check --edition 2021` with empty output.
+- **Test steps:** none in game (a test file only). No kit is needed.

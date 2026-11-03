@@ -258,7 +258,10 @@ fn an_empty_swim_sound_is_silent_but_the_splash_plays() {
 #[test]
 fn a_family_that_moves_its_own_way_while_dying_skips_the_shared_dying_travel() {
     assert!(SwimProbe::OWN_DYING_TRAVEL);
-    assert!(!Probe::OWN_DYING_TRAVEL, "the shared dying travel by default");
+    assert!(
+        !Probe::OWN_DYING_TRAVEL,
+        "the shared dying travel by default"
+    );
     let mut world = EntityWorld::default();
     let mut pool = Pool::lanes(&[0, 4], 70);
     let push = DVec3::new(0.0, 0.0, 0.2);
