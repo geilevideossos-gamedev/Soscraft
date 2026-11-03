@@ -4,17 +4,17 @@ pub use self::ai::{
     CROUCHING, DEFENDING, FACEPLANTED, FoxGoals, GOAL_NAMES, INTERESTED, POUNCING, SITTING,
     SLEEPING, TARGET_NAMES, has_shelter, walk_value,
 };
-use self::ai::{SPEC, fox_ai_step, held_still};
+use self::ai::{SPEC, block_of, fox_ai_step, held_still};
 use crate::age::Age;
 use crate::follow_parent::CowCandidate;
 use crate::health::DamageResult;
-use crate::monster_ai::{MonsterAi, MonsterKind};
+use crate::monster_ai::{MonsterAi, MonsterKind, Target};
 use crate::movement::Body;
 use crate::navigation::navigate_walk_to;
 use crate::tempt::PlayerCandidate;
 use crate::world::families::land::animal_goals::LAST_DAMAGE_TICKS;
 use crate::world::families::{Family, FamilyMob, Hurt, MobCore, MonsterSpec};
-use crate::world::{EntityWorld, PLAYER_TARGET, Voice};
+use crate::world::{EntityWorld, PLAYER_TARGET, PlayerHitKind, Voice};
 use glam::DVec3;
 use minecraftoss_player::World;
 use minecraftoss_player::inventory::ItemStack;
@@ -49,6 +49,8 @@ pub const SPARED_BLOCKS: [&str; 1] = ["minecraft:sweet_berry_bush"];
 pub const SLEEP_SOUND: &str = "entity.fox.sleep";
 pub const SCREECH_SOUND: &str = "entity.fox.screech";
 pub const AGGRO_SOUND: &str = "entity.fox.aggro";
+pub const BITE_SOUND: &str = "entity.fox.bite";
+pub const FACEPLANT_BURST_CHANCE: f32 = 0.2;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum FoxVariant {
@@ -139,6 +141,11 @@ impl Fox {
 
     pub fn running_goals(&self) -> Vec<&'static str> {
         self.ai.running_goals()
+    }
+
+    pub fn set_target_goals(&mut self) {
+        let variant = self.variant;
+        self.goals_mut().hunts.get_or_insert(variant);
     }
 
     pub fn trusts(&self, uuid: u128) -> bool {
@@ -337,7 +344,32 @@ fn before_step(mob: &mut FamilyMob<Fox>) {
     }
 }
 
+fn bite(world: &mut EntityWorld, id: u64, target: Target) {
+    let Some(attacker) = world.family_core(id).map(|(_, core)| core.body.position) else {
+        return;
+    };
+    let kind = PlayerHitKind::Melee {
+        attacker,
+        hunger_ticks: 0,
+        lift: 0.0,
+        throw: DVec3::ZERO,
+        disable_shield_seconds: 0.0,
+    };
+    let _ = world.family_strike(id, target, ATTACK_DAMAGE, kind);
+}
+
 fn after_step(mob: &mut FamilyMob<Fox>) {
+    let goals = mob.state.goals_mut();
+    let bit = std::mem::take(&mut goals.bit);
+    let uncrouched = std::mem::take(&mut goals.uncrouched);
+    if uncrouched {
+        mob.state.crouch_amount = 0.0;
+        mob.state.crouch_amount_old = 0.0;
+    }
+    if bit {
+        let voice = Voice::Event(BITE_SOUND, 1.0, 1.0);
+        mob.core.voices.push((voice, mob.core.body.position));
+    }
     if mob.state.flag(DEFENDING) && mob.core.random.next_float() < AGGRO_CHANCE {
         let voice = Voice::Event(AGGRO_SOUND, 1.0, 1.0);
         mob.core.voices.push((voice, mob.core.body.position));
@@ -374,6 +406,20 @@ fn wake(mob: &mut FamilyMob<Fox>, thundering: bool) {
     }
     if wet || goals.flag(SLEEPING) {
         goals.set(SITTING, false);
+    }
+}
+
+fn faceplant_burst<W: World>(world: &mut EntityWorld, id: u64, level: &mut W) {
+    let planted = world
+        .family::<Fox>()
+        .iter()
+        .find(|mob| mob.core.id == id && mob.state.flag(FACEPLANTED))
+        .map(|mob| mob.core.body.position);
+    let Some(position) = planted else {
+        return;
+    };
+    if world.level_random.next_float() < FACEPLANT_BURST_CHANCE {
+        level.destroy_effect(block_of(position));
     }
 }
 
@@ -448,6 +494,7 @@ impl Family for Fox {
             let kin = kin(world, id);
             if let Some(mob) = world.family_mob_mut::<Self>(id) {
                 let tick_count = mob.core.tick_count;
+                let crouch_amount = mob.state.crouch_amount;
                 let last_damage = mob
                     .state
                     .last_damage
@@ -463,9 +510,10 @@ impl Family for Fox {
                 goals.animal.age = age;
                 goals.animal.last_damage = last_damage;
                 goals.animal.kin = kin;
+                goals.crouch_amount = crouch_amount;
             }
             lend_pois(world, id);
-            let _ = world.family_goal_step_with::<Self, W>(
+            let strike = world.family_goal_step_with::<Self, W>(
                 id,
                 level,
                 players,
@@ -474,6 +522,9 @@ impl Family for Fox {
                 fox_ai_step,
             );
             return_pois(world, id);
+            if let Some(target) = strike {
+                bite(world, id, target);
+            }
             if let Some(mob) = world.family_mob_mut::<Self>(id) {
                 after_step(mob);
             }
@@ -483,6 +534,11 @@ impl Family for Fox {
         if let Some(mob) = world.family_mob_mut::<Self>(id) {
             grow(mob);
             wake(mob, thundering);
+        }
+        if !base.no_ai {
+            faceplant_burst(world, id, level);
+        }
+        if let Some(mob) = world.family_mob_mut::<Self>(id) {
             mob.state.step_angles();
         }
     }

@@ -1,11 +1,15 @@
+use super::{FoxVariant, MAX_CROUCH_AMOUNT};
 use crate::control::{MoveFrame, obstacle_top};
 use crate::fluid::FluidFrame;
 use crate::goals::{Control, Controls, Goal, GoalSelector};
 use crate::monster_ai::{
-    LookAtPlayerGoal, MonsterAi, MonsterGoalContext, StrollGoal, Target, TargetInfo,
+    CheckedMeleeAttackGoal, LeapGoal, LookAtPlayerGoal, MeleeAttackGoal, MonsterAi,
+    MonsterGoalContext, NearestTargetGoal, Prey, StrollGoal, Target, TargetInfo,
 };
 use crate::movement::Body;
-use crate::navigation::{PlannedPath, ground_view, navigate_walk_to, plan_walk_path};
+use crate::navigation::{
+    PlannedPath, ground_view, navigate_walk_to, navigate_walk_to_entity, plan_walk_path,
+};
 use crate::stroll::{default_random_position_away, land_random_position_by};
 use crate::tempt::PlayerCandidate;
 use crate::walk_path::{WalkProfile, WalkTarget};
@@ -67,27 +71,60 @@ pub const MAX_HEAD_Y_ROT: f32 = 75.0;
 pub const MAX_HEAD_X_ROT: f32 = 40.0;
 pub const MAX_PATH_NODES: i32 = 512;
 pub const SAFE_FALL_BONUS: f64 = 2.0;
+pub const STALK_DISTANCE: f64 = 6.0;
+pub const STALK_SPEED: f64 = 1.5;
+pub const POUNCE_PUSH: f64 = 0.8;
+pub const POUNCE_LIFT: f64 = 0.9;
+pub const POUNCE_LOOK_Y: f32 = 60.0;
+pub const POUNCE_LOOK_X: f32 = 30.0;
+pub const POUNCE_REACH: f32 = 2.0;
+pub const POUNCE_RISE: f32 = 6.5;
+pub const POUNCE_EASE: f32 = 0.2;
+pub const POUNCE_SETTLE: f64 = 0.03;
+pub const POUNCE_LANDED: f64 = 0.05;
+pub const POUNCE_LEVEL: f32 = 15.0;
+pub const FACEPLANT_PITCH: f32 = 60.0;
+pub const FACEPLANT_TICKS: u32 = 40;
+pub const PATH_STEPS: i32 = 6;
+pub const PATH_HEIGHT: i32 = 3;
+pub const MELEE_SPEED: f64 = 1.2000000476837158;
+pub const LEAP_LIFT: f32 = 0.4;
+pub const LAND_INTERVAL: u32 = 10;
+pub const FISH_INTERVAL: u32 = 20;
 pub const PLAYER: &str = "minecraft:player";
 pub const WOLF: &str = "minecraft:wolf";
 pub const POLAR_BEAR: &str = "minecraft:polar_bear";
 pub const GRASS_BLOCK: &str = "minecraft:grass_block";
+pub const SNOW_LAYER: &str = "minecraft:snow";
+pub const REPLACEABLE: &str = "minecraft:replaceable";
+pub const LAND_PREY: [&str; 2] = ["minecraft:chicken", "minecraft:rabbit"];
+pub const FISH_PREY: [&str; 3] = [
+    "minecraft:cod",
+    "minecraft:salmon",
+    "minecraft:tropical_fish",
+];
 
-pub const GOAL_NAMES: [&str; 13] = [
+pub const GOAL_NAMES: [&str; 18] = [
     "FoxFloatGoal",
     "ClimbOnTopOfPowderSnowGoal",
+    "FaceplantGoal",
     "FoxPanicGoal",
     "AvoidEntityGoal",
     "AvoidEntityGoal",
     "AvoidEntityGoal",
+    "StalkPreyGoal",
+    "FoxPounceGoal",
     "SeekShelterGoal",
+    "FoxMeleeAttackGoal",
     "SleepGoal",
     "FoxFollowParentGoal",
     "FoxStrollThroughVillageGoal",
+    "LeapAtTargetGoal",
     "WaterAvoidingRandomStrollGoal",
     "FoxLookAtPlayerGoal",
     "PerchAndSearchGoal",
 ];
-pub const TARGET_NAMES: [&str; 0] = [];
+pub const TARGET_NAMES: [&str; 6] = ["NearestAttackableTargetGoal"; 6];
 
 pub(super) static SPEC: MonsterSpec = MonsterSpec {
     goal_names: &GOAL_NAMES,
@@ -109,6 +146,11 @@ pub struct FoxGoals {
     pub halt: bool,
     pub tame: Vec<u64>,
     pub unwary: Vec<u64>,
+    pub hunts: Option<FoxVariant>,
+    pub jumping: bool,
+    pub crouch_amount: f32,
+    pub uncrouched: bool,
+    pub bit: bool,
 }
 
 impl FoxGoals {
@@ -163,6 +205,7 @@ fn goals() -> GoalSelector<MonsterGoalContext> {
     let mut selector = GoalSelector::default();
     selector.add(0, FoxFloatGoal);
     selector.add(0, ClimbOnTopOfPowderSnowGoal);
+    selector.add(1, FaceplantGoal::default());
     selector.add(
         2,
         FoxPanicGoal(PanicGoal::new(PANIC_SPEED, crate::feline_ai::panic_cause)),
@@ -170,13 +213,24 @@ fn goals() -> GoalSelector<MonsterGoalContext> {
     selector.add(4, FoxAvoidGoal::new(PLAYER, AVOID_PLAYER));
     selector.add(4, FoxAvoidGoal::new(WOLF, AVOID_WOLF));
     selector.add(4, FoxAvoidGoal::new(POLAR_BEAR, AVOID_POLAR_BEAR));
+    selector.add(5, StalkPreyGoal::default());
+    selector.add(6, FoxPounceGoal);
     selector.add(6, SeekShelterGoal::default());
+    let melee = MeleeAttackGoal {
+        hits: true,
+        raises_arms: false,
+        follow_unseen: true,
+        gives_up_in_light: false,
+        speed: MELEE_SPEED,
+    };
+    selector.add(7, FoxMeleeAttackGoal(melee.checked(bite)));
     selector.add(7, SleepGoal::default());
     selector.add(
         8,
         FoxFollowParentGoal(FollowParentGoal::new(FOLLOW_PARENT_SPEED)),
     );
     selector.add(9, FoxStrollThroughVillageGoal::default());
+    selector.add(10, LeapGoal::new(LEAP_LIFT));
     selector.add(11, StrollGoal::new(STROLL_SPEED, STROLL_PROBABILITY));
     selector.add(
         12,
@@ -187,7 +241,17 @@ fn goals() -> GoalSelector<MonsterGoalContext> {
 }
 
 fn targets() -> GoalSelector<MonsterGoalContext> {
-    GoalSelector::default()
+    let mut selector = GoalSelector::default();
+    let (red, snow) = (FoxVariant::Red, FoxVariant::Snow);
+    let land = Prey::Kinds(&LAND_PREY);
+    let fish = Prey::Kinds(&FISH_PREY);
+    selector.add(4, FoxPreyGoal::new(red, land, LAND_INTERVAL));
+    selector.add(4, FoxPreyGoal::new(red, Prey::Absent, LAND_INTERVAL));
+    selector.add(6, FoxPreyGoal::new(red, fish, FISH_INTERVAL));
+    selector.add(4, FoxPreyGoal::new(snow, fish, FISH_INTERVAL));
+    selector.add(6, FoxPreyGoal::new(snow, land, LAND_INTERVAL));
+    selector.add(6, FoxPreyGoal::new(snow, Prey::Absent, LAND_INTERVAL));
+    selector
 }
 
 fn walk(walk: &mut WalkProfile) {
@@ -198,6 +262,42 @@ fn walk(walk: &mut WalkProfile) {
     walk.can_float = true;
     walk.walk_target = WalkTarget::Animal;
     walk.max_visited = Some(MAX_PATH_NODES);
+}
+
+#[derive(Clone)]
+struct FoxPreyGoal {
+    variant: FoxVariant,
+    goal: NearestTargetGoal,
+}
+
+impl FoxPreyGoal {
+    fn new(variant: FoxVariant, prey: Prey, interval: u32) -> Self {
+        let goal = NearestTargetGoal::every(prey, false, reduced_tick_delay(interval));
+        Self { variant, goal }
+    }
+}
+
+impl Goal<MonsterGoalContext> for FoxPreyGoal {
+    fn controls(&self) -> Controls {
+        self.goal.controls()
+    }
+
+    fn can_start(&mut self, ctx: &mut MonsterGoalContext, world: &dyn World) -> bool {
+        let hunts = fox(ctx).and_then(|goals| goals.hunts);
+        hunts == Some(self.variant) && self.goal.can_start(ctx, world)
+    }
+
+    fn can_continue(&mut self, ctx: &mut MonsterGoalContext, world: &dyn World) -> bool {
+        self.goal.can_continue(ctx, world)
+    }
+
+    fn start(&mut self, ctx: &mut MonsterGoalContext) {
+        self.goal.start(ctx);
+    }
+
+    fn stop(&mut self, ctx: &mut MonsterGoalContext) {
+        self.goal.stop(ctx);
+    }
 }
 
 pub(super) fn fox(ctx: &MonsterGoalContext) -> Option<&FoxGoals> {
@@ -222,7 +322,7 @@ pub fn held_still(ctx: &MonsterGoalContext) -> bool {
     fox(ctx).is_some_and(|goals| !goals.can_move())
 }
 
-fn block_of(position: DVec3) -> Pos {
+pub(super) fn block_of(position: DVec3) -> Pos {
     (
         position.x.floor() as i32,
         position.y.floor() as i32,
@@ -264,6 +364,83 @@ fn is_village(ctx: &mut MonsterGoalContext, pos: Pos) -> bool {
     ctx.pois.as_mut().is_some_and(|pois| pois.is_village(pos))
 }
 
+fn held_target(ctx: &MonsterGoalContext) -> Option<TargetInfo> {
+    ctx.target.and_then(|target| ctx.info(target))
+}
+
+fn live_target(ctx: &MonsterGoalContext) -> Option<TargetInfo> {
+    held_target(ctx).filter(|target| target.alive)
+}
+
+fn eye_of(target: TargetInfo) -> DVec3 {
+    target.position + DVec3::Y * f64::from(target.eye_height)
+}
+
+fn replaceable(world: &dyn World, pos: Pos) -> bool {
+    world
+        .block(pos)
+        .is_none_or(|_| world.block_in_tag(pos, REPLACEABLE))
+}
+
+pub fn is_path_clear(world: &dyn World, from: DVec3, to: DVec3) -> bool {
+    let dz = to.z - from.z;
+    let dx = to.x - from.x;
+    let slope = dz / dx;
+    for step in 0..PATH_STEPS {
+        let part = f64::from(step as f32 / PATH_STEPS as f32);
+        let z = if slope == 0.0 { 0.0 } else { dz * part };
+        let x = if slope == 0.0 { dx * part } else { z / slope };
+        for up in 1..=PATH_HEIGHT {
+            let at = DVec3::new(from.x + x, from.y + f64::from(up), from.z + z);
+            if !replaceable(world, block_of(at)) {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+fn wrap_degrees(degrees: f32) -> f32 {
+    let mut wrapped = degrees % 360.0;
+    if wrapped >= 180.0 {
+        wrapped -= 360.0;
+    }
+    if wrapped < -180.0 {
+        wrapped += 360.0;
+    }
+    wrapped
+}
+
+fn rot_lerp(delta: f32, from: f32, to: f32) -> f32 {
+    from + delta * wrap_degrees(to - from)
+}
+
+fn signum(value: f64) -> f64 {
+    if value > 0.0 {
+        1.0
+    } else if value < 0.0 {
+        -1.0
+    } else {
+        value
+    }
+}
+
+fn distance_to(from: DVec3, to: DVec3) -> f32 {
+    let x = (from.x - to.x) as f32;
+    let y = (from.y - to.y) as f32;
+    let z = (from.z - to.z) as f32;
+    (x * x + y * y + z * z).sqrt()
+}
+
+fn normalize(vector: DVec3) -> DVec3 {
+    let length = vector.length();
+    if length < f64::from(1.0e-5_f32) {
+        DVec3::ZERO
+    } else {
+        DVec3::new(vector.x / length, vector.y / length, vector.z / length)
+    }
+}
+
 #[derive(Clone)]
 struct FoxFloatGoal;
 
@@ -288,6 +465,39 @@ impl Goal<MonsterGoalContext> for FoxFloatGoal {
         if ctx.random.next_float() < FLOAT_CHANCE {
             ctx.jump = true;
         }
+    }
+}
+
+#[derive(Clone, Default)]
+struct FaceplantGoal {
+    countdown: i32,
+}
+
+impl Goal<MonsterGoalContext> for FaceplantGoal {
+    fn controls(&self) -> Controls {
+        Controls::new(&[Control::Look, Control::Jump, Control::Move])
+    }
+
+    fn can_start(&mut self, ctx: &mut MonsterGoalContext, _world: &dyn World) -> bool {
+        flag(ctx, FACEPLANTED)
+    }
+
+    fn can_continue(&mut self, ctx: &mut MonsterGoalContext, _world: &dyn World) -> bool {
+        flag(ctx, FACEPLANTED) && self.countdown > 0
+    }
+
+    fn start(&mut self, _ctx: &mut MonsterGoalContext) {
+        self.countdown = reduced_tick_delay(FACEPLANT_TICKS) as i32;
+    }
+
+    fn stop(&mut self, ctx: &mut MonsterGoalContext) {
+        if let Some(goals) = fox_mut(ctx) {
+            goals.set(FACEPLANTED, false);
+        }
+    }
+
+    fn tick(&mut self, _ctx: &mut MonsterGoalContext) {
+        self.countdown -= 1;
     }
 }
 
@@ -448,6 +658,211 @@ impl Goal<MonsterGoalContext> for FoxAvoidGoal {
     }
 }
 
+fn stalkable(ctx: &MonsterGoalContext, target: TargetInfo) -> bool {
+    ctx.kind_of(target.target)
+        .is_some_and(|kind| LAND_PREY.contains(&kind))
+}
+
+fn crouch(ctx: &mut MonsterGoalContext, on: bool) {
+    if let Some(goals) = fox_mut(ctx) {
+        goals.set(INTERESTED, on);
+        goals.set(CROUCHING, on);
+    }
+}
+
+#[derive(Clone, Default)]
+struct StalkPreyGoal {
+    clear: bool,
+}
+
+impl Goal<MonsterGoalContext> for StalkPreyGoal {
+    fn controls(&self) -> Controls {
+        Controls::new(&[Control::Move, Control::Look])
+    }
+
+    fn can_start(&mut self, ctx: &mut MonsterGoalContext, _world: &dyn World) -> bool {
+        let Some(goals) = fox(ctx) else {
+            return false;
+        };
+        if goals.flag(SLEEPING) {
+            return false;
+        }
+        let Some(target) = live_target(ctx) else {
+            return false;
+        };
+        let far =
+            ctx.body.position.distance_squared(target.position) > STALK_DISTANCE * STALK_DISTANCE;
+        stalkable(ctx, target)
+            && far
+            && !goals.flag(CROUCHING)
+            && !goals.flag(INTERESTED)
+            && !goals.jumping
+    }
+
+    fn can_continue(&mut self, ctx: &mut MonsterGoalContext, world: &dyn World) -> bool {
+        let from = ctx.body.position;
+        self.clear =
+            held_target(ctx).is_some_and(|target| is_path_clear(world, from, target.position));
+        self.can_start(ctx, world)
+    }
+
+    fn start(&mut self, ctx: &mut MonsterGoalContext) {
+        if let Some(goals) = fox_mut(ctx) {
+            goals.set(SITTING, false);
+            goals.set(FACEPLANTED, false);
+        }
+    }
+
+    fn stop(&mut self, ctx: &mut MonsterGoalContext) {
+        let Some(target) = held_target(ctx).filter(|_| self.clear) else {
+            crouch(ctx, false);
+            return;
+        };
+        crouch(ctx, true);
+        ctx.navigation.stop();
+        ctx.look_control
+            .set_look_at_with_limits(eye_of(target), MAX_HEAD_Y_ROT, MAX_HEAD_X_ROT);
+    }
+
+    fn tick_world(&mut self, ctx: &mut MonsterGoalContext, world: &dyn World) {
+        let Some(target) = held_target(ctx) else {
+            return;
+        };
+        ctx.look_control
+            .set_look_at_with_limits(eye_of(target), MAX_HEAD_Y_ROT, MAX_HEAD_X_ROT);
+        let near = STALK_DISTANCE * STALK_DISTANCE;
+        if ctx.body.position.distance_squared(target.position) <= near {
+            crouch(ctx, true);
+            ctx.navigation.stop();
+            return;
+        }
+        let profile = ctx.profile();
+        navigate_walk_to_entity(
+            &ctx.body,
+            &mut ctx.navigation,
+            world,
+            &profile,
+            ctx.fluid,
+            target.position,
+            STALK_SPEED,
+            1,
+        );
+    }
+}
+
+#[derive(Clone)]
+struct FoxPounceGoal;
+
+impl Goal<MonsterGoalContext> for FoxPounceGoal {
+    fn controls(&self) -> Controls {
+        Controls::new(&[Control::Move, Control::Jump])
+    }
+
+    fn can_start(&mut self, ctx: &mut MonsterGoalContext, world: &dyn World) -> bool {
+        if fox(ctx).is_none_or(|goals| goals.crouch_amount != MAX_CROUCH_AMOUNT) {
+            return false;
+        }
+        let Some(target) = live_target(ctx) else {
+            return false;
+        };
+        let clear = is_path_clear(world, ctx.body.position, target.position);
+        if !clear {
+            crouch(ctx, false);
+        }
+        clear
+    }
+
+    fn can_continue(&mut self, ctx: &mut MonsterGoalContext, _world: &dyn World) -> bool {
+        if live_target(ctx).is_none() {
+            return false;
+        }
+        let vy = ctx.body.velocity.y;
+        let level = ctx.look_control.pitch.abs() < POUNCE_LEVEL;
+        let landed = vy * vy < POUNCE_LANDED && level && ctx.body.on_ground;
+        !(landed || flag(ctx, FACEPLANTED))
+    }
+
+    fn interruptible(&self) -> bool {
+        false
+    }
+
+    fn start(&mut self, ctx: &mut MonsterGoalContext) {
+        if let Some(goals) = fox_mut(ctx) {
+            goals.jumping = true;
+            goals.set(POUNCING, true);
+            goals.set(INTERESTED, false);
+        }
+        if let Some(target) = held_target(ctx) {
+            ctx.look_control
+                .set_look_at_with_limits(eye_of(target), POUNCE_LOOK_Y, POUNCE_LOOK_X);
+            let toward = normalize(target.position - ctx.body.position);
+            let push = DVec3::new(toward.x * POUNCE_PUSH, POUNCE_LIFT, toward.z * POUNCE_PUSH);
+            let velocity = ctx.body.velocity + push;
+            ctx.body.velocity = velocity;
+            ctx.leap = Some(velocity);
+        }
+        ctx.navigation.stop();
+    }
+
+    fn stop(&mut self, ctx: &mut MonsterGoalContext) {
+        if let Some(goals) = fox_mut(ctx) {
+            goals.set(CROUCHING, false);
+            goals.crouch_amount = 0.0;
+            goals.uncrouched = true;
+            goals.set(INTERESTED, false);
+            goals.set(POUNCING, false);
+        }
+    }
+
+    fn tick_world(&mut self, ctx: &mut MonsterGoalContext, world: &dyn World) {
+        let target = held_target(ctx);
+        if let Some(target) = target {
+            ctx.look_control
+                .set_look_at_with_limits(eye_of(target), POUNCE_LOOK_Y, POUNCE_LOOK_X);
+        }
+        let velocity = ctx.body.velocity;
+        if !flag(ctx, FACEPLANTED) {
+            let pitch = ctx.look_control.pitch;
+            if velocity.y * velocity.y < POUNCE_SETTLE && pitch != 0.0 {
+                ctx.look_control.pitch = rot_lerp(POUNCE_EASE, pitch, 0.0);
+            } else {
+                let horizontal = (velocity.x * velocity.x + velocity.z * velocity.z).sqrt();
+                let jumping = fox(ctx).is_some_and(|goals| goals.jumping);
+                let rise = if jumping && velocity.y > 0.0 {
+                    POUNCE_RISE
+                } else {
+                    1.0
+                };
+                let vy = velocity.y * f64::from(rise);
+                let length = (horizontal * horizontal + vy * vy).sqrt();
+                if length > f64::from(1.0e-5_f32) {
+                    let angle = signum(-vy) * (horizontal / length).acos() * 57.2957763671875;
+                    ctx.look_control.pitch = angle as f32;
+                }
+            }
+        }
+        let p = ctx.body.position;
+        if let Some(target) = target.filter(|t| distance_to(p, t.position) <= POUNCE_REACH) {
+            ctx.attack = Some(target.target);
+            return;
+        }
+        let falling = velocity.y as f32 != 0.0;
+        if ctx.look_control.pitch > 0.0 && ctx.body.on_ground && falling {
+            let snow = world
+                .block(block_of(p))
+                .is_some_and(|block| block.id == SNOW_LAYER);
+            if snow {
+                ctx.look_control.pitch = FACEPLANT_PITCH;
+                ctx.clear_target();
+                if let Some(goals) = fox_mut(ctx) {
+                    goals.set(DEFENDING, false);
+                    goals.set(FACEPLANTED, true);
+                }
+            }
+        }
+    }
+}
+
 #[derive(Clone)]
 struct SeekShelterGoal {
     interval: i32,
@@ -525,6 +940,63 @@ impl Goal<MonsterGoalContext> for SeekShelterGoal {
             SHELTER_SPEED,
             1,
         );
+    }
+}
+
+fn bite(ctx: &mut MonsterGoalContext, world: &dyn World, target: TargetInfo) {
+    let time = ctx.melee.is_time_to_attack();
+    if time && ctx.within_melee_range(target) && ctx.sees(world, target) {
+        ctx.melee.reset_attack_cooldown();
+        ctx.attack = Some(target.target);
+        if let Some(goals) = fox_mut(ctx) {
+            goals.bit = true;
+        }
+    }
+}
+
+#[derive(Clone)]
+struct FoxMeleeAttackGoal(CheckedMeleeAttackGoal);
+
+impl Goal<MonsterGoalContext> for FoxMeleeAttackGoal {
+    fn controls(&self) -> Controls {
+        self.0.controls()
+    }
+
+    fn can_start(&mut self, ctx: &mut MonsterGoalContext, world: &dyn World) -> bool {
+        let ready = fox(ctx).is_some_and(|goals| {
+            !(goals.flag(SITTING)
+                || goals.flag(SLEEPING)
+                || goals.flag(CROUCHING)
+                || goals.flag(FACEPLANTED))
+        });
+        ready && self.0.can_start(ctx, world)
+    }
+
+    fn can_continue(&mut self, ctx: &mut MonsterGoalContext, world: &dyn World) -> bool {
+        self.0.can_continue(ctx, world)
+    }
+
+    fn interruptible(&self) -> bool {
+        self.0.interruptible()
+    }
+
+    fn every_tick(&self) -> bool {
+        self.0.every_tick()
+    }
+
+    fn start(&mut self, ctx: &mut MonsterGoalContext) {
+        if let Some(goals) = fox_mut(ctx) {
+            goals.set(INTERESTED, false);
+        }
+        self.0.start(ctx);
+    }
+
+    fn stop(&mut self, ctx: &mut MonsterGoalContext) {
+        self.0.stop(ctx);
+    }
+
+    fn tick_world(&mut self, ctx: &mut MonsterGoalContext, world: &dyn World) {
+        self.0.tick_world(ctx, world);
     }
 }
 
@@ -853,6 +1325,7 @@ pub(super) fn fox_ai_step<W: World>(
     let moving = ai.forward != 0.0 || ai.sideways != 0.0;
     if let Some(goals) = ai.state.extra.get_mut::<FoxGoals>() {
         goals.moving = moving;
+        goals.jumping = ai.jumping;
     }
     body.trim_small_velocity();
     *no_action_time += 1;

@@ -1,8 +1,9 @@
 use super::ai::{self, FoxGoals};
 use super::*;
+use crate::chicken::Chicken;
 use crate::controls::PlayerControls;
 use crate::look::LookControl;
-use crate::monster_ai::Target;
+use crate::monster_ai::{MobCandidate, Target};
 use crate::poi::PoiType;
 use crate::walk_path::WalkTarget;
 use crate::world::{DamageSourceKind, LeashHolder, PlayerAttack};
@@ -16,6 +17,9 @@ struct Den {
     water: Vec<Pos>,
     bushes: Vec<Pos>,
     thunder: bool,
+    snow: Vec<Pos>,
+    walls: Vec<Pos>,
+    effects: Vec<Pos>,
 }
 
 impl Den {
@@ -27,6 +31,12 @@ impl Den {
 
 impl World for Den {
     fn block(&self, pos: Pos) -> Option<Block> {
+        if self.snow.contains(&pos) {
+            return Some(Block::new(ai::SNOW_LAYER).with("layers", "1"));
+        }
+        if self.walls.contains(&pos) {
+            return Some(Block::new("minecraft:stone"));
+        }
         if self.water.contains(&pos) {
             return Some(Block::new("minecraft:water"));
         }
@@ -56,6 +66,25 @@ impl World for Den {
 
     fn thundering(&self) -> bool {
         self.thunder
+    }
+
+    fn collision_boxes(&self, pos: Pos) -> Vec<[f64; 6]> {
+        match self.block(pos) {
+            Some(block) if block.id != ai::SNOW_LAYER => {
+                minecraftoss_player::authored_collision_boxes(&block)
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    fn block_in_tag(&self, pos: Pos, tag: &str) -> bool {
+        let replaceable =
+            |block: Block| matches!(block.id.as_str(), ai::SNOW_LAYER | "minecraft:water");
+        tag == ai::REPLACEABLE && self.block(pos).is_some_and(replaceable)
+    }
+
+    fn destroy_effect(&mut self, pos: Pos) {
+        self.effects.push(pos);
     }
 }
 
@@ -812,4 +841,270 @@ fn a_fox_strolls_through_a_village_only_at_night() {
     };
     assert!(strolls(false), "at night");
     assert!(!strolls(true), "by day");
+}
+
+fn hunter_at(world: &mut EntityWorld, position: DVec3) -> u64 {
+    let id = fox_at(world, position);
+    fox_mut(world, id).state.set_target_goals();
+    id
+}
+
+fn chicken_at(world: &mut EntityWorld, position: DVec3) -> u64 {
+    world.spawn_chicken(Chicken::new(position), true)
+}
+
+fn chicken_health(world: &EntityWorld, id: u64) -> f32 {
+    let chicken = world.chickens().iter().find(|e| e.id == id);
+    chicken.map_or(0.0, |e| e.chicken.health)
+}
+
+fn chicken_position(world: &EntityWorld, id: u64) -> DVec3 {
+    let chicken = world.chickens().iter().find(|e| e.id == id).unwrap();
+    chicken.chicken.body.position
+}
+
+fn crouched(world: &mut EntityWorld, id: u64, prey: u64) {
+    let state = &mut fox_mut(world, id).state;
+    state.set_flag(CROUCHING, true);
+    state.set_flag(INTERESTED, true);
+    state.crouch_amount = MAX_CROUCH_AMOUNT;
+    state.crouch_amount_old = MAX_CROUCH_AMOUNT;
+    state.ai.state.target = Some(Target::Mob(prey));
+}
+
+fn bites(world: &mut EntityWorld, id: u64) -> usize {
+    let voices = &mut fox_mut(world, id).core.voices;
+    let bite = Voice::Event(BITE_SOUND, 1.0, 1.0);
+    let heard = voices.iter().filter(|(voice, _)| *voice == bite).count();
+    voices.clear();
+    heard
+}
+
+#[test]
+fn a_red_fox_stalks_a_chicken_crouches_within_six_and_pounces_when_fully_crouched() {
+    let mut den = Den::default();
+    let mut world = EntityWorld::default();
+    let id = hunter_at(&mut world, at(0.5, 0.5));
+    let idle = fox_at(&mut world, at(0.5, 16.5));
+    let chicken = chicken_at(&mut world, at(14.5, 0.5));
+    let mut stalked = false;
+    let mut crouched_at = None;
+    let mut pounced_at = None;
+    for tick in 0..400 {
+        world.tick(&mut den);
+        stalked |= runs(&world, id, "StalkPreyGoal");
+        let mob = fox(&world, id);
+        let gap = mob
+            .core
+            .body
+            .position
+            .distance(chicken_position(&world, chicken));
+        if crouched_at.is_none() && mob.state.flag(CROUCHING) {
+            assert!(stalked, "it stalks before it crouches");
+            assert!(mob.state.flag(INTERESTED), "its head cocked");
+            assert!(gap <= ai::STALK_DISTANCE + 0.5, "{gap}");
+            crouched_at = Some(tick);
+        }
+        if mob.state.flag(POUNCING) {
+            assert_eq!(mob.state.crouch_amount, MAX_CROUCH_AMOUNT);
+            let velocity = mob.core.body.velocity;
+            assert!(velocity.y > 0.6 && velocity.x > 0.4, "{velocity}");
+            pounced_at = Some(tick);
+            break;
+        }
+        let idle = fox(&world, idle);
+        assert_eq!(idle.state.ai.state.target, None, "no prey goals, no prey");
+        assert!(!idle.state.flag(CROUCHING));
+    }
+    let crouched_at = crouched_at.expect("it crouches");
+    let pounced_at = pounced_at.expect("it pounces");
+    let waited = pounced_at - crouched_at;
+    assert!((25..=30).contains(&waited), "{crouched_at} {pounced_at}");
+}
+
+#[test]
+fn a_pounce_that_lands_within_two_bites() {
+    let mut den = Den::default();
+    let mut world = EntityWorld::default();
+    let id = hunter_at(&mut world, at(0.5, 0.5));
+    let chicken = chicken_at(&mut world, at(6.5, 0.5));
+    world.tick(&mut den);
+    crouched(&mut world, id, chicken);
+    let mut bitten = None;
+    for tick in 0..60 {
+        world.tick(&mut den);
+        assert_eq!(bites(&mut world, id), 0, "a pounce bites in silence");
+        if chicken_health(&world, chicken) < 4.0 {
+            let mob = fox(&world, id);
+            let gap = mob
+                .core
+                .body
+                .position
+                .distance(chicken_position(&world, chicken));
+            assert!(mob.state.flag(POUNCING), "the pounce bites");
+            assert!(gap <= 2.5, "{gap}");
+            bitten = Some(tick);
+            break;
+        }
+    }
+    let tick = bitten.expect("the chicken is bitten");
+    assert!(tick > 5, "after a flight: {tick}");
+    assert_eq!(chicken_health(&world, chicken), 2.0);
+}
+
+#[test]
+fn a_pounce_into_snow_faceplants_for_forty_ticks_with_break_effects() {
+    let field = (-2..=16).flat_map(|x| (-3..=3).map(move |z| (x, 64, z)));
+    let mut den = Den {
+        snow: field.collect(),
+        ..Den::default()
+    };
+    let mut world = EntityWorld::default();
+    let id = hunter_at(&mut world, at(0.5, 0.5));
+    let chicken = chicken_at(&mut world, at(14.5, 0.5));
+    world.tick(&mut den);
+    crouched(&mut world, id, chicken);
+    let mut planted: Option<(usize, usize)> = None;
+    let mut resting = None;
+    let mut lasted = None;
+    for tick in 0..160 {
+        world.tick(&mut den);
+        let mob = fox(&world, id);
+        let (start, effects) = match (mob.state.flag(FACEPLANTED), planted) {
+            (true, None) => *planted.insert((tick, den.effects.len())),
+            (true, Some(planted)) => planted,
+            (false, Some((start, _))) => {
+                lasted = Some(tick - start);
+                break;
+            }
+            (false, None) => continue,
+        };
+        if tick == start {
+            assert_eq!(mob.state.ai.state.target, None, "it drops its prey");
+        }
+        if tick > start + 1 {
+            assert!(runs(&world, id, "FaceplantGoal"));
+            assert!(!mob.state.flag(POUNCING));
+        }
+        if tick == start + 10 {
+            resting = Some(mob.core.body.position);
+        }
+        if let Some(resting) = resting {
+            assert_eq!(mob.core.body.position, resting, "head down, it stays");
+        }
+        let block = ai::block_of(mob.core.body.position);
+        assert_eq!(block.1, 64, "in the snow layer");
+        assert!(den.effects[effects..].iter().all(|pos| *pos == block));
+    }
+    let lasted = lasted.expect("it gets up again");
+    assert!((40..=42).contains(&lasted), "{lasted}");
+    let effects = den.effects.len() - planted.unwrap().1;
+    assert!(
+        (2..=20).contains(&effects),
+        "about one tick in five: {effects}"
+    );
+    assert_eq!(chicken_health(&world, chicken), 4.0, "the chicken got away");
+    let mob = fox(&world, id);
+    assert!(!mob.state.flag(CROUCHING) && !mob.state.flag(POUNCING));
+    assert_eq!(mob.state.crouch_amount, 0.0);
+}
+
+#[test]
+fn a_snow_fox_puts_fish_first() {
+    let candidate = |id: u64, kind: &'static str, x: f64| MobCandidate {
+        id,
+        position: at(x, 0.5),
+        eye_height: 0.4,
+        width: 0.6,
+        height: 0.7,
+        alive: true,
+        kind,
+        baby: false,
+    };
+    let hunt = |variant: Option<FoxVariant>| {
+        let mut mob = Fox::spawn(KIND, at(0.5, 0.5)).unwrap();
+        if let Some(variant) = variant {
+            mob.state.variant = variant;
+            mob.state.set_target_goals();
+        }
+        let mut ai = (*mob.state.ai).clone();
+        ai.state.body.on_ground = true;
+        ai.state.mobs = vec![
+            candidate(7, "minecraft:chicken", 8.5),
+            candidate(8, "minecraft:cod", 10.5),
+            candidate(9, "minecraft:pufferfish", 3.5),
+        ];
+        let den = Den::default();
+        let mut target = None;
+        for tick in 0..300 {
+            ai.state.game_time = tick;
+            ai.tick_goals(&den, true);
+            target = ai.state.target;
+        }
+        target
+    };
+    let red = hunt(Some(FoxVariant::Red));
+    assert_eq!(red, Some(Target::Mob(7)), "red");
+    let snow = hunt(Some(FoxVariant::Snow));
+    assert_eq!(snow, Some(Target::Mob(8)), "snow");
+    assert_eq!(hunt(None), None, "a fox never loaded hunts nothing");
+
+    let mut mob = Fox::spawn(KIND, at(0.5, 0.5)).unwrap();
+    mob.state.set_target_goals();
+    mob.state.variant = FoxVariant::Snow;
+    mob.state.set_target_goals();
+    let hunts = mob.state.goals().unwrap().hunts;
+    assert_eq!(hunts, Some(FoxVariant::Red), "the first call sets them");
+}
+
+#[test]
+fn a_blocked_pounce_paths_instead() {
+    let open = Den::default();
+    let (from, to) = (at(0.5, 0.5), at(6.5, 0.5));
+    assert!(ai::is_path_clear(&open, from, to));
+    let walled = |pos: Pos| Den {
+        walls: vec![pos],
+        ..Den::default()
+    };
+    for y in [65, 66, 67] {
+        assert!(!ai::is_path_clear(&walled((3, y, 0)), from, to), "{y}");
+    }
+    for y in [64, 68] {
+        assert!(ai::is_path_clear(&walled((3, y, 0)), from, to), "{y}");
+    }
+    let snowed = Den {
+        snow: vec![(3, 65, 0)],
+        ..Den::default()
+    };
+    assert!(ai::is_path_clear(&snowed, from, to), "snow is replaceable");
+    let diagonal = at(6.5, 6.5);
+    assert!(!ai::is_path_clear(&walled((3, 65, 3)), from, diagonal));
+    let ahead = at(0.5, 6.5);
+    assert!(!ai::is_path_clear(&walled((0, 66, 4)), from, ahead));
+    assert!(ai::is_path_clear(&walled((1, 66, 4)), from, ahead));
+
+    let mut den = walled((3, 65, 0));
+    let mut world = EntityWorld::default();
+    let id = hunter_at(&mut world, from);
+    let chicken = chicken_at(&mut world, to);
+    world.tick(&mut den);
+    crouched(&mut world, id, chicken);
+    world.tick(&mut den);
+    world.tick(&mut den);
+    let mob = fox(&world, id);
+    assert!(!mob.state.flag(CROUCHING) && !mob.state.flag(INTERESTED));
+    let mut melee = false;
+    let mut heard = 0;
+    for _ in 0..300 {
+        world.tick(&mut den);
+        assert!(!fox(&world, id).state.flag(POUNCING), "no pounce");
+        melee |= runs(&world, id, "FoxMeleeAttackGoal");
+        heard += bites(&mut world, id);
+        if chicken_health(&world, chicken) <= 0.0 {
+            break;
+        }
+    }
+    assert!(melee, "it runs at its prey");
+    assert!(chicken_health(&world, chicken) <= 0.0, "and bites it dead");
+    assert_eq!(heard, 2, "two bites of two for a chicken of four");
 }

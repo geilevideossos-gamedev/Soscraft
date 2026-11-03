@@ -85,6 +85,7 @@ impl TerrainFamily for Fox {
             .map_or(foxes::DROP_CHANCE, |chance| chance as f32);
         let baby = mob.state.age.baby();
         foxes::set_baby(mob, baby);
+        mob.state.set_target_goals();
     }
 
     fn fields(mob: &FamilyMob<Self>) -> Vec<(&'static str, Tag)> {
@@ -153,6 +154,7 @@ mod tests {
     use crate::server_mobs::{is_simulated, mob_tags, spawn_saved};
     use glam::DVec3;
     use minecraftoss_entities::world::EntityWorld;
+    use minecraftoss_entities::world::families::Family;
     use minecraftoss_entities::world::families::land::foxes::{INTERESTED, POUNCING};
     use minecraftoss_player::{Block, Pos, World};
     use std::collections::HashMap;
@@ -339,6 +341,30 @@ mod tests {
         let state = &mirror.state;
         assert_eq!((state.flags(), state.crouch_amount), (0, 0.0));
         assert!((state.interested_angle - state.interested_angle_old * 0.6).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn a_loaded_fox_hunts_with_the_target_goals_of_its_type() {
+        let mut world = EntityWorld::default();
+        for (text, variant) in [
+            ("", FoxVariant::Red),
+            (",Type:\"red\"", FoxVariant::Red),
+            (",Type:\"snow\"", FoxVariant::Snow),
+            (",Type:\"snow\",Age:-24000", FoxVariant::Snow),
+        ] {
+            let tag = parse(&format!(
+                "{{id:\"minecraft:fox\",Pos:[0.5d,64.0d,0.5d]{text}}}"
+            ));
+            let id = spawn_saved(&mut world, &tag).unwrap();
+            let goals = fox(&world, id).state.goals().unwrap();
+            assert_eq!(goals.hunts, Some(variant), "{text}");
+        }
+        let bred = Fox::spawn(foxes::KIND, DVec3::new(0.5, 64.0, 0.5)).unwrap();
+        assert_eq!(
+            bred.state.goals().unwrap().hunts,
+            None,
+            "a fox that was never loaded"
+        );
     }
 
     #[test]
