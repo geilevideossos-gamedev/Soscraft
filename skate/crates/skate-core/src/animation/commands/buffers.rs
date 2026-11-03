@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 pub(crate) fn new_owner() -> usize {
     static NEXT_OWNER: AtomicUsize = AtomicUsize::new(0);
     NEXT_OWNER
-        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+        .try_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
             value.checked_add(1)
         })
         .expect("animation storage identity exhausted")

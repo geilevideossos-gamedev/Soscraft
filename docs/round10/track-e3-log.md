@@ -135,3 +135,25 @@ After aa83c8d2. Gap code-2, part 4.
 ```
 IW4L_MINECRAFT_KIT=minecraft:iron_helmet,minecraft:iron_chestplate,minecraft:chest,minecraft:crafting_table,minecraft:cobblestone*64,minecraft:writable_book*2,minecraft:villager_spawn_egg,minecraft:composter,minecraft:cooked_beef*16
 ```
+
+### 5. The launcher check builds without the old render_frame and skate warnings
+
+After 70a8016a. Gap code-2, parts 5 and 6.
+
+- **Why:** every `check -p launcher` printed four old rustc warnings: `render_frame` `unused_attributes` (`#[must_use]` on a static, which will become a hard error), `skate-core` the deprecated `AtomicUsize::fetch_update` (renamed `try_update` in toolchain 1.99), and `skate-host` two `private_interfaces`.
+- **Changed** (one line each; patches to files that were identical to `upstream/main`):
+  - `crates/render_frame/src/retained.rs` (upstream IW4L): `#[must_use]` moves from `:156`, where upstream 4979ef31 left it above the new `DEPTH_HACK_SCENE_ENTNUM` static, back above `pub const fn host_viewmodel_render_fx_flags` (now `:165`), where 0f387098 had it. The doc lines above the static stay. Every caller uses the result (`render_gpu/src/drawsurf/depth_range.rs:22`, `render_backend/src/material_exec.rs:175`, `:359`), so no new warning appears.
+  - `skate/crates/skate-core/src/animation/commands/buffers.rs:9` (vendored SK8-ENGINE cb79689): `fetch_update` becomes `try_update`, with the same arguments and result (stable since 1.95; in 1.99 `fetch_update` only calls it).
+  - `skate/crates/skate-host/src/physics/footplant/settings.rs:4` (SK8-ENGINE): `pub(super) struct Settings` becomes `pub(in crate::physics) struct Settings`, the visibility of the `Footplant::settings` field that holds it.
+  - `skate/crates/skate-host/src/physics/respawn.rs:16` (SK8-ENGINE): `pub(super) struct Runtime` becomes `pub(crate) struct Runtime`, the visibility of `SkaterRuntime` whose `pub respawn` field holds it.
+  - The types are raised, not the fields, so no field's access changes. **Patches to keep or drop knowingly** at an upstream merge or a skate re-vendor: these four files, one line each.
+- **Decisions:**
+  - The brief's `check -p skate-core -p skate-host --locked --all-targets` cannot run from the root workspace: with `--all-targets` cargo answers "package ID specification `skate-core` did not match any packages" (the same for `skate-host`), because both belong to their own skate workspaces (`skate/Cargo.toml`, and `skate-host`'s own `[workspace]`), which have no lock file. Without `--all-targets` the specs match. So the libs are checked from the root, and `skate-core`'s test target through its own workspace with a copy of the root `Cargo.lock` that is deleted afterwards (`--offline`, so cargo only prunes the copy and picks no new versions). `skate-host` has no tests.
+- **Tests:** no new tests (nothing changes in behaviour).
+  - `check -p skate-core -p skate-host --locked`: exit 0, no warnings.
+  - `check --manifest-path skate\Cargo.toml -p skate-core --offline --all-targets` (lib and lib test, temporary lock copy): exit 0, no warnings; `skate\Cargo.lock` is gone afterwards.
+  - `check -p render_frame --locked --all-targets`: exit 0, no warnings.
+  - `check -p launcher --locked`: exit 0 and no warning at all (no line of the output contains "warning"); its tail is `Checking launcher v0.1.0 ...`, `Finished dev profile [unoptimized] target(s) in 37.73s`.
+  - `test -p minecraft_survival -p render_anim -p hud --locked`: `hud` 206, `minecraft_survival` 843 and 1, `render_anim` 226, no failure: the same counts as before the group, and the build printed no warning.
+- **Owner's steps.** The same release build and world as the steps above; nothing should change. The kit is the one above (skating needs no item).
+  5. Press **J**: you skate as before. Bail off a ledge: you get back on the board. **e3-9-8**
