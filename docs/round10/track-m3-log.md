@@ -503,4 +503,10 @@ IW4L_MINECRAFT_KIT=minecraft:red_bed,minecraft:cobblestone*64,minecraft:diamond_
 
 ## Combined kit
 
-The track's combined kit is in `docs/round10/track-m3.md` (M30, "Combined kit"); every group's kit above draws from it or from the section kits.
+The whole track's kit (all segments, mostly the mobs still to come) is in `docs/round10/track-m3.md` (M30, "Combined kit").
+
+Segment m3a (lightning and phantoms), one kit for every step above (27 stacks). To stay at 27 it leaves out a few things the commit kits name: dig the pits by hand (no iron shovel), drop 8 stone bricks instead of the oak planks in m3-strike-2, eat cooked beef instead of golden apples, and before m3-strike-6 run `/give @s minecraft:obsidian 14` (the host is op). Friends read the same `.env`.
+
+```
+IW4L_MINECRAFT_KIT=minecraft:phantom_spawn_egg*16,minecraft:cat_spawn_egg*2,minecraft:ocelot_spawn_egg*2,minecraft:cow_spawn_egg*4,minecraft:pig_spawn_egg*4,minecraft:villager_spawn_egg*4,minecraft:creeper_spawn_egg*4,minecraft:mooshroom_spawn_egg*2,minecraft:lightning_rod*4,minecraft:weathered_copper*32,minecraft:redstone_lamp*2,minecraft:stone_bricks*64,minecraft:experience_bottle*16,minecraft:composter*2,minecraft:stone_slab*8,minecraft:light_blue_stained_glass*16,minecraft:cobblestone*64,minecraft:spawner,minecraft:red_bed,minecraft:diamond_sword+looting=3,minecraft:shield,minecraft:water_bucket,minecraft:iron_helmet,minecraft:iron_chestplate,minecraft:iron_leggings,minecraft:iron_boots,minecraft:cooked_beef*32
+```
